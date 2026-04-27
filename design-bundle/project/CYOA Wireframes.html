@@ -1,0 +1,2118 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CYOA — Wireframe Explorations</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;600;700&family=Patrick+Hand&display=swap" rel="stylesheet" />
+  <style>
+    html, body { margin: 0; padding: 0; background: #f0eee9; font-family: "Patrick Hand", cursive; }
+    * { box-sizing: border-box; }
+  </style>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+  <div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+
+// DesignCanvas.jsx — Figma-ish design canvas wrapper
+// Warm gray grid bg + Sections + Artboards + PostIt notes.
+// Artboards are reorderable (grip-drag), labels/titles are inline-editable,
+// and any artboard can be opened in a fullscreen focus overlay (←/→/Esc).
+// State persists to a .design-canvas.state.json sidecar via the host
+// bridge. No assets, no deps.
+//
+// Usage:
+//   <DesignCanvas>
+//     <DCSection id="onboarding" title="Onboarding" subtitle="First-run variants">
+//       <DCArtboard id="a" label="A · Dusk" width={260} height={480}>…</DCArtboard>
+//       <DCArtboard id="b" label="B · Minimal" width={260} height={480}>…</DCArtboard>
+//     </DCSection>
+//   </DesignCanvas>
+
+const DC = {
+  bg: '#f0eee9',
+  grid: 'rgba(0,0,0,0.06)',
+  label: 'rgba(60,50,40,0.7)',
+  title: 'rgba(40,30,20,0.85)',
+  subtitle: 'rgba(60,50,40,0.6)',
+  postitBg: '#fef4a8',
+  postitText: '#5a4a2a',
+  font: '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
+};
+
+// One-time CSS injection (classes are dc-prefixed so they don't collide with
+// the hosted design's own styles).
+if (typeof document !== 'undefined' && !document.getElementById('dc-styles')) {
+  const s = document.createElement('style');
+  s.id = 'dc-styles';
+  s.textContent = [
+    '.dc-editable{cursor:text;outline:none;white-space:nowrap;border-radius:3px;padding:0 2px;margin:0 -2px}',
+    '.dc-editable:focus{background:#fff;box-shadow:0 0 0 1.5px #c96442}',
+    '[data-dc-slot]{transition:transform .18s cubic-bezier(.2,.7,.3,1)}',
+    '[data-dc-slot].dc-dragging{transition:none;z-index:10;pointer-events:none}',
+    '[data-dc-slot].dc-dragging .dc-card{box-shadow:0 12px 40px rgba(0,0,0,.25),0 0 0 2px #c96442;transform:scale(1.02)}',
+    '.dc-card{transition:box-shadow .15s,transform .15s}',
+    '.dc-card *{scrollbar-width:none}',
+    '.dc-card *::-webkit-scrollbar{display:none}',
+    '.dc-labelrow{display:flex;align-items:center;gap:4px;height:24px}',
+    '.dc-grip{cursor:grab;display:flex;align-items:center;padding:5px 4px;border-radius:4px;transition:background .12s}',
+    '.dc-grip:hover{background:rgba(0,0,0,.08)}',
+    '.dc-grip:active{cursor:grabbing}',
+    '.dc-labeltext{cursor:pointer;border-radius:4px;padding:3px 6px;display:flex;align-items:center;transition:background .12s}',
+    '.dc-labeltext:hover{background:rgba(0,0,0,.05)}',
+    '.dc-expand{position:absolute;bottom:100%;right:0;margin-bottom:5px;z-index:2;opacity:0;transition:opacity .12s,background .12s;',
+    '  width:22px;height:22px;border-radius:5px;border:none;cursor:pointer;padding:0;',
+    '  background:transparent;color:rgba(60,50,40,.7);display:flex;align-items:center;justify-content:center}',
+    '.dc-expand:hover{background:rgba(0,0,0,.06);color:#2a251f}',
+    '[data-dc-slot]:hover .dc-expand{opacity:1}',
+  ].join('\n');
+  document.head.appendChild(s);
+}
+
+const DCCtx = React.createContext(null);
+
+// ─────────────────────────────────────────────────────────────
+// DesignCanvas — stateful wrapper around the pan/zoom viewport.
+// Owns runtime state (per-section order, renamed titles/labels, focused
+// artboard). Order/titles/labels persist to a .design-canvas.state.json
+// sidecar next to the HTML. Reads go via plain fetch() so the saved
+// arrangement is visible anywhere the HTML + sidecar are served together
+// (omelette preview, direct link, downloaded zip). Writes go through the
+// host's window.omelette bridge — editing requires the omelette runtime.
+// Focus is ephemeral.
+// ─────────────────────────────────────────────────────────────
+const DC_STATE_FILE = '.design-canvas.state.json';
+
+function DesignCanvas({ children, minScale, maxScale, style }) {
+  const [state, setState] = React.useState({ sections: {}, focus: null });
+  // Hold rendering until the sidecar read settles so the saved order/titles
+  // appear on first paint (no source-order flash). didRead gates writes until
+  // the read settles so the empty initial state can't clobber a slow read;
+  // skipNextWrite suppresses the one echo-write that would otherwise follow
+  // hydration.
+  const [ready, setReady] = React.useState(false);
+  const didRead = React.useRef(false);
+  const skipNextWrite = React.useRef(false);
+
+  React.useEffect(() => {
+    let off = false;
+    fetch('./' + DC_STATE_FILE)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((saved) => {
+        if (off || !saved || !saved.sections) return;
+        skipNextWrite.current = true;
+        setState((s) => ({ ...s, sections: saved.sections }));
+      })
+      .catch(() => {})
+      .finally(() => { didRead.current = true; if (!off) setReady(true); });
+    const t = setTimeout(() => { if (!off) setReady(true); }, 150);
+    return () => { off = true; clearTimeout(t); };
+  }, []);
+
+  React.useEffect(() => {
+    if (!didRead.current) return;
+    if (skipNextWrite.current) { skipNextWrite.current = false; return; }
+    const t = setTimeout(() => {
+      window.omelette?.writeFile(DC_STATE_FILE, JSON.stringify({ sections: state.sections })).catch(() => {});
+    }, 250);
+    return () => clearTimeout(t);
+  }, [state.sections]);
+
+  // Build registries synchronously from children so FocusOverlay can read
+  // them in the same render. Only direct DCSection > DCArtboard children are
+  // walked — wrapping them in other elements opts out of focus/reorder.
+  const registry = {};     // slotId -> { sectionId, artboard }
+  const sectionMeta = {};  // sectionId -> { title, subtitle, slotIds[] }
+  const sectionOrder = [];
+  React.Children.forEach(children, (sec) => {
+    if (!sec || sec.type !== DCSection) return;
+    const sid = sec.props.id ?? sec.props.title;
+    if (!sid) return;
+    sectionOrder.push(sid);
+    const persisted = state.sections[sid] || {};
+    const srcIds = [];
+    React.Children.forEach(sec.props.children, (ab) => {
+      if (!ab || ab.type !== DCArtboard) return;
+      const aid = ab.props.id ?? ab.props.label;
+      if (!aid) return;
+      registry[`${sid}/${aid}`] = { sectionId: sid, artboard: ab };
+      srcIds.push(aid);
+    });
+    const kept = (persisted.order || []).filter((k) => srcIds.includes(k));
+    sectionMeta[sid] = {
+      title: persisted.title ?? sec.props.title,
+      subtitle: sec.props.subtitle,
+      slotIds: [...kept, ...srcIds.filter((k) => !kept.includes(k))],
+    };
+  });
+
+  const api = React.useMemo(() => ({
+    state,
+    section: (id) => state.sections[id] || {},
+    patchSection: (id, p) => setState((s) => ({
+      ...s,
+      sections: { ...s.sections, [id]: { ...s.sections[id], ...(typeof p === 'function' ? p(s.sections[id] || {}) : p) } },
+    })),
+    setFocus: (slotId) => setState((s) => ({ ...s, focus: slotId })),
+  }), [state]);
+
+  // Esc exits focus; any outside pointerdown commits an in-progress rename.
+  React.useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') api.setFocus(null); };
+    const onPd = (e) => {
+      const ae = document.activeElement;
+      if (ae && ae.isContentEditable && !ae.contains(e.target)) ae.blur();
+    };
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('pointerdown', onPd, true);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('pointerdown', onPd, true);
+    };
+  }, [api]);
+
+  return (
+    <DCCtx.Provider value={api}>
+      <DCViewport minScale={minScale} maxScale={maxScale} style={style}>{ready && children}</DCViewport>
+      {state.focus && registry[state.focus] && (
+        <DCFocusOverlay entry={registry[state.focus]} sectionMeta={sectionMeta} sectionOrder={sectionOrder} />
+      )}
+    </DCCtx.Provider>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// DCViewport — transform-based pan/zoom (internal)
+//
+// Input mapping (Figma-style):
+//   • trackpad pinch  → zoom   (ctrlKey wheel; Safari gesture* events)
+//   • trackpad scroll → pan    (two-finger)
+//   • mouse wheel     → zoom   (notched; distinguished from trackpad scroll)
+//   • middle-drag / primary-drag-on-bg → pan
+//
+// Transform state lives in a ref and is written straight to the DOM
+// (translate3d + will-change) so wheel ticks don't go through React —
+// keeps pans at 60fps on dense canvases.
+// ─────────────────────────────────────────────────────────────
+function DCViewport({ children, minScale = 0.1, maxScale = 8, style = {} }) {
+  const vpRef = React.useRef(null);
+  const worldRef = React.useRef(null);
+  const tf = React.useRef({ x: 0, y: 0, scale: 1 });
+
+  const apply = React.useCallback(() => {
+    const { x, y, scale } = tf.current;
+    const el = worldRef.current;
+    if (el) el.style.transform = `translate3d(${x}px, ${y}px, 0) scale(${scale})`;
+  }, []);
+
+  React.useEffect(() => {
+    const vp = vpRef.current;
+    if (!vp) return;
+
+    const zoomAt = (cx, cy, factor) => {
+      const r = vp.getBoundingClientRect();
+      const px = cx - r.left, py = cy - r.top;
+      const t = tf.current;
+      const next = Math.min(maxScale, Math.max(minScale, t.scale * factor));
+      const k = next / t.scale;
+      // keep the world point under the cursor fixed
+      t.x = px - (px - t.x) * k;
+      t.y = py - (py - t.y) * k;
+      t.scale = next;
+      apply();
+    };
+
+    // Mouse-wheel vs trackpad-scroll heuristic. A physical wheel sends
+    // line-mode deltas (Firefox) or large integer pixel deltas with no X
+    // component (Chrome/Safari, typically multiples of 100/120). Trackpad
+    // two-finger scroll sends small/fractional pixel deltas, often with
+    // non-zero deltaX. ctrlKey is set by the browser for trackpad pinch.
+    const isMouseWheel = (e) =>
+      e.deltaMode !== 0 ||
+      (e.deltaX === 0 && Number.isInteger(e.deltaY) && Math.abs(e.deltaY) >= 40);
+
+    const onWheel = (e) => {
+      e.preventDefault();
+      if (isGesturing) return; // Safari: gesture* owns the pinch — discard concurrent wheels
+      if (e.ctrlKey) {
+        // trackpad pinch (or explicit ctrl+wheel)
+        zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.01));
+      } else if (isMouseWheel(e)) {
+        // notched mouse wheel — fixed-ratio step per click
+        zoomAt(e.clientX, e.clientY, Math.exp(-Math.sign(e.deltaY) * 0.18));
+      } else {
+        // trackpad two-finger scroll — pan
+        tf.current.x -= e.deltaX;
+        tf.current.y -= e.deltaY;
+        apply();
+      }
+    };
+
+    // Safari sends native gesture* events for trackpad pinch with a smooth
+    // e.scale; preferring these over the ctrl+wheel fallback gives a much
+    // better feel there. No-ops on other browsers. Safari also fires
+    // ctrlKey wheel events during the same pinch — isGesturing makes
+    // onWheel drop those entirely so they neither zoom nor pan.
+    let gsBase = 1;
+    let isGesturing = false;
+    const onGestureStart = (e) => { e.preventDefault(); isGesturing = true; gsBase = tf.current.scale; };
+    const onGestureChange = (e) => {
+      e.preventDefault();
+      zoomAt(e.clientX, e.clientY, (gsBase * e.scale) / tf.current.scale);
+    };
+    const onGestureEnd = (e) => { e.preventDefault(); isGesturing = false; };
+
+    // Drag-pan: middle button anywhere, or primary button on canvas
+    // background (anything that isn't an artboard or an inline editor).
+    let drag = null;
+    const onPointerDown = (e) => {
+      const onBg = !e.target.closest('[data-dc-slot], .dc-editable');
+      if (!(e.button === 1 || (e.button === 0 && onBg))) return;
+      e.preventDefault();
+      vp.setPointerCapture(e.pointerId);
+      drag = { id: e.pointerId, lx: e.clientX, ly: e.clientY };
+      vp.style.cursor = 'grabbing';
+    };
+    const onPointerMove = (e) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      tf.current.x += e.clientX - drag.lx;
+      tf.current.y += e.clientY - drag.ly;
+      drag.lx = e.clientX; drag.ly = e.clientY;
+      apply();
+    };
+    const onPointerUp = (e) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      vp.releasePointerCapture(e.pointerId);
+      drag = null;
+      vp.style.cursor = '';
+    };
+
+    vp.addEventListener('wheel', onWheel, { passive: false });
+    vp.addEventListener('gesturestart', onGestureStart, { passive: false });
+    vp.addEventListener('gesturechange', onGestureChange, { passive: false });
+    vp.addEventListener('gestureend', onGestureEnd, { passive: false });
+    vp.addEventListener('pointerdown', onPointerDown);
+    vp.addEventListener('pointermove', onPointerMove);
+    vp.addEventListener('pointerup', onPointerUp);
+    vp.addEventListener('pointercancel', onPointerUp);
+    return () => {
+      vp.removeEventListener('wheel', onWheel);
+      vp.removeEventListener('gesturestart', onGestureStart);
+      vp.removeEventListener('gesturechange', onGestureChange);
+      vp.removeEventListener('gestureend', onGestureEnd);
+      vp.removeEventListener('pointerdown', onPointerDown);
+      vp.removeEventListener('pointermove', onPointerMove);
+      vp.removeEventListener('pointerup', onPointerUp);
+      vp.removeEventListener('pointercancel', onPointerUp);
+    };
+  }, [apply, minScale, maxScale]);
+
+  const gridSvg = `url("data:image/svg+xml,%3Csvg width='120' height='120' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M120 0H0v120' fill='none' stroke='${encodeURIComponent(DC.grid)}' stroke-width='1'/%3E%3C/svg%3E")`;
+  return (
+    <div
+      ref={vpRef}
+      className="design-canvas"
+      style={{
+        height: '100vh', width: '100vw',
+        background: DC.bg,
+        overflow: 'hidden',
+        overscrollBehavior: 'none',
+        touchAction: 'none',
+        position: 'relative',
+        fontFamily: DC.font,
+        boxSizing: 'border-box',
+        ...style,
+      }}
+    >
+      <div
+        ref={worldRef}
+        style={{
+          position: 'absolute', top: 0, left: 0,
+          transformOrigin: '0 0',
+          willChange: 'transform',
+          width: 'max-content', minWidth: '100%',
+          minHeight: '100%',
+          padding: '60px 0 80px',
+        }}
+      >
+        <div style={{ position: 'absolute', inset: -6000, backgroundImage: gridSvg, backgroundSize: '120px 120px', pointerEvents: 'none', zIndex: -1 }} />
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// DCSection — editable title + h-row of artboards in persisted order
+// ─────────────────────────────────────────────────────────────
+function DCSection({ id, title, subtitle, children, gap = 48 }) {
+  const ctx = React.useContext(DCCtx);
+  const sid = id ?? title;
+  const all = React.Children.toArray(children);
+  const artboards = all.filter((c) => c && c.type === DCArtboard);
+  const rest = all.filter((c) => !(c && c.type === DCArtboard));
+  const srcOrder = artboards.map((a) => a.props.id ?? a.props.label);
+  const sec = (ctx && sid && ctx.section(sid)) || {};
+
+  const order = React.useMemo(() => {
+    const kept = (sec.order || []).filter((k) => srcOrder.includes(k));
+    return [...kept, ...srcOrder.filter((k) => !kept.includes(k))];
+  }, [sec.order, srcOrder.join('|')]);
+
+  const byId = Object.fromEntries(artboards.map((a) => [a.props.id ?? a.props.label, a]));
+
+  return (
+    <div data-dc-section={sid} style={{ marginBottom: 80, position: 'relative' }}>
+      <div style={{ padding: '0 60px 56px' }}>
+        <DCEditable tag="div" value={sec.title ?? title}
+          onChange={(v) => ctx && sid && ctx.patchSection(sid, { title: v })}
+          style={{ fontSize: 28, fontWeight: 600, color: DC.title, letterSpacing: -0.4, marginBottom: 6, display: 'inline-block' }} />
+        {subtitle && <div style={{ fontSize: 16, color: DC.subtitle }}>{subtitle}</div>}
+      </div>
+      <div style={{ display: 'flex', gap, padding: '0 60px', alignItems: 'flex-start', width: 'max-content' }}>
+        {order.map((k) => (
+          <DCArtboardFrame key={k} sectionId={sid} artboard={byId[k]} order={order}
+            label={(sec.labels || {})[k] ?? byId[k].props.label}
+            onRename={(v) => ctx && ctx.patchSection(sid, (x) => ({ labels: { ...x.labels, [k]: v } }))}
+            onReorder={(next) => ctx && ctx.patchSection(sid, { order: next })}
+            onFocus={() => ctx && ctx.setFocus(`${sid}/${k}`)} />
+        ))}
+      </div>
+      {rest}
+    </div>
+  );
+}
+
+// DCArtboard — marker; rendered by DCArtboardFrame via DCSection.
+function DCArtboard() { return null; }
+
+function DCArtboardFrame({ sectionId, artboard, label, order, onRename, onReorder, onFocus }) {
+  const { id: rawId, label: rawLabel, width = 260, height = 480, children, style = {} } = artboard.props;
+  const id = rawId ?? rawLabel;
+  const ref = React.useRef(null);
+
+  // Live drag-reorder: dragged card sticks to cursor; siblings slide into
+  // their would-be slots in real time via transforms. DOM order only
+  // changes on drop.
+  const onGripDown = (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const me = ref.current;
+    // translateX is applied in local (pre-scale) space but pointer deltas and
+    // getBoundingClientRect().left are screen-space — divide by the viewport's
+    // current scale so the dragged card tracks the cursor at any zoom level.
+    const scale = me.getBoundingClientRect().width / me.offsetWidth || 1;
+    const peers = Array.from(document.querySelectorAll(`[data-dc-section="${sectionId}"] [data-dc-slot]`));
+    const homes = peers.map((el) => ({ el, id: el.dataset.dcSlot, x: el.getBoundingClientRect().left }));
+    const slotXs = homes.map((h) => h.x);
+    const startIdx = order.indexOf(id);
+    const startX = e.clientX;
+    let liveOrder = order.slice();
+    me.classList.add('dc-dragging');
+
+    const layout = () => {
+      for (const h of homes) {
+        if (h.id === id) continue;
+        const slot = liveOrder.indexOf(h.id);
+        h.el.style.transform = `translateX(${(slotXs[slot] - h.x) / scale}px)`;
+      }
+    };
+
+    const move = (ev) => {
+      const dx = ev.clientX - startX;
+      me.style.transform = `translateX(${dx / scale}px)`;
+      const cur = homes[startIdx].x + dx;
+      let nearest = 0, best = Infinity;
+      for (let i = 0; i < slotXs.length; i++) {
+        const d = Math.abs(slotXs[i] - cur);
+        if (d < best) { best = d; nearest = i; }
+      }
+      if (liveOrder.indexOf(id) !== nearest) {
+        liveOrder = order.filter((k) => k !== id);
+        liveOrder.splice(nearest, 0, id);
+        layout();
+      }
+    };
+
+    const up = () => {
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', up);
+      const finalSlot = liveOrder.indexOf(id);
+      me.classList.remove('dc-dragging');
+      me.style.transform = `translateX(${(slotXs[finalSlot] - homes[startIdx].x) / scale}px)`;
+      // After the settle transition, kill transitions + clear transforms +
+      // commit the reorder in the same frame so there's no visual snap-back.
+      setTimeout(() => {
+        for (const h of homes) { h.el.style.transition = 'none'; h.el.style.transform = ''; }
+        if (liveOrder.join('|') !== order.join('|')) onReorder(liveOrder);
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          for (const h of homes) h.el.style.transition = '';
+        }));
+      }, 180);
+    };
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', up);
+  };
+
+  return (
+    <div ref={ref} data-dc-slot={id} style={{ position: 'relative', flexShrink: 0 }}>
+      <div className="dc-labelrow" style={{ position: 'absolute', bottom: '100%', left: -4, marginBottom: 4, color: DC.label }}>
+        <div className="dc-grip" onPointerDown={onGripDown} title="Drag to reorder">
+          <svg width="9" height="13" viewBox="0 0 9 13" fill="currentColor"><circle cx="2" cy="2" r="1.1"/><circle cx="7" cy="2" r="1.1"/><circle cx="2" cy="6.5" r="1.1"/><circle cx="7" cy="6.5" r="1.1"/><circle cx="2" cy="11" r="1.1"/><circle cx="7" cy="11" r="1.1"/></svg>
+        </div>
+        <div className="dc-labeltext" onClick={onFocus} title="Click to focus">
+          <DCEditable value={label} onChange={onRename} onClick={(e) => e.stopPropagation()}
+            style={{ fontSize: 15, fontWeight: 500, color: DC.label, lineHeight: 1 }} />
+        </div>
+      </div>
+      <button className="dc-expand" onClick={onFocus} onPointerDown={(e) => e.stopPropagation()} title="Focus">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"><path d="M7 1h4v4M5 11H1V7M11 1L7.5 4.5M1 11l3.5-3.5"/></svg>
+      </button>
+      <div className="dc-card"
+        style={{ borderRadius: 2, boxShadow: '0 1px 3px rgba(0,0,0,.08),0 4px 16px rgba(0,0,0,.06)', overflow: 'hidden', width, height, background: '#fff', ...style }}>
+        {children || <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#bbb', fontSize: 13, fontFamily: DC.font }}>{id}</div>}
+      </div>
+    </div>
+  );
+}
+
+// Inline rename — commits on blur or Enter.
+function DCEditable({ value, onChange, style, tag = 'span', onClick }) {
+  const T = tag;
+  return (
+    <T className="dc-editable" contentEditable suppressContentEditableWarning
+      onClick={onClick}
+      onPointerDown={(e) => e.stopPropagation()}
+      onBlur={(e) => onChange && onChange(e.currentTarget.textContent)}
+      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } }}
+      style={style}>{value}</T>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Focus mode — overlay one artboard; ←/→ within section, ↑/↓ across
+// sections, Esc or backdrop click to exit.
+// ─────────────────────────────────────────────────────────────
+function DCFocusOverlay({ entry, sectionMeta, sectionOrder }) {
+  const ctx = React.useContext(DCCtx);
+  const { sectionId, artboard } = entry;
+  const sec = ctx.section(sectionId);
+  const meta = sectionMeta[sectionId];
+  const peers = meta.slotIds;
+  const aid = artboard.props.id ?? artboard.props.label;
+  const idx = peers.indexOf(aid);
+  const secIdx = sectionOrder.indexOf(sectionId);
+
+  const go = (d) => { const n = peers[(idx + d + peers.length) % peers.length]; if (n) ctx.setFocus(`${sectionId}/${n}`); };
+  const goSection = (d) => {
+    const ns = sectionOrder[(secIdx + d + sectionOrder.length) % sectionOrder.length];
+    const first = sectionMeta[ns] && sectionMeta[ns].slotIds[0];
+    if (first) ctx.setFocus(`${ns}/${first}`);
+  };
+
+  React.useEffect(() => {
+    const k = (e) => {
+      if (e.key === 'ArrowLeft') { e.preventDefault(); go(-1); }
+      if (e.key === 'ArrowRight') { e.preventDefault(); go(1); }
+      if (e.key === 'ArrowUp') { e.preventDefault(); goSection(-1); }
+      if (e.key === 'ArrowDown') { e.preventDefault(); goSection(1); }
+    };
+    document.addEventListener('keydown', k);
+    return () => document.removeEventListener('keydown', k);
+  });
+
+  const { width = 260, height = 480, children } = artboard.props;
+  const [vp, setVp] = React.useState({ w: window.innerWidth, h: window.innerHeight });
+  React.useEffect(() => { const r = () => setVp({ w: window.innerWidth, h: window.innerHeight }); window.addEventListener('resize', r); return () => window.removeEventListener('resize', r); }, []);
+  const scale = Math.max(0.1, Math.min((vp.w - 200) / width, (vp.h - 260) / height, 2));
+
+  const [ddOpen, setDd] = React.useState(false);
+  const Arrow = ({ dir, onClick }) => (
+    <button onClick={(e) => { e.stopPropagation(); onClick(); }}
+      style={{ position: 'absolute', top: '50%', [dir]: 28, transform: 'translateY(-50%)',
+        border: 'none', background: 'rgba(255,255,255,.08)', color: 'rgba(255,255,255,.9)',
+        width: 44, height: 44, borderRadius: 22, fontSize: 18, cursor: 'pointer',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'background .15s' }}
+      onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,.18)')}
+      onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,.08)')}>
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+        <path d={dir === 'left' ? 'M11 3L5 9l6 6' : 'M7 3l6 6-6 6'} /></svg>
+    </button>
+  );
+
+  // Portal to body so position:fixed is the real viewport regardless of any
+  // transform on DesignCanvas's ancestors (including the canvas zoom itself).
+  return ReactDOM.createPortal(
+    <div onClick={() => ctx.setFocus(null)}
+      onWheel={(e) => e.preventDefault()}
+      style={{ position: 'fixed', inset: 0, zIndex: 100, background: 'rgba(24,20,16,.6)', backdropFilter: 'blur(14px)',
+        fontFamily: DC.font, color: '#fff' }}>
+
+      {/* top bar: section dropdown (left) · close (right) */}
+      <div onClick={(e) => e.stopPropagation()}
+        style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 72, display: 'flex', alignItems: 'flex-start', padding: '16px 20px 0', gap: 16 }}>
+        <div style={{ position: 'relative' }}>
+          <button onClick={() => setDd((o) => !o)}
+            style={{ border: 'none', background: 'transparent', color: '#fff', cursor: 'pointer', padding: '6px 8px',
+              borderRadius: 6, textAlign: 'left', fontFamily: 'inherit' }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 18, fontWeight: 600, letterSpacing: -0.3 }}>{meta.title}</span>
+              <svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" style={{ opacity: .7 }}><path d="M2 4l3.5 3.5L9 4"/></svg>
+            </span>
+            {meta.subtitle && <span style={{ display: 'block', fontSize: 13, opacity: .6, fontWeight: 400, marginTop: 2 }}>{meta.subtitle}</span>}
+          </button>
+          {ddOpen && (
+            <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, background: '#2a251f', borderRadius: 8,
+              boxShadow: '0 8px 32px rgba(0,0,0,.4)', padding: 4, minWidth: 200, zIndex: 10 }}>
+              {sectionOrder.map((sid) => (
+                <button key={sid} onClick={() => { setDd(false); const f = sectionMeta[sid].slotIds[0]; if (f) ctx.setFocus(`${sid}/${f}`); }}
+                  style={{ display: 'block', width: '100%', textAlign: 'left', border: 'none', cursor: 'pointer',
+                    background: sid === sectionId ? 'rgba(255,255,255,.1)' : 'transparent', color: '#fff',
+                    padding: '8px 12px', borderRadius: 5, fontSize: 14, fontWeight: sid === sectionId ? 600 : 400, fontFamily: 'inherit' }}>
+                  {sectionMeta[sid].title}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <div style={{ flex: 1 }} />
+        <button onClick={() => ctx.setFocus(null)}
+          onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,.12)')}
+          onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+          style={{ border: 'none', background: 'transparent', color: 'rgba(255,255,255,.7)', width: 32, height: 32,
+            borderRadius: 16, fontSize: 20, cursor: 'pointer', lineHeight: 1, transition: 'background .12s' }}>×</button>
+      </div>
+
+      {/* card centered, label + index below — only the card itself stops
+          propagation so any backdrop click (including the margins around
+          the card) exits focus */}
+      <div
+        style={{ position: 'absolute', top: 64, bottom: 56, left: 100, right: 100, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16 }}>
+        <div onClick={(e) => e.stopPropagation()} style={{ width: width * scale, height: height * scale, position: 'relative' }}>
+          <div style={{ width, height, transform: `scale(${scale})`, transformOrigin: 'top left', background: '#fff', borderRadius: 2, overflow: 'hidden',
+            boxShadow: '0 20px 80px rgba(0,0,0,.4)' }}>
+            {children || <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#bbb' }}>{aid}</div>}
+          </div>
+        </div>
+        <div onClick={(e) => e.stopPropagation()} style={{ fontSize: 14, fontWeight: 500, opacity: .85, textAlign: 'center' }}>
+          {(sec.labels || {})[aid] ?? artboard.props.label}
+          <span style={{ opacity: .5, marginLeft: 10, fontVariantNumeric: 'tabular-nums' }}>{idx + 1} / {peers.length}</span>
+        </div>
+      </div>
+
+      <Arrow dir="left" onClick={() => go(-1)} />
+      <Arrow dir="right" onClick={() => go(1)} />
+
+      {/* dots */}
+      <div onClick={(e) => e.stopPropagation()}
+        style={{ position: 'absolute', bottom: 20, left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: 8 }}>
+        {peers.map((p, i) => (
+          <button key={p} onClick={() => ctx.setFocus(`${sectionId}/${p}`)}
+            style={{ border: 'none', padding: 0, cursor: 'pointer', width: 6, height: 6, borderRadius: 3,
+              background: i === idx ? '#fff' : 'rgba(255,255,255,.3)' }} />
+        ))}
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Post-it — absolute-positioned sticky note
+// ─────────────────────────────────────────────────────────────
+function DCPostIt({ children, top, left, right, bottom, rotate = -2, width = 180 }) {
+  return (
+    <div style={{
+      position: 'absolute', top, left, right, bottom, width,
+      background: DC.postitBg, padding: '14px 16px',
+      fontFamily: '"Comic Sans MS", "Marker Felt", "Segoe Print", cursive',
+      fontSize: 14, lineHeight: 1.4, color: DC.postitText,
+      boxShadow: '0 2px 8px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.08)',
+      transform: `rotate(${rotate}deg)`,
+      zIndex: 5,
+    }}>{children}</div>
+  );
+}
+
+Object.assign(window, { DesignCanvas, DCSection, DCArtboard, DCPostIt });
+
+
+</script>
+
+<script type="text/babel" data-presets="react">
+
+// ===== wireframe-primitives.jsx =====
+// Sketchy wireframe primitives — handwritten feel, mostly black ink on aged parchment
+// All components are just visual scaffolding for low-fi design exploration.
+
+const inkStyles = {
+  ink: '#1a1612',
+  inkSoft: '#5a5248',
+  inkFaint: '#9b8f7e',
+  paper: '#f4ecd8',
+  paperDark: '#e8dcc0',
+  accent: '#a83232', // deep wax-seal red, used sparingly
+  highlight: '#d4a017', // candle glow
+};
+
+// Sketchy box — wobbly border via SVG filter
+const SBox = ({ children, style, dashed, filled, accent, ...rest }) => (
+  <div
+    style={{
+      border: `1.5px ${dashed ? 'dashed' : 'solid'} ${accent ? inkStyles.accent : inkStyles.ink}`,
+      background: filled ? inkStyles.paperDark : 'transparent',
+      padding: 10,
+      position: 'relative',
+      fontFamily: '"Caveat", cursive',
+      filter: 'url(#wobble)',
+      ...style,
+    }}
+    {...rest}
+  >
+    {children}
+  </div>
+);
+
+// Hand-lettered text
+const SText = ({ children, size = 18, style, weight, italic, color, align }) => (
+  <span
+    style={{
+      fontFamily: '"Caveat", cursive',
+      fontSize: size,
+      fontWeight: weight || 400,
+      fontStyle: italic ? 'italic' : 'normal',
+      color: color || inkStyles.ink,
+      textAlign: align,
+      display: align ? 'block' : 'inline',
+      lineHeight: 1.15,
+      ...style,
+    }}
+  >
+    {children}
+  </span>
+);
+
+// Body copy in a more legible hand
+const SBody = ({ children, size = 15, style, color }) => (
+  <p
+    style={{
+      fontFamily: '"Patrick Hand", cursive',
+      fontSize: size,
+      color: color || inkStyles.inkSoft,
+      lineHeight: 1.45,
+      margin: '4px 0',
+      ...style,
+    }}
+  >
+    {children}
+  </p>
+);
+
+// Section title (annotation) over an artboard
+const SLabel = ({ children, n, sub }) => (
+  <div style={{ marginBottom: 8, display: 'flex', alignItems: 'baseline', gap: 10 }}>
+    {n && (
+      <span
+        style={{
+          fontFamily: '"Caveat", cursive',
+          fontSize: 32,
+          color: inkStyles.accent,
+          fontWeight: 700,
+        }}
+      >
+        {n}
+      </span>
+    )}
+    <span style={{ fontFamily: '"Caveat", cursive', fontSize: 22, color: inkStyles.ink, fontWeight: 700 }}>
+      {children}
+    </span>
+    {sub && (
+      <span style={{ fontFamily: '"Patrick Hand", cursive', fontSize: 14, color: inkStyles.inkFaint }}>
+        — {sub}
+      </span>
+    )}
+  </div>
+);
+
+// Sketchy button
+const SBtn = ({ children, w, primary, locked, style }) => (
+  <div
+    style={{
+      border: `1.5px solid ${locked ? inkStyles.inkFaint : inkStyles.ink}`,
+      background: primary ? inkStyles.ink : 'transparent',
+      color: primary ? inkStyles.paper : locked ? inkStyles.inkFaint : inkStyles.ink,
+      padding: '6px 14px',
+      borderRadius: 2,
+      fontFamily: '"Caveat", cursive',
+      fontSize: 17,
+      fontWeight: 600,
+      width: w,
+      display: 'inline-block',
+      textAlign: 'center',
+      filter: 'url(#wobble)',
+      opacity: locked ? 0.6 : 1,
+      ...style,
+    }}
+  >
+    {locked && '🔒 '}
+    {children}
+  </div>
+);
+
+// Image placeholder — X through a box
+const SImg = ({ w, h, label, style }) => (
+  <div
+    style={{
+      width: w || '100%',
+      height: h || 80,
+      border: `1.5px solid ${inkStyles.ink}`,
+      position: 'relative',
+      filter: 'url(#wobble)',
+      background: inkStyles.paperDark,
+      ...style,
+    }}
+  >
+    <svg
+      width="100%"
+      height="100%"
+      style={{ position: 'absolute', inset: 0, opacity: 0.4 }}
+      preserveAspectRatio="none"
+    >
+      <line x1="0" y1="0" x2="100%" y2="100%" stroke={inkStyles.ink} strokeWidth="1" />
+      <line x1="100%" y1="0" x2="0" y2="100%" stroke={inkStyles.ink} strokeWidth="1" />
+    </svg>
+    {label && (
+      <span
+        style={{
+          position: 'absolute',
+          inset: 0,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontFamily: '"Caveat", cursive',
+          fontSize: 14,
+          color: inkStyles.inkSoft,
+          fontStyle: 'italic',
+        }}
+      >
+        {label}
+      </span>
+    )}
+  </div>
+);
+
+// Annotation arrow + note (designer comments on the wireframe)
+const SNote = ({ children, style }) => (
+  <div
+    style={{
+      fontFamily: '"Caveat", cursive',
+      fontSize: 16,
+      color: inkStyles.accent,
+      fontStyle: 'italic',
+      ...style,
+    }}
+  >
+    ↳ {children}
+  </div>
+);
+
+// Phone frame (skinny rectangle with notch hint)
+const SPhone = ({ children, w = 240, h = 480, style }) => (
+  <div
+    style={{
+      width: w,
+      height: h,
+      border: `2px solid ${inkStyles.ink}`,
+      borderRadius: 24,
+      padding: 10,
+      position: 'relative',
+      filter: 'url(#wobble)',
+      background: inkStyles.paper,
+      overflow: 'hidden',
+      ...style,
+    }}
+  >
+    <div
+      style={{
+        position: 'absolute',
+        top: 6,
+        left: '50%',
+        transform: 'translateX(-50%)',
+        width: 50,
+        height: 4,
+        background: inkStyles.ink,
+        borderRadius: 2,
+      }}
+    />
+    <div style={{ marginTop: 12, height: h - 32, overflow: 'hidden' }}>{children}</div>
+  </div>
+);
+
+// Browser frame
+const SBrowser = ({ children, w, h, url, style }) => (
+  <div
+    style={{
+      width: w || '100%',
+      border: `2px solid ${inkStyles.ink}`,
+      borderRadius: 4,
+      filter: 'url(#wobble)',
+      background: inkStyles.paper,
+      overflow: 'hidden',
+      ...style,
+    }}
+  >
+    <div
+      style={{
+        borderBottom: `1.5px solid ${inkStyles.ink}`,
+        padding: '6px 10px',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        background: inkStyles.paperDark,
+      }}
+    >
+      <div style={{ width: 8, height: 8, borderRadius: 4, border: `1px solid ${inkStyles.ink}` }} />
+      <div style={{ width: 8, height: 8, borderRadius: 4, border: `1px solid ${inkStyles.ink}` }} />
+      <div style={{ width: 8, height: 8, borderRadius: 4, border: `1px solid ${inkStyles.ink}` }} />
+      <div
+        style={{
+          flex: 1,
+          marginLeft: 10,
+          padding: '2px 8px',
+          border: `1px solid ${inkStyles.ink}`,
+          borderRadius: 2,
+          fontFamily: '"Patrick Hand", cursive',
+          fontSize: 12,
+          color: inkStyles.inkSoft,
+        }}
+      >
+        {url || 'cyoa.game/...'}
+      </div>
+    </div>
+    <div style={{ height: h, overflow: 'hidden' }}>{children}</div>
+  </div>
+);
+
+// SVG wobble filter — drop once near top of canvas
+const WobbleFilter = () => (
+  <svg width="0" height="0" style={{ position: 'absolute' }}>
+    <defs>
+      <filter id="wobble">
+        <feTurbulence type="fractalNoise" baseFrequency="0.02" numOctaves="2" seed="3" />
+        <feDisplacementMap in="SourceGraphic" scale="1.2" />
+      </filter>
+    </defs>
+  </svg>
+);
+
+// Sketchy divider line
+const SDivider = ({ style }) => (
+  <div
+    style={{
+      borderTop: `1.5px solid ${inkStyles.ink}`,
+      filter: 'url(#wobble)',
+      margin: '8px 0',
+      ...style,
+    }}
+  />
+);
+
+// Choice card (used in main reading view)
+const SChoice = ({ num, children, locked, hint }) => (
+  <div
+    style={{
+      border: `1.5px solid ${locked ? inkStyles.inkFaint : inkStyles.ink}`,
+      padding: '8px 12px',
+      marginBottom: 6,
+      filter: 'url(#wobble)',
+      display: 'flex',
+      gap: 10,
+      alignItems: 'flex-start',
+      opacity: locked ? 0.55 : 1,
+    }}
+  >
+    <span
+      style={{
+        fontFamily: '"Caveat", cursive',
+        fontSize: 22,
+        fontWeight: 700,
+        color: inkStyles.accent,
+        minWidth: 18,
+      }}
+    >
+      {num}.
+    </span>
+    <div style={{ flex: 1 }}>
+      <span style={{ fontFamily: '"Patrick Hand", cursive', fontSize: 15, color: inkStyles.ink }}>
+        {locked && '🔒 '}
+        {children}
+      </span>
+      {hint && (
+        <div
+          style={{
+            fontFamily: '"Caveat", cursive',
+            fontSize: 13,
+            color: inkStyles.inkFaint,
+            fontStyle: 'italic',
+            marginTop: 2,
+          }}
+        >
+          {hint}
+        </div>
+      )}
+    </div>
+  </div>
+);
+
+Object.assign(window, {
+  inkStyles,
+  SBox,
+  SText,
+  SBody,
+  SLabel,
+  SBtn,
+  SImg,
+  SNote,
+  SPhone,
+  SBrowser,
+  WobbleFilter,
+  SDivider,
+  SChoice,
+});
+
+
+// ===== boards-1.jsx =====
+// Wireframe artboards — Part 1: Intro/system, Landing, Onboarding
+
+const IntroBoard = () => (
+  <div style={{ width: 1100, padding: 30, background: inkStyles.paper }}>
+    <SText size={56} weight={700}>CYOA — Wireframe Explorations</SText>
+    <SBody size={18}>
+      Low-fi sketches for an AI-generated choose-your-own-adventure web game.
+      Sketchy & wobbly on purpose — these are about <em>structure</em> and <em>flow</em>, not visual polish.
+      Drag artboards around, click any to focus.
+    </SBody>
+    <SDivider />
+
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24, marginTop: 12 }}>
+      <div>
+        <SText size={26} weight={700}>The product</SText>
+        <SBody>
+          • A URL anyone can hit — play as guest, sign up to save & share.<br />
+          • Stories are <strong>AI-generated on the fly</strong> with persistent memory + branching.<br />
+          • Curated <strong>starter adventures</strong> seed the experience (incl. tutorial: <em>"Escape the Training Room"</em>).<br />
+          • <strong>Free tier</strong> = limited turns/day. <strong>Subscription</strong> unlocks unlimited; <strong>Pro</strong> adds storybook imagery & ambient sound.<br />
+          • Tone: gothic, candlelit, "living book."<br />
+          • Built so the same UI can ship to web + native (Expo).
+        </SBody>
+      </div>
+      <div>
+        <SText size={26} weight={700}>The system I'm using</SText>
+        <SBody>
+          <strong>Type</strong> — Caveat (titles), Patrick Hand (body). Stand-ins for hand-lettering.<br />
+          <strong>Color</strong> — black ink on aged parchment. <span style={{ color: inkStyles.accent }}>Wax-seal red</span> for emphasis only. <span style={{ color: inkStyles.highlight }}>Candle gold</span> for highlights.<br />
+          <strong>Frames</strong> — browser & phone, side-by-side, since both surfaces matter.<br />
+          <strong>Variants</strong> — 3+ per surface, ordered <em>conventional → adventurous</em>. Pick & mix.<br />
+          <strong>Annotations</strong> — red italic notes call out reasoning.
+        </SBody>
+      </div>
+    </div>
+
+    <SDivider style={{ marginTop: 20 }} />
+    <SText size={22} weight={700}>What's covered below</SText>
+    <SBody>
+      Landing → Onboarding → Reading view (the main event) → Stats HUD modes → Choices & consequences →
+      Death screen → Endings map → Co-op multiplayer → Paywall moments → Settings.
+    </SBody>
+    <SBody size={14} color={inkStyles.inkFaint}>
+      Open questions are flagged in red on each board — let's resolve them as we go.
+    </SBody>
+  </div>
+);
+
+// ────────────────────────────────────────────────────────────────────────
+// LANDING / COVER
+// ────────────────────────────────────────────────────────────────────────
+
+const Landing_TomeCover = () => (
+  <SBrowser w={680} h={460} url="cyoa.game">
+    <div style={{ padding: 24, height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: inkStyles.paper, position: 'relative' }}>
+      <SImg w={220} h={280} label="cover illustration / animated candle" />
+      <div style={{ marginTop: 14, textAlign: 'center' }}>
+        <SText size={32} weight={700}>The Unwritten</SText>
+        <SBody size={13} style={{ marginTop: -2 }}>an adventure that writes itself</SBody>
+      </div>
+      <div style={{ marginTop: 14, display: 'flex', gap: 10 }}>
+        <SBtn primary>Open the book</SBtn>
+        <SBtn>I have a save</SBtn>
+      </div>
+      <div style={{ position: 'absolute', top: 12, right: 16, display: 'flex', gap: 8 }}>
+        <SBtn>sign in</SBtn>
+      </div>
+      <SBody size={12} style={{ marginTop: 16, color: inkStyles.inkFaint }}>
+        no sign-up required · 5 free turns/day
+      </SBody>
+    </div>
+  </SBrowser>
+);
+
+const Landing_Library = () => (
+  <SBrowser w={680} h={460} url="cyoa.game">
+    <div style={{ padding: 18, height: '100%', background: inkStyles.paper }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+        <SText size={26} weight={700}>The Library</SText>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <SBtn>guest</SBtn>
+          <SBtn primary>sign in</SBtn>
+        </div>
+      </div>
+      <SBody size={13}>Choose a tale, or weave your own.</SBody>
+      <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+        {[
+          { t: 'The Training Room', sub: 'tutorial · 5 min', hot: true },
+          { t: 'Bone Cathedral', sub: 'gothic · long' },
+          { t: 'The Iron Court', sub: 'intrigue · medium' },
+          { t: 'Ashfall', sub: 'survival · hard' },
+        ].map((s, i) => (
+          <div key={i} style={{ border: `1.5px solid ${inkStyles.ink}`, padding: 8, filter: 'url(#wobble)' }}>
+            <SImg h={70} label="" />
+            <SText size={16} weight={700} style={{ display: 'block', marginTop: 6 }}>{s.t}</SText>
+            <SBody size={11} style={{ margin: 0 }}>{s.sub}</SBody>
+            {s.hot && <SBody size={11} style={{ color: inkStyles.accent, margin: 0 }}>↳ start here</SBody>}
+          </div>
+        ))}
+      </div>
+      <SDivider style={{ marginTop: 14 }} />
+      <SText size={18} weight={700}>… or weave a new tale</SText>
+      <SBox style={{ marginTop: 6, padding: 12 }}>
+        <SBody size={12} style={{ margin: 0 }}>"A detective in a city where everyone's forgotten their name…"</SBody>
+        <div style={{ marginTop: 6, display: 'flex', justifyContent: 'flex-end' }}>
+          <SBtn primary>Begin</SBtn>
+        </div>
+      </SBox>
+    </div>
+  </SBrowser>
+);
+
+const Landing_StraightToScene = () => (
+  <SBrowser w={680} h={460} url="cyoa.game">
+    <div style={{ padding: 30, height: '100%', background: inkStyles.paper, display: 'flex', flexDirection: 'column' }}>
+      <SBody size={11} color={inkStyles.inkFaint} style={{ margin: 0 }}>chapter the first</SBody>
+      <SText size={22} weight={700} italic>The Door That Wasn't There Yesterday</SText>
+      <SDivider />
+      <div style={{ flex: 1, fontFamily: '"Patrick Hand", cursive', fontSize: 14, color: inkStyles.ink, lineHeight: 1.5 }}>
+        You wake in a room you do not remember entering. The candle gutters. Three doors —
+        one bound in iron, one carved with names, one merely a rumor of a door, painted on the wall.
+        <br /><br />
+        Somewhere, distant, a clock that should not exist begins to chime…
+      </div>
+      <SChoice num="1">Try the iron door.</SChoice>
+      <SChoice num="2">Read the names on the carved door.</SChoice>
+      <SChoice num="3">Touch the painted door.</SChoice>
+      <div style={{ position: 'absolute', top: 12, right: 16 }}>
+        <SBtn>save & sign up →</SBtn>
+      </div>
+      <SNote style={{ marginTop: 4 }}>no friction. story first. CTA to save appears after 2-3 choices.</SNote>
+    </div>
+  </SBrowser>
+);
+
+const Landing_PromptFirst = () => (
+  <SBrowser w={680} h={460} url="cyoa.game">
+    <div style={{ padding: 32, height: '100%', background: inkStyles.paper, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+      <SText size={28} weight={700} italic align="center">Tell me a tale,<br />and I shall tell it back to you.</SText>
+      <div style={{ width: '85%', marginTop: 22 }}>
+        <SBox style={{ minHeight: 80, padding: 14 }}>
+          <SBody size={13} color={inkStyles.inkFaint} style={{ margin: 0 }}>
+            ✒ a storm-wrecked lighthouse… a thief in a city of glass… a memory you shouldn't have…
+          </SBody>
+        </SBox>
+        <div style={{ marginTop: 10, display: 'flex', gap: 8, justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <SBtn>🎲 surprise me</SBtn>
+            <SBtn>browse tales</SBtn>
+          </div>
+          <SBtn primary>open the book →</SBtn>
+        </div>
+      </div>
+      <SBody size={11} color={inkStyles.inkFaint} style={{ marginTop: 18 }}>guest mode · 5 turns free</SBody>
+    </div>
+  </SBrowser>
+);
+
+const Landing_Mobile = () => (
+  <SPhone>
+    <div style={{ padding: 14, height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'space-between' }}>
+      <div style={{ alignSelf: 'flex-end' }}>
+        <SBtn>sign in</SBtn>
+      </div>
+      <div style={{ textAlign: 'center', flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' }}>
+        <SImg w={140} h={180} label="cover" />
+        <SText size={26} weight={700} style={{ marginTop: 12 }}>The Unwritten</SText>
+        <SBody size={11}>an adventure that writes itself</SBody>
+      </div>
+      <div style={{ width: '100%' }}>
+        <SBtn primary style={{ width: '100%', padding: '10px 0' }}>Open the book</SBtn>
+        <SBody size={10} color={inkStyles.inkFaint} style={{ textAlign: 'center', marginTop: 6 }}>
+          5 free turns/day · no sign-up
+        </SBody>
+      </div>
+    </div>
+  </SPhone>
+);
+
+window.LandingBoards = { Landing_TomeCover, Landing_Library, Landing_StraightToScene, Landing_PromptFirst, Landing_Mobile };
+
+// ────────────────────────────────────────────────────────────────────────
+// ONBOARDING
+// ────────────────────────────────────────────────────────────────────────
+
+const Onboard_TutorialFirst = () => (
+  <SBrowser w={680} h={460} url="cyoa.game/training-room">
+    <div style={{ padding: 28, height: '100%', background: inkStyles.paper, display: 'flex', flexDirection: 'column' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <SBody size={11} color={inkStyles.inkFaint} style={{ margin: 0 }}>tutorial · room 1 of 3</SBody>
+        <div style={{ display: 'flex', gap: 4 }}>
+          {[1, 2, 3].map((n) => (
+            <div key={n} style={{ width: 22, height: 4, background: n === 1 ? inkStyles.ink : inkStyles.inkFaint }} />
+          ))}
+        </div>
+      </div>
+      <SText size={22} weight={700} italic style={{ marginTop: 4 }}>The Training Room</SText>
+      <SDivider />
+      <div style={{ fontFamily: '"Patrick Hand", cursive', fontSize: 14, lineHeight: 1.5, color: inkStyles.ink, flex: 1 }}>
+        Stone walls. A locked door. A note on the table reads:<br />
+        <em>"Every choice you make will change the story. Try one."</em>
+      </div>
+      <SChoice num="1">Read the note again. <span style={{ color: inkStyles.accent }}>(+1 wisdom)</span></SChoice>
+      <SChoice num="2">Try the door.</SChoice>
+      <SBox style={{ position: 'absolute', bottom: 14, right: 14, padding: 8, maxWidth: 200, background: inkStyles.paperDark }} accent>
+        <SBody size={11} style={{ margin: 0, color: inkStyles.accent }}>
+          ✦ stats live up here →<br />choices change them. watch.
+        </SBody>
+      </SBox>
+    </div>
+  </SBrowser>
+);
+
+const Onboard_CharacterCreation = () => (
+  <SBrowser w={680} h={460} url="cyoa.game/begin">
+    <div style={{ padding: 22, height: '100%', background: inkStyles.paper }}>
+      <SText size={22} weight={700}>Who are you, traveler?</SText>
+      <SBody size={12}>your name is the only thing the book cannot invent.</SBody>
+      <div style={{ display: 'grid', gridTemplateColumns: '180px 1fr', gap: 18, marginTop: 14 }}>
+        <div>
+          <SImg h={180} label="portrait — auto-illustrated" />
+          <SBtn style={{ marginTop: 6, width: '100%' }}>↻ regenerate</SBtn>
+        </div>
+        <div>
+          <SBody size={12} style={{ margin: 0 }}>name</SBody>
+          <SBox style={{ padding: 6 }}>
+            <SText size={18} italic>Wren of Ashbourne</SText>
+          </SBox>
+          <SBody size={12} style={{ margin: '10px 0 0' }}>archetype</SBody>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginTop: 4 }}>
+            <SBox filled style={{ padding: 8 }}><SText size={14} weight={700}>The Scholar</SText></SBox>
+            <SBox style={{ padding: 8 }}><SText size={14}>The Brigand</SText></SBox>
+            <SBox style={{ padding: 8 }}><SText size={14}>The Heretic</SText></SBox>
+            <SBox style={{ padding: 8 }}><SText size={14}>The Stranger</SText></SBox>
+          </div>
+          <SBody size={11} color={inkStyles.inkFaint} style={{ marginTop: 4 }}>
+            ↳ archetype seeds your starting stats and the AI's voice.
+          </SBody>
+        </div>
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
+        <SBtn primary>begin →</SBtn>
+      </div>
+    </div>
+  </SBrowser>
+);
+
+const Onboard_PromptToScene = () => (
+  <SBrowser w={680} h={460} url="cyoa.game/weave">
+    <div style={{ padding: 22, height: '100%', background: inkStyles.paper, display: 'flex', flexDirection: 'column' }}>
+      <SText size={22} weight={700}>Weave a tale</SText>
+      <SDivider />
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        <div>
+          <SBody size={12}>setting</SBody>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+            {['Victorian London', 'haunted abbey', 'sunken city', 'ice steppe', '+ custom'].map((t) => (
+              <SBox key={t} filled={t === 'haunted abbey'} style={{ padding: '3px 8px' }}>
+                <SText size={14}>{t}</SText>
+              </SBox>
+            ))}
+          </div>
+          <SBody size={12} style={{ marginTop: 10 }}>tone</SBody>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+            {['gothic', 'whimsical', 'cosmic dread', 'noir'].map((t) => (
+              <SBox key={t} filled={t === 'gothic'} style={{ padding: '3px 8px' }}>
+                <SText size={14}>{t}</SText>
+              </SBox>
+            ))}
+          </div>
+          <SBody size={12} style={{ marginTop: 10 }}>length</SBody>
+          <div style={{ display: 'flex', gap: 4 }}>
+            {['short (15m)', 'medium (1h)', 'epic (open)'].map((t) => (
+              <SBox key={t} filled={t === 'medium (1h)'} style={{ padding: '3px 8px' }}>
+                <SText size={14}>{t}</SText>
+              </SBox>
+            ))}
+          </div>
+        </div>
+        <div>
+          <SBody size={12}>seed (optional)</SBody>
+          <SBox style={{ minHeight: 70, padding: 8 }}>
+            <SBody size={12} color={inkStyles.inkFaint} style={{ margin: 0 }}>
+              "I want a story about a librarian who finds a book that's writing itself, in real time, about her."
+            </SBody>
+          </SBox>
+          <SBody size={11} color={inkStyles.inkFaint} style={{ marginTop: 6 }}>
+            ↳ the AI uses this as the opening. you can leave it blank.
+          </SBody>
+        </div>
+      </div>
+      <div style={{ marginTop: 'auto', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <SBtn>🎲 surprise me</SBtn>
+        <SBtn primary>weave →</SBtn>
+      </div>
+    </div>
+  </SBrowser>
+);
+
+const Onboard_ModePick = () => (
+  <SBrowser w={680} h={460} url="cyoa.game/mode">
+    <div style={{ padding: 24, height: '100%', background: inkStyles.paper }}>
+      <SText size={22} weight={700}>How will you read?</SText>
+      <SBody size={12}>you can switch later (with caveats).</SBody>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginTop: 14 }}>
+        <SBox style={{ padding: 16, minHeight: 200 }}>
+          <SText size={20} weight={700}>📖 Story Mode</SText>
+          <SDivider />
+          <SBody size={12} style={{ margin: 0 }}>
+            ✓ rewind one step<br />
+            ✓ bookmark anywhere<br />
+            ✓ death = retry<br />
+            ✓ stats softened
+          </SBody>
+          <SBody size={11} color={inkStyles.inkFaint} style={{ marginTop: 8 }}>
+            for explorers who want the tale.
+          </SBody>
+        </SBox>
+        <SBox style={{ padding: 16, minHeight: 200, borderColor: inkStyles.accent }} accent>
+          <SText size={20} weight={700} color={inkStyles.accent}>🜏 Hardcore</SText>
+          <SDivider />
+          <SBody size={12} style={{ margin: 0 }}>
+            ✗ no rewind<br />
+            ✗ no save scumming<br />
+            ⚠ permadeath — file is purged<br />
+            ✓ unique endings unlocked here only
+          </SBody>
+          <SBody size={11} color={inkStyles.accent} style={{ marginTop: 8 }}>
+            for survivors. every choice is final.
+          </SBody>
+        </SBox>
+      </div>
+      <SNote style={{ marginTop: 12 }}>
+        downgrading mid-game is OK; upgrading to hardcore mid-game disables existing save's hardcore-only ending unlocks.
+      </SNote>
+    </div>
+  </SBrowser>
+);
+
+const Onboard_GuestToAccount = () => (
+  <SBrowser w={680} h={460} url="cyoa.game/scene-3">
+    <div style={{ padding: 22, height: '100%', background: inkStyles.paper, position: 'relative' }}>
+      <div style={{ opacity: 0.35 }}>
+        <SBody size={11} color={inkStyles.inkFaint}>chapter the first · turn 3</SBody>
+        <SText size={20} weight={700} italic>The Carved Door</SText>
+        <SDivider />
+        <SBody size={13}>The names on the door shift when you blink. One of them, you realize, is your own…</SBody>
+        <SChoice num="1">Press your palm to your name.</SChoice>
+        <SChoice num="2">Cover your name with your hand.</SChoice>
+      </div>
+      <div style={{ position: 'absolute', inset: 0, background: 'rgba(244,236,216,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <SBox filled style={{ padding: 22, width: 320, background: inkStyles.paper }}>
+          <SText size={22} weight={700} align="center">Save your tale?</SText>
+          <SBody size={12} style={{ textAlign: 'center' }}>
+            you've made 3 choices. sign up to keep them — and pick up where you left off, anywhere.
+          </SBody>
+          <SBox style={{ padding: 6, marginTop: 8 }}><SBody size={12} color={inkStyles.inkFaint} style={{ margin: 0 }}>email</SBody></SBox>
+          <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+            <SBtn primary style={{ flex: 1 }}>save & continue</SBtn>
+          </div>
+          <SBody size={11} color={inkStyles.inkFaint} style={{ textAlign: 'center', marginTop: 6 }}>
+            <u>continue as guest</u> · save expires in 7 days
+          </SBody>
+        </SBox>
+      </div>
+      <SNote style={{ position: 'absolute', bottom: 6, left: 18 }}>soft prompt — only after player is hooked.</SNote>
+    </div>
+  </SBrowser>
+);
+
+window.OnboardBoards = {
+  Onboard_TutorialFirst,
+  Onboard_CharacterCreation,
+  Onboard_PromptToScene,
+  Onboard_ModePick,
+  Onboard_GuestToAccount,
+};
+
+
+// ===== boards-2.jsx =====
+// Wireframe artboards — Part 2: Reading view variations + Stats HUD modes
+
+// ────────────────────────────────────────────────────────────────────────
+// READING VIEW — the core surface, 5 variations
+// ────────────────────────────────────────────────────────────────────────
+
+const SAMPLE_PROSE = `The cathedral has not been used as a cathedral in three hundred years, but the bones of saints still hum beneath the floor when you walk over them. You stop at the chancel. A single candle is lit, though no one tends it. The air smells of wax and old rain.
+
+A figure in grey watches from the choir stalls. They have not moved since you entered.`;
+
+const StatBar = ({ compact }) => (
+  <div style={{ display: 'flex', gap: compact ? 8 : 14, alignItems: 'center', fontFamily: '"Caveat", cursive', fontSize: compact ? 14 : 16 }}>
+    <span>♥ 18/20</span>
+    <span>◈ 47g</span>
+    <span style={{ color: inkStyles.accent }}>✦ 3 items</span>
+    <span style={{ color: inkStyles.inkFaint }}>turn 12</span>
+  </div>
+);
+
+// V1 — Like a book: centered column, generous margins, paged
+const Read_Book = () => (
+  <SBrowser w={760} h={540} url="cyoa.game/read">
+    <div style={{ height: '100%', background: inkStyles.paper, display: 'flex', flexDirection: 'column' }}>
+      {/* top chrome */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 18px', borderBottom: `1px solid ${inkStyles.inkFaint}` }}>
+        <SBody size={11} color={inkStyles.inkFaint} style={{ margin: 0 }}>Bone Cathedral · ch. 4</SBody>
+        <StatBar compact />
+        <div style={{ display: 'flex', gap: 4 }}>
+          <SBtn>⌫</SBtn>
+          <SBtn>≡</SBtn>
+        </div>
+      </div>
+      {/* page */}
+      <div style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '20px 0' }}>
+        <div style={{ width: 460 }}>
+          <SBody size={11} color={inkStyles.inkFaint} style={{ textAlign: 'center', margin: 0 }}>— XII —</SBody>
+          <SText size={22} weight={700} italic align="center">The Watcher in Grey</SText>
+          <SDivider />
+          <p style={{ fontFamily: '"Patrick Hand", cursive', fontSize: 15, lineHeight: 1.6, color: inkStyles.ink, textAlign: 'justify' }}>
+            {SAMPLE_PROSE}
+          </p>
+          <SDivider />
+          <SChoice num="1">Approach the figure.</SChoice>
+          <SChoice num="2">Genuflect at the chancel.</SChoice>
+          <SChoice num="3" locked hint="needs the Cathedral Key">Try the door behind the altar.</SChoice>
+        </div>
+      </div>
+      <SNote style={{ padding: '4px 18px' }}>generous margins, no scroll within a page. ⌫ = rewind one step (story mode only).</SNote>
+    </div>
+  </SBrowser>
+);
+
+// V2 — Modern app: sticky stat bar, scroll, choice cards float at bottom
+const Read_ModernApp = () => (
+  <SBrowser w={760} h={540} url="cyoa.game/read">
+    <div style={{ height: '100%', background: inkStyles.paper, display: 'flex', flexDirection: 'column' }}>
+      {/* sticky stat hud */}
+      <div style={{ background: inkStyles.paperDark, padding: '10px 16px', borderBottom: `1.5px solid ${inkStyles.ink}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <SText size={16} weight={700}>Wren of Ashbourne</SText>
+          <SBody size={10} color={inkStyles.inkFaint} style={{ margin: 0 }}>Bone Cathedral · turn 12</SBody>
+        </div>
+        <div style={{ display: 'flex', gap: 14 }}>
+          <div><SBody size={10} style={{ margin: 0 }}>♥ vitality</SBody><SText size={18} weight={700}>18/20</SText></div>
+          <div><SBody size={10} style={{ margin: 0 }}>◈ gold</SBody><SText size={18} weight={700}>47</SText></div>
+          <div><SBody size={10} style={{ margin: 0 }}>✦ items</SBody><SText size={18} weight={700}>3</SText></div>
+        </div>
+      </div>
+      {/* prose scroll area */}
+      <div style={{ flex: 1, padding: '18px 22px', overflow: 'hidden' }}>
+        <SText size={20} weight={700} italic>The Watcher in Grey</SText>
+        <p style={{ fontFamily: '"Patrick Hand", cursive', fontSize: 14, lineHeight: 1.55, color: inkStyles.ink }}>{SAMPLE_PROSE}</p>
+      </div>
+      {/* choice tray */}
+      <div style={{ borderTop: `1.5px solid ${inkStyles.ink}`, padding: 12, background: inkStyles.paperDark }}>
+        <SBody size={10} color={inkStyles.inkFaint} style={{ margin: '0 0 4px' }}>what do you do?</SBody>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+          <SChoice num="1">Approach the figure.</SChoice>
+          <SChoice num="2">Genuflect at the chancel.</SChoice>
+          <SChoice num="3" locked hint="needs Cathedral Key">Try the door behind altar.</SChoice>
+          <SChoice num="4" hint="risky">Speak to the candle.</SChoice>
+        </div>
+      </div>
+      <SNote style={{ padding: '4px 16px', background: inkStyles.paperDark }}>app feel — closest to Expo/native port. choices always in thumb reach.</SNote>
+    </div>
+  </SBrowser>
+);
+
+// V3 — Graphic novel: text panel over background image
+const Read_GraphicNovel = () => (
+  <SBrowser w={760} h={540} url="cyoa.game/read">
+    <div style={{ height: '100%', position: 'relative', background: inkStyles.paperDark }}>
+      <SImg w="100%" h="100%" label="full-bleed scene illustration (Pro tier)" style={{ position: 'absolute', inset: 0, border: 'none' }} />
+      <div style={{ position: 'absolute', top: 12, left: 16, right: 16, display: 'flex', justifyContent: 'space-between' }}>
+        <SBox filled style={{ padding: '4px 8px', background: 'rgba(244,236,216,0.85)' }}>
+          <StatBar compact />
+        </SBox>
+        <SBtn>≡</SBtn>
+      </div>
+      {/* prose card overlay */}
+      <div style={{ position: 'absolute', bottom: 100, left: '12%', right: '12%' }}>
+        <SBox filled style={{ padding: 16, background: 'rgba(244,236,216,0.95)' }}>
+          <SText size={18} weight={700} italic>The Watcher in Grey</SText>
+          <p style={{ fontFamily: '"Patrick Hand", cursive', fontSize: 13, lineHeight: 1.5, color: inkStyles.ink, margin: 0 }}>
+            {SAMPLE_PROSE.split('\n\n')[0]}
+          </p>
+        </SBox>
+      </div>
+      {/* choice strip */}
+      <div style={{ position: 'absolute', bottom: 12, left: 16, right: 16, display: 'flex', gap: 6 }}>
+        {['Approach', 'Genuflect', '🔒 try door', 'Speak to candle'].map((t, i) => (
+          <SBox key={i} filled style={{ flex: 1, padding: '8px 6px', textAlign: 'center', background: 'rgba(244,236,216,0.92)' }}>
+            <SText size={14} weight={700}>{i + 1}. {t}</SText>
+          </SBox>
+        ))}
+      </div>
+      <SNote style={{ position: 'absolute', bottom: -22, left: 16, color: inkStyles.accent }}>Pro-tier: every scene illustrated. text overlay can be hidden for cinematic.</SNote>
+    </div>
+  </SBrowser>
+);
+
+// V4 — Terminal/journal: typewriter prose, monospace feel inside diary
+const Read_Journal = () => (
+  <SBrowser w={760} h={540} url="cyoa.game/read">
+    <div style={{ height: '100%', background: inkStyles.paper, padding: 18, display: 'flex', flexDirection: 'column' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+        <SBody size={11} color={inkStyles.inkFaint} style={{ margin: 0 }}>~/journal/wren · entry 12</SBody>
+        <StatBar compact />
+      </div>
+      <SDivider />
+      <div style={{ flex: 1, fontFamily: '"Patrick Hand", cursive', fontSize: 14, color: inkStyles.ink, lineHeight: 1.6 }}>
+        <span style={{ color: inkStyles.inkFaint }}>$</span> entered: <em>Bone Cathedral, chancel</em><br />
+        <span style={{ color: inkStyles.inkFaint }}>·</span> {SAMPLE_PROSE.split('\n\n')[0]}<br />
+        <span style={{ color: inkStyles.inkFaint }}>·</span> {SAMPLE_PROSE.split('\n\n')[1]}<span style={{ borderLeft: `2px solid ${inkStyles.ink}`, marginLeft: 2 }}>&nbsp;</span>
+      </div>
+      <SDivider />
+      <SBody size={11} color={inkStyles.inkFaint} style={{ margin: '0 0 4px' }}>&gt; choose:</SBody>
+      <SChoice num="1">approach the figure</SChoice>
+      <SChoice num="2">genuflect</SChoice>
+      <SChoice num="3" locked hint="needs key">try door behind altar</SChoice>
+      <SNote>typewriter typing on each scene reveal. great for keyboard players & cosmic-horror tones.</SNote>
+    </div>
+  </SBrowser>
+);
+
+// V5 — Mobile reading view (the Expo target)
+const Read_Mobile = () => (
+  <SPhone>
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+      {/* top stat strip */}
+      <div style={{ padding: '6px 8px', borderBottom: `1px solid ${inkStyles.ink}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <SBody size={10} style={{ margin: 0 }}>♥18 · ◈47 · ✦3</SBody>
+        <SBtn style={{ padding: '2px 6px', fontSize: 12 }}>≡</SBtn>
+      </div>
+      <div style={{ flex: 1, padding: 12, overflow: 'hidden' }}>
+        <SText size={16} weight={700} italic>Watcher in Grey</SText>
+        <p style={{ fontFamily: '"Patrick Hand", cursive', fontSize: 12, lineHeight: 1.5, color: inkStyles.ink, margin: '4px 0' }}>
+          {SAMPLE_PROSE}
+        </p>
+      </div>
+      <div style={{ padding: 8, borderTop: `1px solid ${inkStyles.ink}`, display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <SChoice num="1">Approach the figure.</SChoice>
+        <SChoice num="2">Genuflect.</SChoice>
+        <SChoice num="3" locked>Door behind altar.</SChoice>
+      </div>
+    </div>
+  </SPhone>
+);
+
+window.ReadBoards = { Read_Book, Read_ModernApp, Read_GraphicNovel, Read_Journal, Read_Mobile };
+
+// ────────────────────────────────────────────────────────────────────────
+// STATS HUD MODES — how prominent the stats are
+// ────────────────────────────────────────────────────────────────────────
+
+const Stats_Persistent = () => (
+  <SBox style={{ width: 380, padding: 14, background: inkStyles.paperDark }}>
+    <SText size={16} weight={700}>1 · Always-visible HUD</SText>
+    <SBody size={11} color={inkStyles.inkFaint}>top strip, never hides. game-iest.</SBody>
+    <SBox style={{ marginTop: 8, padding: 8, background: inkStyles.paper }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <SText size={14} weight={700}>Wren</SText>
+        <div style={{ display: 'flex', gap: 10, fontFamily: '"Caveat", cursive', fontSize: 15 }}>
+          <span>♥ 18/20</span><span>◈ 47</span><span>✦ 3</span>
+        </div>
+      </div>
+      <SDivider style={{ margin: '6px 0' }} />
+      <SBody size={11} color={inkStyles.inkFaint} style={{ margin: 0 }}>… story below …</SBody>
+    </SBox>
+    <SNote style={{ marginTop: 6 }}>best for survival/hardcore. breaks the "book" feel slightly.</SNote>
+  </SBox>
+);
+
+const Stats_PeekDrawer = () => (
+  <SBox style={{ width: 380, padding: 14, background: inkStyles.paperDark }}>
+    <SText size={16} weight={700}>2 · Peek drawer</SText>
+    <SBody size={11} color={inkStyles.inkFaint}>tap a corner sigil; drawer slides in.</SBody>
+    <SBox style={{ marginTop: 8, padding: 8, background: inkStyles.paper, position: 'relative', minHeight: 90 }}>
+      <SBody size={11} color={inkStyles.inkFaint} style={{ margin: 0 }}>… story flows uninterrupted …</SBody>
+      <div style={{ position: 'absolute', top: 4, right: 4, display: 'flex', gap: 4, alignItems: 'center' }}>
+        <SBox style={{ padding: 2, background: inkStyles.paperDark }}><SText size={12}>♥18 ◈47</SText></SBox>
+      </div>
+      <div style={{ position: 'absolute', right: 0, top: 28, bottom: 0, width: 110, background: inkStyles.paperDark, borderLeft: `1.5px solid ${inkStyles.ink}`, padding: 6 }}>
+        <SBody size={10} style={{ margin: 0 }}>♥ 18/20</SBody>
+        <SBody size={10} style={{ margin: 0 }}>◈ 47 gold</SBody>
+        <SBody size={10} style={{ margin: 0 }}>✦ rusty key</SBody>
+        <SBody size={10} style={{ margin: 0 }}>✦ candle stub</SBody>
+        <SBody size={10} style={{ margin: 0 }}>✦ vellum scrap</SBody>
+      </div>
+    </SBox>
+    <SNote style={{ marginTop: 6 }}>best balance — preserves "book" feel, full info on demand.</SNote>
+  </SBox>
+);
+
+const Stats_Contextual = () => (
+  <SBox style={{ width: 380, padding: 14, background: inkStyles.paperDark }}>
+    <SText size={16} weight={700}>3 · Contextual surfacing</SText>
+    <SBody size={11} color={inkStyles.inkFaint}>only appears when something changes.</SBody>
+    <SBox style={{ marginTop: 8, padding: 8, background: inkStyles.paper, position: 'relative' }}>
+      <SBody size={11} style={{ margin: 0 }}>The poison takes hold…</SBody>
+      <div style={{ marginTop: 6, padding: 6, border: `1.5px solid ${inkStyles.accent}`, display: 'inline-block', filter: 'url(#wobble)' }}>
+        <SText size={14} weight={700} color={inkStyles.accent}>♥ −5 vitality (now 13/20)</SText>
+      </div>
+      <SBody size={10} color={inkStyles.inkFaint} style={{ margin: '6px 0 0' }}>↳ pip fades after 3s. tap ≡ to see all.</SBody>
+    </SBox>
+    <SNote style={{ marginTop: 6 }}>most book-like. risk: hardcore players miss critical state.</SNote>
+  </SBox>
+);
+
+const Stats_FullSheet = () => (
+  <SBox style={{ width: 380, padding: 14, background: inkStyles.paperDark }}>
+    <SText size={16} weight={700}>4 · The Character Sheet</SText>
+    <SBody size={11} color={inkStyles.inkFaint}>full pause overlay — RPG menu.</SBody>
+    <SBox style={{ marginTop: 8, padding: 10, background: inkStyles.paper }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+        <div>
+          <SText size={14} weight={700}>Wren of Ashbourne</SText>
+          <SBody size={10} style={{ margin: 0 }}>The Scholar · turn 12</SBody>
+          <SDivider style={{ margin: '4px 0' }} />
+          <SBody size={11} style={{ margin: 0 }}>♥ vitality 18/20</SBody>
+          <SBody size={11} style={{ margin: 0 }}>◈ gold 47</SBody>
+          <SBody size={11} style={{ margin: 0 }}>⚜ wisdom 6 (hidden)</SBody>
+        </div>
+        <div>
+          <SBody size={11} style={{ margin: 0, fontWeight: 700 }}>inventory</SBody>
+          <SBody size={10} style={{ margin: 0 }}>· rusty key</SBody>
+          <SBody size={10} style={{ margin: 0 }}>· candle stub</SBody>
+          <SBody size={10} style={{ margin: 0 }}>· vellum scrap</SBody>
+          <SBody size={11} style={{ margin: '6px 0 0', fontWeight: 700 }}>tags</SBody>
+          <SBody size={10} style={{ margin: 0 }}>met_queen · betrayed_thieves</SBody>
+        </div>
+      </div>
+    </SBox>
+    <SNote style={{ marginTop: 6 }}>opens on demand from any reading view. lives behind ≡.</SNote>
+  </SBox>
+);
+
+window.StatsBoards = { Stats_Persistent, Stats_PeekDrawer, Stats_Contextual, Stats_FullSheet };
+
+
+// ===== boards-3.jsx =====
+// Wireframe artboards — Part 3: Death, Endings map, Co-op, Paywall, Settings
+
+// ────────────────────────────────────────────────────────────────────────
+// DEATH SCREEN — brutal, dramatic, final
+// ────────────────────────────────────────────────────────────────────────
+
+const Death_Brutal = () => (
+  <SBrowser w={680} h={460} url="cyoa.game/end">
+    <div style={{ height: '100%', background: '#0a0805', color: inkStyles.paper, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 30, position: 'relative' }}>
+      <SText size={72} weight={700} color={inkStyles.accent} italic>You died.</SText>
+      <SDivider style={{ borderColor: inkStyles.paper, width: 200 }} />
+      <SBody size={14} color={inkStyles.paper} style={{ textAlign: 'center', maxWidth: 380 }}>
+        The watcher in grey was, of course, not a watcher at all.<br />
+        Your tale ends in the chancel of the Bone Cathedral, on turn 12.
+      </SBody>
+      <SBody size={11} color={inkStyles.inkFaint} style={{ marginTop: 14 }}>
+        ENDING #7 unlocked: <em>"The Communicant"</em>
+      </SBody>
+      <div style={{ marginTop: 18, display: 'flex', gap: 10 }}>
+        <SBtn primary style={{ background: inkStyles.accent, borderColor: inkStyles.accent }}>begin again</SBtn>
+        <SBtn style={{ borderColor: inkStyles.paper, color: inkStyles.paper }}>see the map</SBtn>
+      </div>
+      <SBody size={11} color={inkStyles.inkFaint} style={{ position: 'absolute', bottom: 14 }}>
+        hardcore mode · save purged
+      </SBody>
+    </div>
+  </SBrowser>
+);
+
+const Death_Bookish = () => (
+  <SBrowser w={680} h={460} url="cyoa.game/end">
+    <div style={{ height: '100%', background: inkStyles.paper, padding: 30, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+      <SBody size={11} color={inkStyles.inkFaint} style={{ margin: 0 }}>— FINIS —</SBody>
+      <SText size={48} weight={700} italic>And so the tale ended.</SText>
+      <SDivider style={{ width: 240 }} />
+      <p style={{ fontFamily: '"Patrick Hand", cursive', fontSize: 14, lineHeight: 1.6, color: inkStyles.ink, textAlign: 'center', maxWidth: 420 }}>
+        Wren of Ashbourne was buried beneath the chancel, where the bones of saints
+        still hum. Some say her name appears now on the carved door. Some say it has
+        always been there.
+      </p>
+      <SDivider style={{ width: 240 }} />
+      <SBody size={11} color={inkStyles.inkFaint}>turn 12 · 4 choices made · 1 of 23 endings</SBody>
+      <div style={{ marginTop: 14, display: 'flex', gap: 8 }}>
+        <SBtn primary>start anew</SBtn>
+        <SBtn>share this ending</SBtn>
+        <SBtn>endings map</SBtn>
+      </div>
+    </div>
+  </SBrowser>
+);
+
+const Death_Cinematic = () => (
+  <SBrowser w={680} h={460} url="cyoa.game/end">
+    <div style={{ height: '100%', position: 'relative', background: '#0a0805' }}>
+      <SImg w="100%" h="100%" label="final scene illustration — pro tier" style={{ position: 'absolute', inset: 0, border: 'none', opacity: 0.5 }} />
+      <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(0deg, #0a0805 30%, transparent)' }} />
+      <div style={{ position: 'absolute', bottom: 30, left: 30, right: 30 }}>
+        <SBody size={11} color={inkStyles.accent}>YOU DIED · turn 12</SBody>
+        <SText size={36} weight={700} color={inkStyles.paper} italic>The Communicant</SText>
+        <SBody size={13} color={inkStyles.paper}>
+          a previously-undiscovered ending. share it before someone else does.
+        </SBody>
+        <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
+          <SBtn primary style={{ background: inkStyles.accent, borderColor: inkStyles.accent }}>share</SBtn>
+          <SBtn style={{ borderColor: inkStyles.paper, color: inkStyles.paper }}>begin again</SBtn>
+        </div>
+      </div>
+      <SNote style={{ position: 'absolute', top: 12, left: 12, color: inkStyles.highlight }}>"first to find" — viral hook</SNote>
+    </div>
+  </SBrowser>
+);
+
+window.DeathBoards = { Death_Brutal, Death_Bookish, Death_Cinematic };
+
+// ────────────────────────────────────────────────────────────────────────
+// ENDINGS MAP — branching web of paths taken
+// ────────────────────────────────────────────────────────────────────────
+
+const Node = ({ x, y, label, found, current, locked, ending }) => (
+  <g>
+    <circle cx={x} cy={y} r={ending ? 14 : 9}
+      fill={current ? inkStyles.accent : found ? inkStyles.ink : 'transparent'}
+      stroke={locked ? inkStyles.inkFaint : inkStyles.ink} strokeWidth="1.5"
+      strokeDasharray={locked ? '3 2' : 'none'} />
+    {ending && <circle cx={x} cy={y} r={18} fill="none" stroke={inkStyles.ink} strokeWidth="1" />}
+    <text x={x + 18} y={y + 4} fontFamily="Caveat, cursive" fontSize="12" fill={locked ? inkStyles.inkFaint : inkStyles.ink}>
+      {label}
+    </text>
+  </g>
+);
+
+const Endings_Web = () => (
+  <SBrowser w={760} h={520} url="cyoa.game/map">
+    <div style={{ height: '100%', background: inkStyles.paper, padding: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+        <SText size={20} weight={700}>The Map of What-Might-Have-Been</SText>
+        <SBody size={11} color={inkStyles.inkFaint}>7 of 23 endings · 41% explored</SBody>
+      </div>
+      <SBox style={{ marginTop: 8, padding: 0, height: 380, position: 'relative', background: inkStyles.paperDark }}>
+        <svg viewBox="0 0 720 380" style={{ width: '100%', height: '100%' }}>
+          <g stroke={inkStyles.ink} strokeWidth="1.5" fill="none" filter="url(#wobble)">
+            <path d="M 60 190 Q 130 140 200 140" />
+            <path d="M 60 190 Q 130 240 200 240" />
+            <path d="M 200 140 Q 280 100 360 90" />
+            <path d="M 200 140 Q 280 170 360 170" />
+            <path d="M 200 240 Q 280 240 360 240" />
+            <path d="M 200 240 Q 280 290 360 310" strokeDasharray="3 3" stroke={inkStyles.inkFaint} />
+            <path d="M 360 90 Q 460 70 560 70" />
+            <path d="M 360 170 Q 460 170 560 170" strokeDasharray="3 3" stroke={inkStyles.inkFaint} />
+            <path d="M 360 240 Q 460 240 560 240" />
+            <path d="M 360 310 Q 460 320 560 320" strokeDasharray="3 3" stroke={inkStyles.inkFaint} />
+          </g>
+          <Node x={60} y={190} label="begin" found />
+          <Node x={200} y={140} label="iron door" found />
+          <Node x={200} y={240} label="carved door" found current />
+          <Node x={360} y={90} label="the queen" found />
+          <Node x={360} y={170} label="?" locked />
+          <Node x={360} y={240} label="watcher" found current />
+          <Node x={360} y={310} label="?" locked />
+          <Node x={560} y={70} label="The Crowned" found ending />
+          <Node x={560} y={170} label="???" locked ending />
+          <Node x={560} y={240} label="The Communicant" found ending />
+          <Node x={560} y={320} label="???" locked ending />
+        </svg>
+      </SBox>
+      <div style={{ marginTop: 6, display: 'flex', gap: 14, fontFamily: '"Patrick Hand", cursive', fontSize: 11, color: inkStyles.inkSoft }}>
+        <span>● path taken</span>
+        <span style={{ color: inkStyles.accent }}>● this run</span>
+        <span>○ ending</span>
+        <span style={{ color: inkStyles.inkFaint }}>⋯ unexplored</span>
+      </div>
+      <SNote>tap any node to read what you wrote there. tap ??? = seed a new run from that branch.</SNote>
+    </div>
+  </SBrowser>
+);
+
+const Endings_TrophyRoom = () => (
+  <SBrowser w={760} h={520} url="cyoa.game/endings">
+    <div style={{ height: '100%', background: inkStyles.paper, padding: 18 }}>
+      <SText size={20} weight={700}>The Crypt of Endings</SText>
+      <SBody size={11} color={inkStyles.inkFaint}>7 of 23 found across all your tales</SBody>
+      <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+        {[
+          { t: 'The Crowned', s: 'iron door · turn 18' },
+          { t: 'The Communicant', s: 'chancel · turn 12', new: true },
+          { t: 'The Forsworn', s: 'thieves\' den · turn 9' },
+          { t: 'The Stranger', s: 'painted door · turn 3' },
+          { t: '???', s: 'something with the queen', locked: true },
+          { t: '???', s: 'a tale of fire', locked: true },
+          { t: '???', s: 'requires hardcore', locked: true },
+          { t: '+ 16 more', s: '', locked: true },
+        ].map((e, i) => (
+          <SBox key={i} style={{ padding: 10, opacity: e.locked ? 0.55 : 1 }} accent={e.new}>
+            <SImg h={70} label={e.locked ? '?' : ''} />
+            <SText size={14} weight={700} style={{ display: 'block', marginTop: 4 }}>{e.t}</SText>
+            <SBody size={10} style={{ margin: 0 }}>{e.s}</SBody>
+            {e.new && <SBody size={10} color={inkStyles.accent} style={{ margin: 0 }}>★ NEW</SBody>}
+          </SBox>
+        ))}
+      </div>
+      <SNote>cards become illustrated when unlocked (Pro tier). great for sharing/screenshots.</SNote>
+    </div>
+  </SBrowser>
+);
+
+window.EndingBoards = { Endings_Web, Endings_TrophyRoom };
+
+// ────────────────────────────────────────────────────────────────────────
+// CO-OP / PASS-THE-CONTROLLER
+// ────────────────────────────────────────────────────────────────────────
+
+const Coop_PassDevice = () => (
+  <SBrowser w={680} h={460} url="cyoa.game/together">
+    <div style={{ height: '100%', background: inkStyles.paper, padding: 22 }}>
+      <SText size={20} weight={700}>Around the Fire</SText>
+      <SBody size={12}>two or more readers, one device. take turns choosing.</SBody>
+      <SBox style={{ marginTop: 10, padding: 12 }}>
+        <SBody size={12} style={{ margin: 0 }}>readers</SBody>
+        <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
+          {['Wren', 'Marcus', 'Ada', '+ add'].map((n, i) => (
+            <SBox key={i} filled={i < 3} style={{ padding: '4px 10px' }}>
+              <SText size={14}>{i < 3 ? `● ${n}` : n}</SText>
+            </SBox>
+          ))}
+        </div>
+        <SBody size={11} color={inkStyles.inkFaint} style={{ marginTop: 8 }}>turn order: rotating · Wren chooses first</SBody>
+      </SBox>
+      <SBox style={{ marginTop: 10, padding: 12 }}>
+        <SBody size={12} style={{ margin: 0, fontWeight: 700 }}>turn rules</SBody>
+        <SBody size={11} style={{ margin: '4px 0' }}>○ rotate every choice · ● rotate every scene · ○ majority vote on each choice</SBody>
+        <SBody size={11} color={inkStyles.inkFaint}>vote mode shows all readers' picks before resolving.</SBody>
+      </SBox>
+      <SBtn primary style={{ marginTop: 12 }}>begin together</SBtn>
+      <SNote>solo-mode UI, lightly enriched. no accounts needed for the others.</SNote>
+    </div>
+  </SBrowser>
+);
+
+const Coop_TurnIndicator = () => (
+  <SBrowser w={680} h={460} url="cyoa.game/read">
+    <div style={{ height: '100%', background: inkStyles.paper, padding: 18, position: 'relative' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <SBox filled style={{ padding: '4px 12px', background: inkStyles.ink }}>
+          <SText size={16} weight={700} color={inkStyles.paper}>↳ Marcus's turn</SText>
+        </SBox>
+        <SBody size={11} color={inkStyles.inkFaint}>turn 12 · pass when done</SBody>
+      </div>
+      <SDivider />
+      <SText size={18} weight={700} italic>The Watcher in Grey</SText>
+      <p style={{ fontFamily: '"Patrick Hand", cursive', fontSize: 13, lineHeight: 1.55 }}>
+        {SAMPLE_PROSE.split('\n\n')[0]}
+      </p>
+      <SDivider />
+      <SChoice num="1">Approach the figure.</SChoice>
+      <SChoice num="2">Genuflect at the chancel.</SChoice>
+      <SChoice num="3" locked hint="Marcus doesn't have the key">Try the door behind altar.</SChoice>
+      <div style={{ position: 'absolute', bottom: 14, right: 14 }}>
+        <SBtn primary>↳ pass to Ada</SBtn>
+      </div>
+    </div>
+  </SBrowser>
+);
+
+const Coop_VoteMode = () => (
+  <SBrowser w={680} h={460} url="cyoa.game/read">
+    <div style={{ height: '100%', background: inkStyles.paper, padding: 18 }}>
+      <SBody size={11} color={inkStyles.inkFaint}>vote mode · 3 readers</SBody>
+      <SText size={18} weight={700} italic>The Watcher in Grey</SText>
+      <p style={{ fontFamily: '"Patrick Hand", cursive', fontSize: 13, lineHeight: 1.5 }}>{SAMPLE_PROSE.split('\n\n')[0]}</p>
+      <SDivider />
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <SBox style={{ padding: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <SText size={14}>1. Approach the figure.</SText>
+          <SBody size={11} style={{ margin: 0 }}>Wren · Ada · ●●</SBody>
+        </SBox>
+        <SBox accent filled style={{ padding: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <SText size={14} weight={700}>2. Genuflect at the chancel.</SText>
+          <SBody size={11} style={{ margin: 0, color: inkStyles.accent }}>Marcus · ●</SBody>
+        </SBox>
+        <SBox style={{ padding: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <SText size={14}>3. Speak to the candle.</SText>
+          <SBody size={11} style={{ margin: 0 }}>—</SBody>
+        </SBox>
+      </div>
+      <div style={{ marginTop: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <SBody size={11} color={inkStyles.inkFaint}>2 of 3 voted · waiting on Ada</SBody>
+        <SBtn primary>resolve now</SBtn>
+      </div>
+      <SNote>future: same UI works for remote co-op via shareable room link.</SNote>
+    </div>
+  </SBrowser>
+);
+
+window.CoopBoards = { Coop_PassDevice, Coop_TurnIndicator, Coop_VoteMode };
+
+// ────────────────────────────────────────────────────────────────────────
+// PAYWALL / TURN LIMIT
+// ────────────────────────────────────────────────────────────────────────
+
+const Paywall_TurnLimit = () => (
+  <SBrowser w={680} h={460} url="cyoa.game/read">
+    <div style={{ height: '100%', background: inkStyles.paper, padding: 22, position: 'relative' }}>
+      <div style={{ opacity: 0.3 }}>
+        <SText size={18} weight={700} italic>The Watcher in Grey</SText>
+        <p style={{ fontFamily: '"Patrick Hand", cursive', fontSize: 13 }}>{SAMPLE_PROSE.split('\n\n')[0]}</p>
+        <SChoice num="1">Approach the figure.</SChoice>
+        <SChoice num="2">Genuflect.</SChoice>
+      </div>
+      <div style={{ position: 'absolute', inset: 0, background: 'rgba(244,236,216,0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 30 }}>
+        <SBox style={{ padding: 22, background: inkStyles.paper, width: 400 }}>
+          <SBody size={11} color={inkStyles.inkFaint} style={{ margin: 0 }}>the candle gutters…</SBody>
+          <SText size={26} weight={700}>You've reached today's turn.</SText>
+          <SBody size={12}>5 of 5 turns used. the book closes itself until tomorrow — or:</SBody>
+          <div style={{ marginTop: 10 }}>
+            <SBox accent style={{ padding: 10 }}>
+              <SText size={16} weight={700} color={inkStyles.accent}>★ Unlimited — $5/mo</SText>
+              <SBody size={11} style={{ margin: 0 }}>read as long as you like. cancel anytime.</SBody>
+            </SBox>
+            <SBox style={{ padding: 10, marginTop: 6 }}>
+              <SText size={16} weight={700}>✦ Pro — $9/mo</SText>
+              <SBody size={11} style={{ margin: 0 }}>+ illustrations · ambient sound · early endings</SBody>
+            </SBox>
+          </div>
+          <div style={{ marginTop: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <SBody size={11} color={inkStyles.inkFaint} style={{ margin: 0 }}>resets in 7h 22m</SBody>
+            <SBtn primary>subscribe</SBtn>
+          </div>
+        </SBox>
+      </div>
+    </div>
+  </SBrowser>
+);
+
+const Paywall_PreRead = () => (
+  <SBox style={{ width: 380, padding: 16 }}>
+    <SText size={16} weight={700}>2 · ambient (turn counter visible always)</SText>
+    <SBody size={11} color={inkStyles.inkFaint}>show usage in the HUD; never blocks mid-scene without warning.</SBody>
+    <SBox style={{ marginTop: 8, padding: 8 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+        <SText size={14} weight={700}>Wren</SText>
+        <SBox style={{ padding: '2px 8px' }}>
+          <SText size={12}>turns 3/5 today · <span style={{ color: inkStyles.accent }}>upgrade</span></SText>
+        </SBox>
+      </div>
+      <SBody size={11} color={inkStyles.inkFaint} style={{ margin: '6px 0 0' }}>at turn 4: gentle inline nudge. at turn 5: blocking modal.</SBody>
+    </SBox>
+    <SNote>respects flow. no surprise paywall.</SNote>
+  </SBox>
+);
+
+const Paywall_ProUpsell = () => (
+  <SBox style={{ width: 380, padding: 16 }}>
+    <SText size={16} weight={700}>3 · pro upsell at scene reveal</SText>
+    <SBody size={11} color={inkStyles.inkFaint}>"see this scene illustrated?" → contextual.</SBody>
+    <SBox style={{ marginTop: 8, padding: 8, position: 'relative' }}>
+      <SImg h={90} label="blurred preview illustration" />
+      <SBox accent filled style={{ position: 'absolute', bottom: 14, left: 14, padding: '4px 8px' }}>
+        <SText size={13} weight={700} color={inkStyles.accent}>✦ illustrate this scene → Pro</SText>
+      </SBox>
+    </SBox>
+    <SNote>shown ~ once per chapter. dismissible.</SNote>
+  </SBox>
+);
+
+window.PaywallBoards = { Paywall_TurnLimit, Paywall_PreRead, Paywall_ProUpsell };
+
+// ────────────────────────────────────────────────────────────────────────
+// SETTINGS
+// ────────────────────────────────────────────────────────────────────────
+
+const SettingsPanel = () => (
+  <SBrowser w={680} h={460} url="cyoa.game/settings">
+    <div style={{ height: '100%', background: inkStyles.paper, padding: 22 }}>
+      <SText size={20} weight={700}>Reader's Preferences</SText>
+      <SDivider />
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        <div>
+          <SBody size={12} style={{ fontWeight: 700, margin: 0 }}>theme</SBody>
+          <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+            {['Day', 'Night', 'Sepia'].map((t) => (
+              <SBox key={t} filled={t === 'Sepia'} style={{ padding: '4px 10px' }}>
+                <SText size={14}>{t}</SText>
+              </SBox>
+            ))}
+          </div>
+          <SBody size={12} style={{ fontWeight: 700, marginTop: 12 }}>typeface</SBody>
+          <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+            <SBox style={{ padding: '4px 10px' }}><span style={{ fontFamily: 'serif', fontSize: 14 }}>Serif</span></SBox>
+            <SBox filled style={{ padding: '4px 10px' }}><span style={{ fontFamily: 'sans-serif', fontSize: 14 }}>Sans</span></SBox>
+            <SBox style={{ padding: '4px 10px' }}><span style={{ fontFamily: 'monospace', fontSize: 14 }}>Mono</span></SBox>
+          </div>
+          <SBody size={12} style={{ fontWeight: 700, marginTop: 12 }}>text size</SBody>
+          <SBox style={{ padding: 6, marginTop: 4 }}><SText size={14}>A — — ● — — A+</SText></SBox>
+          <SBody size={12} style={{ fontWeight: 700, marginTop: 12 }}>reading layout</SBody>
+          <div style={{ display: 'flex', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
+            {['book', 'app', 'graphic novel', 'journal'].map((t) => (
+              <SBox key={t} filled={t === 'book'} style={{ padding: '4px 8px' }}>
+                <SText size={13}>{t}</SText>
+              </SBox>
+            ))}
+          </div>
+        </div>
+        <div>
+          <SBody size={12} style={{ fontWeight: 700, margin: 0 }}>stats visibility</SBody>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }}>
+            {['always visible', 'peek drawer (default)', 'contextual only', 'sheet on demand'].map((t, i) => (
+              <SBox key={t} filled={i === 1} style={{ padding: 6 }}><SText size={13}>{t}</SText></SBox>
+            ))}
+          </div>
+          <SBody size={12} style={{ fontWeight: 700, marginTop: 12 }}>ambient sound</SBody>
+          <SBox style={{ padding: 6 }}><SText size={13}>● on (Pro) — candle hum, distant rain</SText></SBox>
+          <SBody size={12} style={{ fontWeight: 700, marginTop: 12 }}>game mode</SBody>
+          <SBox style={{ padding: 6 }}><SText size={13}>📖 story · ⚠ switch to hardcore?</SText></SBox>
+          <SBody size={12} style={{ fontWeight: 700, marginTop: 12 }}>account</SBody>
+          <SBody size={11} style={{ margin: 0 }}>wren@example · subscribed (Pro)</SBody>
+          <SBody size={11} color={inkStyles.inkFaint}>· export saves · · sign out · ✕ delete account</SBody>
+        </div>
+      </div>
+    </div>
+  </SBrowser>
+);
+
+window.SettingsBoards = { SettingsPanel };
+
+
+</script>
+
+<script type="text/babel" data-presets="react">
+
+    const App = () => {
+      const L = window.LandingBoards;
+      const O = window.OnboardBoards;
+      const R = window.ReadBoards;
+      const S = window.StatsBoards;
+      const D = window.DeathBoards;
+      const E = window.EndingBoards;
+      const C = window.CoopBoards;
+      const P = window.PaywallBoards;
+      const T = window.SettingsBoards;
+
+      return (
+        <>
+          <WobbleFilter />
+          <DesignCanvas>
+            <DCSection id="intro" title="CYOA · Wireframes" subtitle="Low-fi explorations · gothic / candlelit AI-CYOA · Apr 2026">
+              <DCArtboard id="intro-board" label="Read me first" width={1100} height={460}>
+                <IntroBoard />
+              </DCArtboard>
+            </DCSection>
+
+            <DCSection id="landing" title="01 · Landing / Cover" subtitle="What hits first when someone opens the URL">
+              <DCArtboard id="land-tome" label="A · Tome cover" width={680} height={480}><L.Landing_TomeCover /></DCArtboard>
+              <DCArtboard id="land-lib" label="B · Library + weave" width={680} height={480}><L.Landing_Library /></DCArtboard>
+              <DCArtboard id="land-scene" label="C · Straight to scene" width={680} height={480}><L.Landing_StraightToScene /></DCArtboard>
+              <DCArtboard id="land-prompt" label="D · Prompt-first (AI-forward)" width={680} height={480}><L.Landing_PromptFirst /></DCArtboard>
+              <DCArtboard id="land-mob" label="E · Mobile" width={260} height={500}><L.Landing_Mobile /></DCArtboard>
+            </DCSection>
+
+            <DCSection id="onboard" title="02 · Onboarding" subtitle="Tutorial, character creation, mode pick, soft signup">
+              <DCArtboard id="onb-tut" label="A · Training-room tutorial" width={680} height={480}><O.Onboard_TutorialFirst /></DCArtboard>
+              <DCArtboard id="onb-char" label="B · Character creation" width={680} height={480}><O.Onboard_CharacterCreation /></DCArtboard>
+              <DCArtboard id="onb-prompt" label="C · Weave a tale (AI seed)" width={680} height={480}><O.Onboard_PromptToScene /></DCArtboard>
+              <DCArtboard id="onb-mode" label="D · Mode picker" width={680} height={480}><O.Onboard_ModePick /></DCArtboard>
+              <DCArtboard id="onb-signup" label="E · Soft signup mid-play" width={680} height={480}><O.Onboard_GuestToAccount /></DCArtboard>
+            </DCSection>
+
+            <DCSection id="read" title="03 · Reading view" subtitle="The core surface — 95% of time spent here">
+              <DCArtboard id="r-book" label="A · Like a book (default)" width={760} height={560}><R.Read_Book /></DCArtboard>
+              <DCArtboard id="r-app" label="B · Modern app (Expo target)" width={760} height={560}><R.Read_ModernApp /></DCArtboard>
+              <DCArtboard id="r-gn" label="C · Graphic novel (Pro)" width={760} height={560}><R.Read_GraphicNovel /></DCArtboard>
+              <DCArtboard id="r-jrn" label="D · Journal / typewriter" width={760} height={560}><R.Read_Journal /></DCArtboard>
+              <DCArtboard id="r-mob" label="E · Mobile reading" width={260} height={500}><R.Read_Mobile /></DCArtboard>
+            </DCSection>
+
+            <DCSection id="stats" title="04 · Stats HUD modes" subtitle="User-toggleable in settings">
+              <DCArtboard id="st-1" label="A · Persistent" width={400} height={220}><S.Stats_Persistent /></DCArtboard>
+              <DCArtboard id="st-2" label="B · Peek drawer (recommended)" width={400} height={260}><S.Stats_PeekDrawer /></DCArtboard>
+              <DCArtboard id="st-3" label="C · Contextual only" width={400} height={220}><S.Stats_Contextual /></DCArtboard>
+              <DCArtboard id="st-4" label="D · Full character sheet" width={400} height={240}><S.Stats_FullSheet /></DCArtboard>
+            </DCSection>
+
+            <DCSection id="death" title="05 · Death screen" subtitle="Brutal · final · share-worthy">
+              <DCArtboard id="d-brutal" label="A · Brutal full-screen" width={680} height={480}><D.Death_Brutal /></DCArtboard>
+              <DCArtboard id="d-book" label="B · Bookish epilogue" width={680} height={480}><D.Death_Bookish /></DCArtboard>
+              <DCArtboard id="d-cine" label="C · Cinematic + share hook" width={680} height={480}><D.Death_Cinematic /></DCArtboard>
+            </DCSection>
+
+            <DCSection id="endings" title="06 · Endings tracking" subtitle="The map of what-might-have-been">
+              <DCArtboard id="e-web" label="A · Branching web (primary)" width={760} height={540}><E.Endings_Web /></DCArtboard>
+              <DCArtboard id="e-trophy" label="B · Trophy crypt" width={760} height={540}><E.Endings_TrophyRoom /></DCArtboard>
+            </DCSection>
+
+            <DCSection id="coop" title="07 · Co-op / pass-the-controller" subtitle="Multiple readers, one URL">
+              <DCArtboard id="c-pass" label="A · Setup" width={680} height={480}><C.Coop_PassDevice /></DCArtboard>
+              <DCArtboard id="c-turn" label="B · Turn indicator" width={680} height={480}><C.Coop_TurnIndicator /></DCArtboard>
+              <DCArtboard id="c-vote" label="C · Vote mode" width={680} height={480}><C.Coop_VoteMode /></DCArtboard>
+            </DCSection>
+
+            <DCSection id="paywall" title="08 · Paywall moments" subtitle="Daily turn limit · Pro upsell">
+              <DCArtboard id="p-block" label="A · Daily limit reached" width={680} height={480}><P.Paywall_TurnLimit /></DCArtboard>
+              <DCArtboard id="p-amb" label="B · Ambient counter" width={400} height={200}><P.Paywall_PreRead /></DCArtboard>
+              <DCArtboard id="p-pro" label="C · Pro illustration upsell" width={400} height={220}><P.Paywall_ProUpsell /></DCArtboard>
+            </DCSection>
+
+            <DCSection id="settings" title="09 · Settings" subtitle="Theme · type · layout · stats mode · audio · mode · account">
+              <DCArtboard id="set" label="Reader's preferences" width={680} height={480}><T.SettingsPanel /></DCArtboard>
+            </DCSection>
+          </DesignCanvas>
+        </>
+      );
+    };
+
+    const mountWhenReady = () => {
+      if (window.LandingBoards && window.OnboardBoards && window.ReadBoards
+          && window.StatsBoards && window.DeathBoards && window.EndingBoards
+          && window.CoopBoards && window.PaywallBoards && window.SettingsBoards
+          && window.WobbleFilter && window.DesignCanvas) {
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+      } else {
+        setTimeout(mountWhenReady, 60);
+      }
+    };
+    mountWhenReady();
+  
+</script>
+</body>
+</html>

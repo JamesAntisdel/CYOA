@@ -1,0 +1,22 @@
+{
+  "filePath": ".spec-workflow/steering/product.md",
+  "currentVersion": 2,
+  "snapshots": [
+    {
+      "version": 1,
+      "filename": "snapshot-001.json",
+      "timestamp": "2026-04-26T06:22:38.151Z",
+      "trigger": "initial",
+      "approvalId": "approval_1777184558114_5o5vuqbn0",
+      "approvalTitle": "Product steering doc"
+    },
+    {
+      "version": 2,
+      "filename": "snapshot-002.json",
+      "timestamp": "2026-04-26T06:41:27.041Z",
+      "trigger": "approved",
+      "approvalId": "approval_1777185566520_kd8wi9lxc",
+      "approvalTitle": "Product steering doc (rev3: enhancements promoted to features, publish-tale, native IAP primary)"
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+config:
+  cyoa:environment: dev
+  cyoa:gcpProjectId: cyoa-dev-placeholder
+  cyoa:gcpRegion: us-central1
+  cyoa:webDomain: dev.example.com
+  cyoa:dnsZoneDnsName: dev.example.com.
+  cyoa:monitoringNotificationChannelIds: []

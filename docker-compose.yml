@@ -1,0 +1,99 @@
+name: cyoa-local
+
+x-workspace: &workspace
+  build:
+    context: .
+    target: dev
+  env_file:
+    - path: .env
+      required: false
+  working_dir: /workspace
+  volumes:
+    - .:/workspace
+    - root_node_modules:/workspace/node_modules
+    - app_node_modules:/workspace/apps/app/node_modules
+    - convex_node_modules:/workspace/convex/node_modules
+    - engine_node_modules:/workspace/packages/engine/node_modules
+    - shared_node_modules:/workspace/packages/shared/node_modules
+    - stories_node_modules:/workspace/packages/stories/node_modules
+    - pnpm_store:/pnpm/store
+
+services:
+  app:
+    <<: *workspace
+    command: pnpm dev:app -- --host 0.0.0.0
+    ports:
+      - "8081:8081"
+      - "19000:19000"
+      - "19001:19001"
+      - "19002:19002"
+    depends_on:
+      provider-mocks:
+        condition: service_healthy
+    environment:
+      EXPO_PUBLIC_PROVIDER_MOCKS_URL: http://localhost:4010
+
+  convex:
+    <<: *workspace
+    command: pnpm dev:convex
+    profiles:
+      - convex
+    ports:
+      - "3210:3210"
+    environment:
+      PROVIDER_MOCKS_URL: http://provider-mocks:4010
+
+  provider-mocks:
+    image: node:20-bookworm-slim
+    working_dir: /workspace
+    command: node scripts/dev/provider-mocks.mjs
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - .:/workspace:ro
+    ports:
+      - "4010:4010"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4010/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  object-storage:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address ":9001"
+    profiles:
+      - storage
+    environment:
+      MINIO_ROOT_USER: cyoa-local
+      MINIO_ROOT_PASSWORD: cyoa-local-password
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+  stripe-cli:
+    image: stripe/stripe-cli:v1.23.10
+    profiles:
+      - stripe
+    env_file:
+      - path: .env
+        required: false
+    command:
+      - listen
+      - --forward-to
+      - "${STRIPE_WEBHOOK_FORWARD_URL:-http://host.docker.internal:3210/stripe/webhook}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  root_node_modules:
+  app_node_modules:
+  convex_node_modules:
+  engine_node_modules:
+  shared_node_modules:
+  stories_node_modules:
+  pnpm_store:
+  minio_data:

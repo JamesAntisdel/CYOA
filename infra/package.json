@@ -1,0 +1,23 @@
+{
+  "name": "@cyoa/infra",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "preview": "pulumi preview",
+    "deploy": "pulumi up",
+    "build": "tsc --noEmit",
+    "lint": "echo \"lint not configured yet\"",
+    "typecheck": "tsc --noEmit",
+    "test": "echo \"tests not configured yet\"",
+    "test:unit": "echo \"unit tests not configured yet\""
+  },
+  "dependencies": {
+    "@pulumi/gcp": "^9.21.0",
+    "@pulumi/pulumi": "^3.160.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.39",
+    "typescript": "^5.9.3"
+  }
+}

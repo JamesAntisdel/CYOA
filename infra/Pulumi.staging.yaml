@@ -1,0 +1,8 @@
+config:
+  cyoa:environment: staging
+  cyoa:gcpProjectId: cyoa-staging-placeholder
+  cyoa:gcpRegion: us-central1
+  cyoa:webDomain: staging.example.com
+  cyoa:dnsZoneDnsName: staging.example.com.
+  cyoa:convexDeployment: staging-placeholder
+  cyoa:monitoringNotificationChannelIds: []

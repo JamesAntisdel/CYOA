@@ -1,0 +1,22 @@
+{
+  "filePath": ".spec-workflow/specs/core-read-loop/tasks.md",
+  "currentVersion": 2,
+  "snapshots": [
+    {
+      "version": 1,
+      "filename": "snapshot-001.json",
+      "timestamp": "2026-04-26T07:48:10.220Z",
+      "trigger": "initial",
+      "approvalId": "approval_1777189690189_lolsmarnn",
+      "approvalTitle": "V1 implementation tasks and agent-team workstreams"
+    },
+    {
+      "version": 2,
+      "filename": "snapshot-002.json",
+      "timestamp": "2026-04-26T07:48:16.637Z",
+      "trigger": "approved",
+      "approvalId": "approval_1777189690189_lolsmarnn",
+      "approvalTitle": "V1 implementation tasks and agent-team workstreams"
+    }
+  ]
+}

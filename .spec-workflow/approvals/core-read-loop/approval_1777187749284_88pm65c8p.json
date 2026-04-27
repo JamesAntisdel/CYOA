@@ -1,0 +1,12 @@
+{
+  "id": "approval_1777187749284_88pm65c8p",
+  "title": "Core Read Loop Requirements with Safety and Age Gate",
+  "filePath": ".spec-workflow/specs/core-read-loop/requirements.md",
+  "type": "document",
+  "status": "rejected",
+  "createdAt": "2026-04-26T07:15:49.284Z",
+  "category": "spec",
+  "categoryName": "core-read-loop",
+  "response": "ensure out of scope items are include, key to game play",
+  "respondedAt": "2026-04-26T07:17:27.861Z"
+}

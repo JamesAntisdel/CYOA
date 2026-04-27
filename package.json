@@ -1,0 +1,30 @@
+{
+  "name": "cyoa",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel --filter @cyoa/app --filter @cyoa/convex dev",
+    "dev:app": "pnpm --filter @cyoa/app dev",
+    "dev:convex": "pnpm --filter @cyoa/convex dev",
+    "build": "pnpm -r --if-present build",
+    "build:web": "pnpm --filter @cyoa/app build:web",
+    "lint": "pnpm -r --if-present lint",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "pnpm -r --if-present test",
+    "test:unit": "pnpm -r --if-present test:unit",
+    "test:e2e": "pnpm --filter @cyoa/app test:e2e",
+    "convex:codegen": "pnpm --filter @cyoa/convex codegen",
+    "convex:deploy": "pnpm --filter @cyoa/convex deploy",
+    "infra:preview": "pnpm --filter @cyoa/infra preview",
+    "infra:deploy": "pnpm --filter @cyoa/infra deploy",
+    "verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm build"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.10",
+    "typescript": "^5.7.2"
+  }
+}

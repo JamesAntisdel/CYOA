@@ -1,0 +1,30 @@
+{
+  "filePath": ".spec-workflow/specs/core-read-loop/requirements.md",
+  "currentVersion": 3,
+  "snapshots": [
+    {
+      "version": 1,
+      "filename": "snapshot-001.json",
+      "timestamp": "2026-04-26T07:11:21.637Z",
+      "trigger": "initial",
+      "approvalId": "approval_1777187481599_nb03atuo3",
+      "approvalTitle": "Core Read Loop Requirements"
+    },
+    {
+      "version": 2,
+      "filename": "snapshot-002.json",
+      "timestamp": "2026-04-26T07:21:41.294Z",
+      "trigger": "approved",
+      "approvalId": "approval_1777188032546_o4chqphfh",
+      "approvalTitle": "Full CYOA App Requirements with Safety, Age, Mature Content, and Agent Handoff"
+    },
+    {
+      "version": 3,
+      "filename": "snapshot-003.json",
+      "timestamp": "2026-04-26T07:43:44.687Z",
+      "trigger": "approved",
+      "approvalId": "approval_1777189272565_d4lw5q4g4",
+      "approvalTitle": "Updated V1 requirements: safety, co-op privacy, Stripe billing, DeepSeek"
+    }
+  ]
+}

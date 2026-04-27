@@ -1,0 +1,22 @@
+{
+  "filePath": ".spec-workflow/specs/core-read-loop/design.md",
+  "currentVersion": 2,
+  "snapshots": [
+    {
+      "version": 1,
+      "filename": "snapshot-001.json",
+      "timestamp": "2026-04-26T07:29:23.422Z",
+      "trigger": "initial",
+      "approvalId": "approval_1777188563390_f971kmei6",
+      "approvalTitle": "Full V1 CYOA App Design"
+    },
+    {
+      "version": 2,
+      "filename": "snapshot-002.json",
+      "timestamp": "2026-04-26T07:43:43.832Z",
+      "trigger": "approved",
+      "approvalId": "approval_1777189309818_5s1avmug2",
+      "approvalTitle": "Updated V1 design: bug/security scrub, co-op, privacy, billing"
+    }
+  ]
+}

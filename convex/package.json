@@ -1,0 +1,23 @@
+{
+  "name": "@cyoa/convex",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "convex dev",
+    "codegen": "convex codegen",
+    "deploy": "convex deploy",
+    "lint": "echo \"lint not configured yet\"",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run"
+  },
+  "dependencies": {
+    "@cyoa/shared": "workspace:*",
+    "convex": "^1.19.4",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.9"
+  }
+}

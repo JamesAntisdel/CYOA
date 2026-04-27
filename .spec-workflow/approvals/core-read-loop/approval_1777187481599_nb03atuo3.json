@@ -1,0 +1,12 @@
+{
+  "id": "approval_1777187481599_nb03atuo3",
+  "title": "Core Read Loop Requirements",
+  "filePath": ".spec-workflow/specs/core-read-loop/requirements.md",
+  "type": "document",
+  "status": "rejected",
+  "createdAt": "2026-04-26T07:11:21.599Z",
+  "category": "spec",
+  "categoryName": "core-read-loop",
+  "response": "add strong safety",
+  "respondedAt": "2026-04-26T07:14:08.605Z"
+}

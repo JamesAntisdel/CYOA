@@ -1,0 +1,14 @@
+{
+  "expo": {
+    "name": "CYOA",
+    "slug": "cyoa",
+    "scheme": "cyoa",
+    "platforms": ["ios", "android", "web"],
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "web": {
+      "bundler": "metro"
+    },
+    "plugins": ["expo-router"]
+  }
+}

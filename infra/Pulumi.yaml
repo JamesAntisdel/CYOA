@@ -1,0 +1,10 @@
+name: cyoa
+runtime:
+  name: nodejs
+  options:
+    packagemanager: pnpm
+description: CYOA GCP infrastructure for hosting, identity, secrets, DNS, and monitoring.
+config:
+  pulumi:tags:
+    value:
+      pulumi:template: typescript

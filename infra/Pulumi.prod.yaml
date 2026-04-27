@@ -1,0 +1,8 @@
+config:
+  cyoa:environment: prod
+  cyoa:gcpProjectId: cyoa-prod-placeholder
+  cyoa:gcpRegion: us-central1
+  cyoa:webDomain: example.com
+  cyoa:dnsZoneDnsName: example.com.
+  cyoa:convexDeployment: prod-placeholder
+  cyoa:monitoringNotificationChannelIds: []

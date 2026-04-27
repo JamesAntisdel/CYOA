@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 800" width="560" height="800">
+  <defs>
+    
+  <filter id="grain" x="0" y="0" width="100%" height="100%">
+    <feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="2"></feTurbulence>
+    <feColorMatrix values="0 0 0 0 0.1  0 0 0 0 0.08  0 0 0 0 0.05  0 0 0 0.35 0"></feColorMatrix>
+  </filter>
+    
+  <radialGradient id="vg" cx="50%" cy="50%" r="65%">
+    <stop offset="30%" stop-color="black" stop-opacity="0"></stop>
+    <stop offset="100%" stop-color="black" stop-opacity="0.5"></stop>
+  </radialGradient>
+    <linearGradient id="bg" x1="0" y1="0" x2="0.42" y2="1">
+      <stop offset="0%" stop-color="#1a1a22"></stop><stop offset="50%" stop-color="#3a2840"></stop><stop offset="100%" stop-color="#0e0814"></stop>
+    </linearGradient>
+    <linearGradient id="lblFade" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0%" stop-color="black" stop-opacity="0.85"></stop>
+      <stop offset="100%" stop-color="black" stop-opacity="0"></stop>
+    </linearGradient>
+    <radialGradient id="innerShadow" cx="50%" cy="50%" r="50%">
+      <stop offset="60%" stop-color="black" stop-opacity="0"></stop>
+      <stop offset="100%" stop-color="black" stop-opacity="0.45"></stop>
+    </radialGradient>
+  </defs>
+  <rect width="560" height="800" fill="url(#bg)"></rect>
+  <g transform="scale(2 2.1052631578947367)">
+  <rect x="20" y="80" width="20" height="300" fill="#0a0810"></rect>
+  <rect x="240" y="80" width="20" height="300" fill="#0a0810"></rect>
+  <rect x="60" y="120" width="14" height="260" fill="#100a18"></rect>
+  <rect x="206" y="120" width="14" height="260" fill="#100a18"></rect>
+  <path d="M100 380 V 220 L 110 200 L 110 140 L 100 130 L 105 80 L 140 60 L 175 80 L 180 130 L 170 140 L 170 200 L 180 220 V 380 Z" fill="#0a0610"></path>
+  <g stroke="#c9a14a" stroke-width="1.5" fill="none" opacity="0.7">
+    <path d="M120 70 V 30 M 130 70 V 20 M 140 70 V 10 M 150 70 V 20 M 160 70 V 30"></path>
+  </g>
+  <ellipse cx="140" cy="180" rx="40" ry="20" fill="#c9a14a" opacity="0.18"></ellipse></g>
+  <rect width="560" height="800" fill="url(#vg)"></rect>
+  <rect width="560" height="800" filter="url(#grain)" opacity="0.6" style="mix-blend-mode:multiply"></rect>
+  <rect width="560" height="800" fill="url(#innerShadow)"></rect>
+  
+  <rect x="0" y="600" width="560" height="200" fill="url(#lblFade)"></rect>
+  <text x="44" y="690" font-family="Special Elite, monospace" font-size="14" letter-spacing="5.6" fill="#f4ecd8" fill-opacity="0.7">INTRIGUE · MEDIUM</text>
+  <text x="44" y="740" font-family="EB Garamond, Georgia, serif" font-size="44" font-style="italic" fill="#f4ecd8" letter-spacing="-0.5">The Iron Court</text>
+  <text x="44" y="770" font-family="Special Elite, monospace" font-size="14" fill="#f4ecd8" fill-opacity="0.7">every smile a knife</text>
+  <rect x="0.5" y="0.5" width="559" height="799" fill="none" stroke="#1f1c16" stroke-width="1"></rect>
+</svg>

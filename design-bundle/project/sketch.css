@@ -1,0 +1,326 @@
+/* Sketchy wireframe primitives — gothic candlelit ink-on-parchment vibe */
+
+@import url('https://fonts.googleapis.com/css2?family=Caveat:wght@400;500;600;700&family=Patrick+Hand&family=Kalam:wght@300;400;700&family=Special+Elite&family=IM+Fell+English:ital@0;1&display=swap');
+
+:root {
+  --paper: #f4ecd8;
+  --paper-2: #ebe1c9;
+  --ink: #1a1410;
+  --ink-soft: #3a2e26;
+  --ink-faint: rgba(26, 20, 16, 0.45);
+  --ink-ghost: rgba(26, 20, 16, 0.18);
+  --candle: #c8541e;
+  --candle-soft: rgba(200, 84, 30, 0.25);
+  --shadow: rgba(26, 20, 16, 0.12);
+}
+
+.wf {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: 'Patrick Hand', 'Kalam', cursive;
+  width: 100%;
+  height: 100%;
+  position: relative;
+  overflow: hidden;
+  /* subtle paper grain */
+  background-image:
+    radial-gradient(ellipse at 20% 10%, rgba(0,0,0,0.04), transparent 50%),
+    radial-gradient(ellipse at 80% 90%, rgba(0,0,0,0.05), transparent 60%),
+    repeating-linear-gradient(
+      0deg,
+      transparent 0,
+      transparent 2px,
+      rgba(26,20,16,0.012) 2px,
+      rgba(26,20,16,0.012) 3px
+    );
+}
+
+.wf-hand { font-family: 'Caveat', cursive; }
+.wf-typed { font-family: 'Special Elite', monospace; }
+.wf-classic { font-family: 'IM Fell English', serif; }
+
+/* Hand-drawn-ish borders using SVG filters for wobble */
+.wf-box {
+  border: 1.5px solid var(--ink);
+  border-radius: 4px;
+  position: relative;
+}
+.wf-box-thick { border-width: 2.5px; }
+.wf-box-dashed { border-style: dashed; }
+.wf-box-double { border-style: double; border-width: 4px; }
+
+/* Sketchy fill patterns */
+.wf-hatch {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent 0,
+    transparent 4px,
+    var(--ink-ghost) 4px,
+    var(--ink-ghost) 5px
+  );
+}
+.wf-cross {
+  background-image:
+    repeating-linear-gradient(45deg, transparent 0 4px, var(--ink-ghost) 4px 5px),
+    repeating-linear-gradient(-45deg, transparent 0 4px, var(--ink-ghost) 4px 5px);
+}
+.wf-dots {
+  background-image: radial-gradient(var(--ink-ghost) 1px, transparent 1.2px);
+  background-size: 8px 8px;
+}
+
+/* Generic placeholder box "image goes here" */
+.wf-img {
+  border: 1.5px solid var(--ink);
+  position: relative;
+  background: var(--paper-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Special Elite', monospace;
+  font-size: 11px;
+  color: var(--ink-faint);
+  overflow: hidden;
+}
+.wf-img::before, .wf-img::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(to bottom right, transparent calc(50% - 0.6px), var(--ink) calc(50% - 0.6px), var(--ink) calc(50% + 0.6px), transparent calc(50% + 0.6px));
+  opacity: 0.3;
+  pointer-events: none;
+}
+.wf-img::after {
+  background: linear-gradient(to bottom left, transparent calc(50% - 0.6px), var(--ink) calc(50% - 0.6px), var(--ink) calc(50% + 0.6px), transparent calc(50% + 0.6px));
+}
+.wf-img > span {
+  position: relative;
+  z-index: 1;
+  background: var(--paper);
+  padding: 2px 6px;
+  border: 1px solid var(--ink-ghost);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* Buttons */
+.wf-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: 1.5px solid var(--ink);
+  border-radius: 4px;
+  background: var(--paper);
+  font-family: 'Patrick Hand', cursive;
+  font-size: 14px;
+  cursor: pointer;
+  position: relative;
+}
+.wf-btn-primary {
+  background: var(--ink);
+  color: var(--paper);
+}
+.wf-btn-ghost {
+  border-style: dashed;
+  color: var(--ink-soft);
+}
+.wf-btn-locked {
+  opacity: 0.55;
+  border-style: dashed;
+}
+
+/* Choice item — for CYOA scene choices */
+.wf-choice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1.5px solid var(--ink);
+  border-radius: 4px;
+  background: var(--paper);
+  font-family: 'Patrick Hand', cursive;
+  font-size: 14px;
+  position: relative;
+  cursor: pointer;
+}
+.wf-choice::before {
+  content: "→";
+  font-family: 'Caveat', cursive;
+  font-weight: 700;
+  font-size: 18px;
+}
+
+/* Stats pill / chip */
+.wf-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1.5px solid var(--ink);
+  border-radius: 999px;
+  background: var(--paper);
+  font-size: 12px;
+  font-family: 'Patrick Hand', cursive;
+}
+
+/* Section labels */
+.wf-stamp {
+  display: inline-block;
+  border: 1.5px solid var(--candle);
+  color: var(--candle);
+  padding: 2px 8px;
+  font-family: 'Special Elite', monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  transform: rotate(-2deg);
+}
+
+/* Underline scribble */
+.wf-scribble {
+  position: relative;
+  display: inline-block;
+}
+.wf-scribble::after {
+  content: "";
+  position: absolute;
+  left: -2px;
+  right: -2px;
+  bottom: -3px;
+  height: 4px;
+  background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 4' preserveAspectRatio='none'><path d='M0 2 Q 25 0 50 2 T 100 2' fill='none' stroke='%23c8541e' stroke-width='1.5'/></svg>");
+  background-size: 100% 100%;
+}
+
+/* Annotation arrow + note */
+.wf-note {
+  font-family: 'Caveat', cursive;
+  font-size: 16px;
+  color: var(--candle);
+  line-height: 1.1;
+  position: absolute;
+}
+.wf-note-arrow {
+  position: absolute;
+  pointer-events: none;
+}
+
+/* Tabs */
+.wf-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1.5px solid var(--ink);
+}
+.wf-tab {
+  padding: 6px 14px;
+  border: 1.5px solid var(--ink);
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  margin-bottom: -1.5px;
+  background: var(--paper-2);
+  font-size: 13px;
+  cursor: pointer;
+}
+.wf-tab[data-active="true"] {
+  background: var(--paper);
+  font-weight: 600;
+}
+
+/* HP / progress bar */
+.wf-bar {
+  height: 8px;
+  border: 1.5px solid var(--ink);
+  border-radius: 999px;
+  background: var(--paper);
+  position: relative;
+  overflow: hidden;
+}
+.wf-bar-fill {
+  position: absolute;
+  inset: 0;
+  background: var(--ink);
+  width: var(--w, 60%);
+}
+.wf-bar-fill.candle { background: var(--candle); }
+
+/* Avatar / portrait circle */
+.wf-portrait {
+  border-radius: 50%;
+  border: 1.5px solid var(--ink);
+  background: var(--paper-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Special Elite', monospace;
+  font-size: 10px;
+  color: var(--ink-faint);
+}
+
+/* Decorative flourish (very simple) */
+.wf-flourish {
+  font-family: 'IM Fell English', serif;
+  font-size: 22px;
+  letter-spacing: 0.5em;
+  color: var(--ink-soft);
+}
+
+/* Text-line placeholder for body copy */
+.wf-line {
+  height: 9px;
+  background: var(--ink-ghost);
+  border-radius: 2px;
+  margin: 6px 0;
+}
+.wf-line.short { width: 60%; }
+.wf-line.med { width: 80%; }
+.wf-line.tiny { width: 35%; }
+
+/* Phone-shaped frame for mobile mocks */
+.wf-phone {
+  width: 280px;
+  height: 560px;
+  border: 2.5px solid var(--ink);
+  border-radius: 28px;
+  background: var(--paper);
+  padding: 16px;
+  position: relative;
+  overflow: hidden;
+}
+.wf-phone::before {
+  content: "";
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 60px;
+  height: 4px;
+  border-radius: 4px;
+  background: var(--ink-soft);
+}
+
+/* Modal/full-screen overlays */
+.wf-modal-bg {
+  position: absolute;
+  inset: 0;
+  background: rgba(26,20,16,0.4);
+}
+
+/* Layout helpers */
+.row { display: flex; }
+.col { display: flex; flex-direction: column; }
+.gap-1 { gap: 4px; } .gap-2 { gap: 8px; } .gap-3 { gap: 12px; } .gap-4 { gap: 16px; } .gap-6 { gap: 24px; }
+.p-2 { padding: 8px; } .p-3 { padding: 12px; } .p-4 { padding: 16px; } .p-6 { padding: 24px; } .p-8 { padding: 32px; }
+.m-auto { margin: auto; }
+.flex-1 { flex: 1; }
+.center { display: flex; align-items: center; justify-content: center; }
+.items-center { align-items: center; }
+.items-start { align-items: flex-start; }
+.justify-between { justify-content: space-between; }
+.justify-center { justify-content: center; }
+.text-center { text-align: center; }
+.full { width: 100%; height: 100%; }
+.absolute { position: absolute; }
+.relative { position: relative; }
