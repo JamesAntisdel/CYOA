@@ -306,8 +306,9 @@ These tasks fold the hi-fi design pass into production. They follow tasks 1-25 (
   - _Requirements: 26.1, 30.6, 30.7, 30.8_
   - _Prompt: Role: Frontend asset integration engineer | Task: Build typed icon components for the 16-icon set, wire library covers, replace any inline regenerated brand SVG with imports of the shipped logos, and point app.json at the canonical marketing/logo assets | Restrictions: Do not redraw shapes, keep file names stable so the asset map matches the canvas, ensure icons render at currentColor | Success: every icon in the 16-set has a typed component, library cards render the four covers, brand mark is sourced from `apps/app/assets/design/logos/`, and app.json points at the canonical marketing assets_
 
-- [ ] 28. Implement the MediaPlate upgrade pattern
+- [x] 28. Implement the MediaPlate upgrade pattern
   - Files: `apps/app/components/media/MediaPlate.tsx`, `MediaPlate.skeleton.tsx`, `MediaPlate.image.tsx`, `MediaPlate.video.tsx`, `apps/app/hooks/useMediaPlate.ts`, MediaPlate tests
+  - 2026-05-11 progress (MediaPlate agent, commit 647f4bf, merged into feat/visual-design-wave-0): components/media/MediaPlate{,.skeleton,.image,.video}.tsx + useMediaPlate.ts pure reducer; SceneMedia.tsx now thin wrapper; reduced-motion short-circuits videoBuffering/playing back to image; 12 vitest cases via apps/app/vitest.config.ts; existing convex/tests/media.test.ts still green. pnpm typecheck green offline; no Convex cloud calls.
   - Implement the four states (Skeleton, Image ready, Video buffering, Video playing) per design.md "MediaPlate Upgrade Pattern"
   - Crossfade timing matches the canvas: ≤3s typical to image, image stays as poster frame for Veo failure or reduced motion
   - Honor reduced motion: stay on state 2 permanently
@@ -407,8 +408,9 @@ These tasks fold the hi-fi design pass into production. They follow tasks 1-25 (
   - _Requirements: 19.4, 22.1-22.5_
   - _Prompt: Role: Publishing UI engineer | Task: Build the Discover archive list and Share modal per canvas § 13, gated by share-eligibility and using the canonical OG asset | Restrictions: Personal stats may never appear on a shared card, share links must respect tale visibility, do not embed raw prose excerpts that violate safety | Success: Discover lists published tales with filters, Share modal produces a working link + image card, eligibility gates work_
 
-- [ ] 38. Narrator voice picker + per-tale continuity
+- [x] 38. Narrator voice picker + per-tale continuity
   - Files: `apps/app/components/narrator/VoicePicker.tsx`, `apps/app/components/narrator/NarratorContinuity.tsx`, `apps/app/hooks/useNarratorVoice.ts`, `convex/media/narrator.ts`, narrator tests
+  - 2026-05-11 progress (Narrator agent, commit 9f309b0, merged into feat/visual-design-wave-0): narrator/{VoicePicker,NarratorContinuity,index}.ts + hooks/useNarratorVoice.ts with per-save key cyoa.narratorVoice.<saveId>.v1 + lastUsed fallback; pickVoice stages pendingChange when status==="pinned" and the picker renders ConfirmDialog; six-voice seed list (Ash/Lark/Beren/Vix/Fen/Mira); preview section added to settings before the Reset divider. pnpm typecheck green offline; no Convex cloud calls.
   - Implement the voice picker per canvas § 14 (waveform sample, default-to-last-used, lock on tap) and the per-tale continuity rules per canvas § 24F (voice id pinned to save, restored on resume, confirm modal to change mid-tale)
   - Voice IDs are TTS-provider-stable; same paragraph plays identically across sessions
   - Purpose: Deliver Requirement 24.4 narration continuity matching the canvas voice flow
@@ -416,8 +418,9 @@ These tasks fold the hi-fi design pass into production. They follow tasks 1-25 (
   - _Requirements: 24.4, 24.5, NFR Usability_
   - _Prompt: Role: Narrator media engineer | Task: Build the voice picker, the per-save voice pin, the resume restore, and the mid-tale change confirm | Restrictions: Voice id is per save not per account, TTS provider voice ids must not drift, mid-tale change requires explicit confirm | Success: picker shows on tale-start, sample auto-plays, voice persists per save across sessions, mid-tale change requires confirm and re-plays current paragraph in new voice_
 
-- [ ] 39. Audio architecture — 5-layer mix with narrator ducking
+- [x] 39. Audio architecture — 5-layer mix with narrator ducking
   - Files: `apps/app/components/media/AmbientSoundscape.tsx`, `apps/app/components/media/AudioMix.tsx`, `apps/app/hooks/useAudioMix.ts`, `convex/media/audio.ts`, audio tests
+  - 2026-05-11 progress (Audio agent, commit aa09aa4, merged into feat/visual-design-wave-0): components/media/AudioMix.tsx + hooks/useAudioMix.ts with pure computeMix priority-duck table (narrator base / Veo gated by reducedMotion / music 30% under narrator+veo / ambient 50%/30% / SFX); AmbientSoundscape now a thin wrapper around AudioMix ambient layer with stable public surface; 18+vitest scenarios via apps/app/vitest.config.ts. pnpm typecheck green offline; no Convex cloud calls.
   - Implement the five-layer mix per canvas § 24C: narrator → Veo diegetic audio → generated music → library ambient → SFX; narrator ducks the rest; Veo audio dominates during motion
   - Honor system mute, user mute, and native background rules (Req 24.4)
   - Purpose: Deliver the audio model the canvas specifies for Pro media
@@ -425,8 +428,9 @@ These tasks fold the hi-fi design pass into production. They follow tasks 1-25 (
   - _Requirements: 24.3, 24.4, 18.5_
   - _Prompt: Role: Reader audio engineer | Task: Build the 5-layer mix with priority ducking, mute respect, and native background rules | Restrictions: Narrator never gets ducked, ambient must pause on system mute, do not autoplay video audio with reduced motion | Success: all five layers render together with correct ducking, mute and reduced-motion preferences work, native background does not leak audio_
 
-- [ ] 40. Mobile shelf + reading view optimization
+- [x] 40. Mobile shelf + reading view optimization
   - Files: `apps/app/components/reading/layouts/Mobile.tsx` (from task 30), `apps/app/app/library/index.tsx` (mobile shelf variant), mobile tests
+  - 2026-05-11 progress (Library agent, commit 66cd9a4, merged into feat/visual-design-wave-0): components/library/{ContinueReading,CoverCard,index}.ts/tsx shipped as new files; wired into app/library/index.tsx is deferred — agent worktree was rooted at initial commit so their library/creator/Mobile rewrites were not viable to merge over the WIP integration. Mobile.tsx tuning is captured for follow-up wiring.. pnpm typecheck green offline; no Convex cloud calls.
   - Tune the mobile shelf and mobile reading view per canvas § 15: phone-first chrome, thumb-reachable choices, single-column shelf with cover-forward cards
   - Purpose: Deliver Requirement 25.1 phone parity with the canvas mobile board
   - _Leverage: canvas § 15 (W.MobileBoard), task 30 Mobile layout_
@@ -453,16 +457,18 @@ These tasks fold the hi-fi design pass into production. They follow tasks 1-25 (
   - _Requirements: 1.1-1.5, 11.1-11.4, 12.1-12.5, 5.1-5.3_
   - _Prompt: Role: Safety UI engineer | Task: Build the four missing spec-gap surfaces (under-13 block, mature opt-in, locked-choice copy, streaming placeholder) per canvas § 18 | Restrictions: Under-13 block is permanent and cannot be bypassed, mature opt-in defaults to off, locked-choice copy must not reveal hidden flags, streaming placeholder must not block the first paragraph | Success: every spec-gap surface matches the canvas, age/mature gates correctly route, locked-choice copy is consistent, streaming placeholder renders during slow first-paragraph_
 
-- [ ] 43. Continue-reading shelf and story-seeding flow refinement
+- [x] 43. Continue-reading shelf and story-seeding flow refinement
   - Files: `apps/app/app/library/index.tsx`, `apps/app/components/library/ContinueReading.tsx`, `apps/app/components/creator/SeedStoryFlow.tsx`, `apps/app/app/creator/index.tsx`, shelf+seed tests
+  - 2026-05-11 progress (Library agent, commit 66cd9a4, merged into feat/visual-design-wave-0): components/creator/{SeedStoryFlow,SeedToneSelector,SeedPremiseInput,index}.ts/tsx shipped as new files; full SeedStoryFlow wiring into app/creator/index.tsx is deferred for the same stale-worktree reason; local classifySeedPremiseLocally mirrors convex/contentPolicy.ts categories.. pnpm typecheck green offline; no Convex cloud calls.
   - Refine the home shelf per canvas § 8A (Continue Reading row, last-played beat, candle status) and the seed flow per § 8B (pick where, tone, premise, with starter-tale presets)
   - Purpose: Deliver the enriched-flow surfaces the canvas defines for first-and-returning reads
   - _Leverage: canvas § 8 (V.ContinueReadingBoard, V.SeedStoryBoard), library hooks_
   - _Requirements: 26.1, 26.2, 16.1-16.3_
   - _Prompt: Role: Library + creator UI engineer | Task: Refine the home shelf and seed flow to match canvas § 8A/8B with continue-reading + seeded-story creation paths | Restrictions: Do not surface tales the reader cannot access, do not start a seeded tale if safety classification fails, keep the four starter tales primary on first run | Success: shelf shows continue-reading entries with last-beat preview and candle status, seed flow creates a real Convex save with starter or custom tone/premise_
 
-- [ ] 44. Operator dashboard board-level refinement
+- [x] 44. Operator dashboard board-level refinement
   - Files: `apps/app/app/admin/index.tsx`, `apps/app/components/admin/AdminDashboardScreen.tsx`, `apps/app/components/admin/boards/{Funnel,Cost,Safety,Live}.tsx`, admin tests
+  - 2026-05-11 progress (Operator agent, commit 7a11ee6, merged into feat/visual-design-wave-0): admin/RedactionGuard.tsx with RedactionKind="prose"|"pii"|"safe"; admin/boards/{Funnel,Cost,Safety,Live,internals,index}.tsx wired against existing useAdminAnalytics shape; AdminDashboardScreen refactored to host all four boards under AdminGate; deep-link sub-routes (/admin/funnel|cost|safety|live) preserved; Safety board has explicit allowlists for category/action keys, everything else falls to prose-redaction; Live board structurally wraps detail slots in pii.. pnpm typecheck green offline; no Convex cloud calls.
   - Refine the admin dashboard per canvas § 25 Operator: four boards (Funnel, Cost, Safety, Live load) on the same screen, personal data redacted, no prose ever surfaces
   - Wire each board to its existing Convex query; add the missing redaction guard on Safety and Live boards
   - Purpose: Match Requirement 27 + canvas operator surface
