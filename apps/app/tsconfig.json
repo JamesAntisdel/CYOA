@@ -4,5 +4,6 @@
     "jsx": "react-jsx",
     "types": ["node", "react"]
   },
-  "include": ["app", "components", "hooks", "lib", "theme", "*.ts", "*.tsx"]
+  "include": ["app", "components", "hooks", "lib", "theme", "*.ts", "*.tsx"],
+  "exclude": ["**/__tests__/**", "**/*.test.ts", "**/*.test.tsx"]
 }
