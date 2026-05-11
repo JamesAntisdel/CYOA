@@ -3,11 +3,18 @@ import { ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { MatureOptIn } from "../../components/account/MatureOptIn";
+import { NarratorContinuity, VoicePicker } from "../../components/narrator";
 import { AppNav } from "../../components/navigation";
 import { Button, Divider, Stamp, Surface, Text } from "../../components/primitives";
 import { useMatureOptIn } from "../../hooks/useMatureOptIn";
+import { useNarratorVoice } from "../../hooks/useNarratorVoice";
 import { useReaderSettings } from "../../hooks/useReaderSettings";
 import { useAppTheme } from "../../theme";
+
+// Settings is account-scoped, but the narrator picker is per-save. Until a
+// real "active save" context is wired, pin the picker to the tutorial save
+// id so a reader can preview the picker from settings.
+const SETTINGS_PREVIEW_SAVE_ID = "training-room-demo";
 
 type Option<T extends string | boolean> = {
   label: string;
@@ -19,6 +26,7 @@ export default function SettingsRoute() {
   const { tokens } = useAppTheme();
   const mature = useMatureOptIn();
   const [showMatureFlow, setShowMatureFlow] = useState(false);
+  const narratorController = useNarratorVoice(SETTINGS_PREVIEW_SAVE_ID);
 
   return (
     <SafeAreaView style={{ backgroundColor: tokens.colors.background, flex: 1 }}>
@@ -122,6 +130,14 @@ export default function SettingsRoute() {
                     Turn mature content on
                   </Button>
                 )}
+              </View>
+
+              <Divider />
+
+              <View style={{ gap: tokens.spacing.md }}>
+                <Text style={{ fontWeight: "800" }} variant="subtitle">Narrator</Text>
+                <VoicePicker controller={narratorController} />
+                <NarratorContinuity />
               </View>
 
               <Divider />
