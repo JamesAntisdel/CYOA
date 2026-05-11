@@ -1,6 +1,14 @@
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
+import { NarratorContinuity, VoicePicker } from "../../components/narrator";
+import { useNarratorVoice } from "../../hooks/useNarratorVoice";
 import { useReaderSettings, type ReaderSettings } from "../../hooks/useReaderSettings";
+
+// Settings is account-scoped, but the narrator picker is per-save. Until a
+// real "active save" context is wired, we pin the picker to the tutorial save
+// id so a reader can preview the picker from settings and stage a mid-tale
+// change against their primary read.
+const SETTINGS_PREVIEW_SAVE_ID = "training-room-demo";
 
 type Option<T extends string | boolean> = {
   label: string;
@@ -9,6 +17,7 @@ type Option<T extends string | boolean> = {
 
 export default function SettingsRoute() {
   const { resetSettings, settings, updateSettings } = useReaderSettings();
+  const narratorController = useNarratorVoice(SETTINGS_PREVIEW_SAVE_ID);
 
   return (
     <ScrollView contentContainerStyle={styles.page}>
@@ -80,6 +89,11 @@ export default function SettingsRoute() {
         selected={settings.muted}
         onSelect={(muted) => updateSettings({ muted })}
       />
+
+      <View style={styles.narratorSection}>
+        <VoicePicker controller={narratorController} />
+        <NarratorContinuity />
+      </View>
 
       <Pressable accessibilityRole="button" onPress={resetSettings} style={styles.secondaryButton}>
         <Text style={styles.secondaryText}>Reset settings</Text>
@@ -175,6 +189,10 @@ const styles = StyleSheet.create({
   optionText: {
     color: "#24180f",
     fontWeight: "800",
+  },
+  narratorSection: {
+    gap: 18,
+    maxWidth: 760,
   },
   secondaryButton: {
     alignItems: "center",
