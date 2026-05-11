@@ -13,7 +13,8 @@ export type ReaderSettings = {
   reduceMotion: boolean;
 };
 
-const SETTINGS_KEY = "cyoa.readerSettings.v1";
+export const READER_SETTINGS_KEY = "cyoa.readerSettings.v1";
+export const READER_SETTINGS_CHANGED_EVENT = "cyoa.readerSettings.changed";
 
 const defaultSettings: ReaderSettings = {
   theme: "system",
@@ -59,7 +60,7 @@ function readSettings(): ReaderSettings {
   if (!storage) return defaultSettings;
 
   try {
-    const raw = storage.getItem(SETTINGS_KEY);
+    const raw = storage.getItem(READER_SETTINGS_KEY);
     if (!raw) return defaultSettings;
     const parsed = JSON.parse(raw) as Partial<ReaderSettings>;
     return {
@@ -76,7 +77,8 @@ function readSettings(): ReaderSettings {
 }
 
 function writeSettings(settings: ReaderSettings): void {
-  getStorage()?.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  getStorage()?.setItem(READER_SETTINGS_KEY, JSON.stringify(settings));
+  dispatchSettingsChanged(settings);
 }
 
 function isTheme(value: unknown): value is ReaderThemePreference {
@@ -86,4 +88,9 @@ function isTheme(value: unknown): value is ReaderThemePreference {
 function getStorage(): Pick<Storage, "getItem" | "setItem"> | null {
   if (typeof globalThis === "undefined") return null;
   return (globalThis as { localStorage?: Storage }).localStorage ?? null;
+}
+
+function dispatchSettingsChanged(settings: ReaderSettings): void {
+  if (typeof globalThis.dispatchEvent !== "function" || typeof globalThis.CustomEvent !== "function") return;
+  globalThis.dispatchEvent(new CustomEvent(READER_SETTINGS_CHANGED_EVENT, { detail: settings }));
 }

@@ -20,6 +20,14 @@ export const createGuestRequestSchema = z.object({
 });
 export type CreateGuestRequest = z.infer<typeof createGuestRequestSchema>;
 
+export const emailAuthRequestSchema = z.object({
+  email: z.string().trim().toLowerCase().email(),
+  password: z.string().min(8).max(128),
+  name: z.string().trim().min(1).max(80).optional(),
+  ageBand: ageBandSchema.optional(),
+});
+export type EmailAuthRequest = z.infer<typeof emailAuthRequestSchema>;
+
 export const accountProjectionSchema = z.object({
   accountId: z.string().min(1),
   kind: accountKindSchema,

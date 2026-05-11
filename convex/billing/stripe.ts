@@ -1,4 +1,5 @@
 import { AppError } from "../lib/errors";
+import { getStripePriceId, type StripePriceConfig } from "./config";
 import { mergeEntitlementUpdate, type EntitlementRecord } from "./entitlements";
 
 export type CheckoutPlan = {
@@ -12,6 +13,19 @@ export type CheckoutPlan = {
 export type CheckoutSessionRequest = CheckoutPlan & {
   clientReferenceId: string;
   metadata: Record<string, string>;
+};
+
+export type StripeCheckoutSessionCreateParams = {
+  mode: "subscription";
+  success_url: string;
+  cancel_url: string;
+  client_reference_id: string;
+  allow_promotion_codes: boolean;
+  line_items: Array<{ price: string; quantity: number }>;
+  metadata: Record<string, string>;
+  subscription_data: {
+    metadata: Record<string, string>;
+  };
 };
 
 export type StripeWebhookEvent = {
@@ -37,6 +51,34 @@ export function buildCheckoutSessionRequest(plan: CheckoutPlan): CheckoutSession
       accountId: plan.accountId,
       targetTier: plan.targetTier,
       interval: plan.interval,
+    },
+  };
+}
+
+export function buildCheckoutSessionCreateParams(input: {
+  plan: CheckoutPlan;
+  prices: StripePriceConfig;
+}): StripeCheckoutSessionCreateParams {
+  const request = buildCheckoutSessionRequest(input.plan);
+  return {
+    mode: "subscription",
+    success_url: request.successUrl,
+    cancel_url: request.cancelUrl,
+    client_reference_id: request.clientReferenceId,
+    allow_promotion_codes: true,
+    line_items: [
+      {
+        price: getStripePriceId({
+          prices: input.prices,
+          tier: input.plan.targetTier,
+          interval: input.plan.interval,
+        }),
+        quantity: 1,
+      },
+    ],
+    metadata: request.metadata,
+    subscription_data: {
+      metadata: request.metadata,
     },
   };
 }

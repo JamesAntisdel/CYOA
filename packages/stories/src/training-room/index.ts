@@ -15,6 +15,7 @@ export const trainingRoom: StarterStory = {
     id: "training-room",
     version: 1,
     title: "Escape the Training Room",
+    defaultSceneLength: "brief",
     startNodeId: "waking-cell",
     deathNodeId: "ending-crushed",
     initialState: {
@@ -181,6 +182,15 @@ export const trainingRoom: StarterStory = {
             targetNodeId: "ending-crushed",
             conditions: [{ kind: "stat_at_least", statId: "resolve", value: 2 }],
             effects: [{ kind: "stat", statId: "vitality", delta: -12 }],
+          },
+          {
+            id: "read-counterweight-lesson",
+            label: "Study the counterweight lesson and reset the door.",
+            targetNodeId: "ending-escape",
+            effects: [
+              { kind: "stat", statId: "resolve", delta: 1 },
+              { kind: "flag_set", flag: "escaped_by_lesson", value: true },
+            ],
           },
         ],
       },

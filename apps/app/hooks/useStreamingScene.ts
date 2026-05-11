@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import type { ImageSourcePropType } from "react-native";
 
 export type AmbientLoop = {
   id: string;
@@ -12,10 +13,12 @@ export type StreamingScene = {
   id: string;
   title: string;
   prose: string;
+  revealMode?: "typewriter" | "instant";
   media?: {
     status: "idle" | "queued" | "generating" | "ready" | "blocked" | "failed";
     kind: "image" | "video" | "audio";
     uri?: string;
+    source?: ImageSourcePropType;
     alt: string;
     durationMs?: number;
     ambient?: AmbientLoop;
@@ -24,11 +27,11 @@ export type StreamingScene = {
 
 export function useStreamingScene(scene: StreamingScene, options?: { reducedMotion?: boolean }) {
   const [visibleCharacters, setVisibleCharacters] = useState(() =>
-    options?.reducedMotion ? scene.prose.length : 0,
+    options?.reducedMotion || scene.revealMode === "instant" ? scene.prose.length : 0,
   );
 
   useEffect(() => {
-    if (options?.reducedMotion) {
+    if (options?.reducedMotion || scene.revealMode === "instant") {
       setVisibleCharacters(scene.prose.length);
       return;
     }
@@ -46,7 +49,7 @@ export function useStreamingScene(scene: StreamingScene, options?: { reducedMoti
     }, 28);
 
     return () => clearInterval(interval);
-  }, [options?.reducedMotion, scene.id, scene.prose]);
+  }, [options?.reducedMotion, scene.id, scene.prose, scene.revealMode]);
 
   return useMemo(
     () => ({

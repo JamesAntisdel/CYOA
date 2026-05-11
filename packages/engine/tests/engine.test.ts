@@ -3,15 +3,22 @@ import { describe, expect, it } from "vitest";
 import {
   applyChoice,
   applyChoiceAndEnterNode,
+  applyStatDelta,
+  cloneState,
   canSwitchMode,
   createInitialState,
   enterNode,
   evaluateNodeChoices,
+  getFlag,
+  getStat,
   hasItem,
+  hasFlag,
   migrateEngineState,
   resolveTerminal,
+  setFlag,
   shouldPurgeOnDeath,
   switchMode,
+  unsetFlag,
   type Story,
 } from "../src";
 
@@ -138,6 +145,87 @@ describe("engine state and visibility", () => {
     ]);
     expect(choices[1]?.lockedHint).toBe("You do not have the resolve");
   });
+
+  it("covers all supported condition kinds and default hints", () => {
+    const state = createInitialState(fixtureStory(), "story", ctx.now, ctx.rngSeed);
+    const choices = evaluateNodeChoices(state, [
+      { id: "always", label: "Always", targetNodeId: "start", conditions: [{ kind: "always" }] },
+      { id: "low", label: "Low", targetNodeId: "start", conditions: [{ kind: "stat_at_most", statId: "resolve", value: 1 }] },
+      { id: "missing", label: "Missing", targetNodeId: "start", conditions: [{ kind: "missing_item", itemId: "chalk" }] },
+      { id: "flag", label: "Flag", targetNodeId: "start", conditions: [{ kind: "flag_equals", flag: "torch_lit", value: false }] },
+      { id: "mode", label: "Mode", targetNodeId: "start", conditions: [{ kind: "mode_is", mode: "story" }] },
+      { id: "needs-missing", label: "Needs missing", targetNodeId: "start", conditions: [{ kind: "missing_item", itemId: "rusty_key" }] },
+      { id: "needs-item", label: "Needs item", targetNodeId: "start", conditions: [{ kind: "has_item", itemId: "silver_key" }] },
+      { id: "needs-flag", label: "Needs flag", targetNodeId: "start", conditions: [{ kind: "flag_equals", flag: "door_open", value: true }] },
+      { id: "needs-mode", label: "Needs mode", targetNodeId: "start", conditions: [{ kind: "mode_is", mode: "hardcore" }] },
+    ]);
+
+    expect(choices.slice(0, 5).every((choice) => choice.visibility === "visible")).toBe(true);
+    expect(choices[5]).toMatchObject({ visibility: "locked", lockedHint: "Requires missing rusty_key" });
+    expect(choices[6]).toMatchObject({ visibility: "locked", lockedHint: "Needs silver_key" });
+    expect(choices[7]).toMatchObject({ visibility: "locked" });
+    expect(choices[7]?.lockedHint).toBeUndefined();
+    expect(choices[8]).toMatchObject({ visibility: "locked" });
+    expect(choices[8]?.lockedHint).toBeUndefined();
+  });
+
+  it("reads and diffs flags without leaking missing before values", () => {
+    const state = createInitialState(fixtureStory(), "story", ctx.now, ctx.rngSeed);
+    const diffs: Parameters<typeof setFlag>[3] = [];
+
+    expect(getFlag(state, "torch_lit")).toBe(false);
+    expect(hasFlag(state, "torch_lit")).toBe(true);
+    setFlag(state, "torch_lit", true, diffs);
+    unsetFlag(state, "torch_lit", diffs);
+    unsetFlag(state, "missing", diffs);
+
+    expect(diffs[0]).toMatchObject({ kind: "flag_set", before: false, after: true });
+    expect(diffs[1]).toMatchObject({ kind: "flag_unset", before: true });
+    expect(diffs[2]).toEqual({ kind: "flag_unset", target: "missing", delta: null });
+  });
+
+  it("applies clamped stat deltas to new and existing attributes", () => {
+    const state = createInitialState(fixtureStory(), "story", ctx.now, ctx.rngSeed);
+    const diffs: Parameters<typeof applyStatDelta>[3] = [];
+
+    expect(getStat(state, "vitality")).toMatchObject({ label: "Vitality", value: 10 });
+    applyStatDelta(state, "focus", 3, diffs);
+    state.attributes.focus = { ...state.attributes.focus!, max: 4 };
+    applyStatDelta(state, "focus", 10, diffs);
+    state.attributes.focus = { ...state.attributes.focus!, min: 2 };
+    applyStatDelta(state, "focus", -10, diffs);
+
+    expect(state.attributes.focus).toMatchObject({ label: "focus", value: 2, visibility: "hidden" });
+    expect(diffs).toEqual([
+      { kind: "stat", target: "focus", delta: 3, before: 0, after: 3 },
+      { kind: "stat", target: "focus", delta: 10, before: 3, after: 4 },
+      { kind: "stat", target: "focus", delta: -10, before: 4, after: 2 },
+    ]);
+  });
+
+  it("deep clones nested state collections", () => {
+    const state = createInitialState(fixtureStory(), "story", ctx.now, ctx.rngSeed);
+    const richState = {
+      ...state,
+      delayed: [{ id: "d1", remainingNodes: 1, effects: [{ kind: "currency" as const, delta: 1 }] }],
+      endingsUnlocked: {
+        escape: {
+          storyId: "training-room",
+          endingId: "escape",
+          firstSeenTurn: 1,
+          mode: "story" as const,
+          path: ["start", "escape"],
+        },
+      },
+    };
+    const cloned = cloneState(richState);
+
+    cloned.delayed[0]!.effects[0] = { kind: "currency", delta: 99 };
+    cloned.endingsUnlocked.escape!.path.push("mutated");
+
+    expect(richState.delayed[0]?.effects[0]).toEqual({ kind: "currency", delta: 1 });
+    expect(richState.endingsUnlocked.escape?.path).toEqual(["start", "escape"]);
+  });
 });
 
 describe("choice and node application", () => {
@@ -226,6 +314,9 @@ describe("modes and migrations", () => {
     expect(canSwitchMode(state, "hardcore")).toBe(true);
     expect(canSwitchMode(laterState, "hardcore")).toBe(false);
     expect(switchMode(state, "hardcore").mode).toBe("hardcore");
+    expect(switchMode({ ...state, mode: "hardcore" }, "hardcore").mode).toBe("hardcore");
+    expect(switchMode({ ...laterState, mode: "hardcore" }, "story").mode).toBe("story");
+    expect(() => switchMode(laterState, "hardcore")).toThrow("mode_switch_not_allowed");
   });
 
   it("marks hardcore vitality-zero states for purge", () => {
@@ -242,5 +333,8 @@ describe("modes and migrations", () => {
     const migrated = migrateEngineState(old);
     expect(migrated.migrated).toBe(true);
     expect(migrated.state.schemaVersion).toBe(1);
+    expect(() => migrateEngineState({ ...current, schemaVersion: 999 })).toThrow(
+      "unsupported_future_engine_schema",
+    );
   });
 });

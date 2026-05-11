@@ -16,6 +16,8 @@ test-results/
 !.env.example
 *.local
 convex/_generated/
+convex/convex/_generated/
+convex/**/*.js
 apps/app/.expo/
 apps/app/web-build/
 infra/bin/

@@ -42,7 +42,16 @@ Use `pnpm dev:convex` locally or `docker compose --profile convex up convex` whe
 
 ## Provider Boundary
 
-Default local development uses deterministic mocks and in-repo fallback providers. Do not put live Anthropic, Vertex, DeepSeek, or Google service-account credentials in `.env` unless you are explicitly testing paid sandbox/provider behavior.
+Default local development uses deterministic mocks through the same provider client contracts used for live Anthropic, Vertex/Gemini, and DeepSeek calls. Do not put live Anthropic, Vertex, DeepSeek, Google service-account, Stripe, or auth credentials in `.env`. Put real credentials in Vault and sync deployment env from there.
+
+Current implementation status:
+
+- Provider clients are wired for Anthropic, Vertex/Gemini, and DeepSeek.
+- Local Docker uses provider mocks by default.
+- Live provider verification is not complete until `LR-3` passes against a Convex deployment with Vault-synced provider credentials.
+- The direct LLM SSE route now requires account/save authorization and a current pending scene. The client first calls `game.beginStreamingChoice`; `/llm/scene-stream` then derives the canonical provider request server-side from the save/story state. Guest requests must include the guest token proof and authenticated user requests must satisfy Convex `ctx.auth`.
+- Stream completion persists the exact prose emitted to the client. Stream failure marks the scene failed and clears the active turn lock so a provider outage cannot trap a save in progress.
+- The player UI should not expose provider or backend names. Use logs, admin/dev tooling, and the LR-3 smoke checklist for live provider verification.
 
 Production provider behavior that cannot be mirrored locally:
 
@@ -58,19 +67,23 @@ Use Stripe test mode only. Start forwarding with:
 docker compose --profile stripe up stripe-cli
 ```
 
-Set `STRIPE_WEBHOOK_FORWARD_URL` to the local Convex HTTP action endpoint once the billing webhook route is available. The Stripe CLI prints a test webhook signing secret; put that value in your uncommitted `.env` as `STRIPE_WEBHOOK_SECRET`.
+Set `STRIPE_WEBHOOK_FORWARD_URL` to the local Convex HTTP action endpoint once the billing webhook route is available. The Stripe CLI prints a test webhook signing secret; store that value in Vault as `STRIPE_WEBHOOK_SECRET` and sync Convex from Vault.
 
 Stripe live billing, invoices, tax behavior, metered usage settlement, disputes, and production webhook delivery are not mirrored locally.
 
 ## Seed Data
 
-The current seed command is a placeholder:
+Run the seed command after the Convex dev deployment is configured:
 
 ```sh
 docker compose run --rm app node scripts/dev/seed-local.mjs
 ```
 
-Starter story data is owned by `packages/stories`. The placeholder documents the intended Convex mutation boundary and avoids direct table writes until a seed/import API exists.
+Starter story data is owned by `packages/stories`. The seed command calls `seeds:loadStarterStories`, which validates that the package-owned starter catalog is addressable by the Convex backend and returns the loaded story ids/counts. It does not write starter rows directly because `game.listStarterLibrary` and `game.createSave` resolve starters from the versioned package catalog.
+
+Published creator seeds are Convex-owned rows. The library queries `creatorFunctions.listPublishedMine`; launching a published seed creates a normal save with an `authored_seed:<seedId>` story id, and server read/turn functions resolve that id back to the published seed story.
+
+Seed/import completion is tracked as `LR-6`. Keep it open until this command is run successfully against a clean Convex dev deployment.
 
 ## What Local Docker Does Not Mirror
 

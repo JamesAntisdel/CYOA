@@ -1,8 +1,12 @@
 import type { ContentPolicyContext } from "@cyoa/shared";
+import { contentPolicyContextSchema } from "@cyoa/shared";
+import { z } from "zod";
 
 export type ProviderName = "anthropic" | "vertex" | "deepseek" | "deterministic";
 
 export type ProviderRole = "quality" | "fallback" | "cost" | "deterministic";
+
+export type SceneLength = "brief" | "standard" | "rich" | "chapter";
 
 export type ProviderHealth = {
   provider: ProviderName;
@@ -18,11 +22,26 @@ export type SceneGenerationRequest = {
   seed: string;
   memory: string[];
   choices: Array<{ choiceId: string; label: string }>;
+  sceneLength: SceneLength;
   contentContext: ContentPolicyContext;
   risk: "low" | "normal" | "sensitive";
   entitlementTier: "free" | "unlimited" | "pro";
   retryCount: number;
 };
+
+export const sceneGenerationRequestSchema = z.object({
+  saveId: z.string().min(1),
+  storyId: z.string().min(1),
+  nodeId: z.string().min(1),
+  seed: z.string(),
+  memory: z.array(z.string()),
+  choices: z.array(z.object({ choiceId: z.string().min(1), label: z.string().min(1) })),
+  sceneLength: z.enum(["brief", "standard", "rich", "chapter"]).default("standard"),
+  contentContext: contentPolicyContextSchema,
+  risk: z.enum(["low", "normal", "sensitive"]),
+  entitlementTier: z.enum(["free", "unlimited", "pro"]),
+  retryCount: z.number().int().min(0),
+});
 
 export type TokenChunk = {
   provider: ProviderName;

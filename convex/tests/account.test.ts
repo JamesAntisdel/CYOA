@@ -5,6 +5,7 @@ import {
   buildClaimGuestPlan,
   buildMatureContentUpdate,
   canEnableMatureContent,
+  createAccountDeletionSummary,
   createGuestAccountRecord,
   projectAccount,
   requireEligibleAge,
@@ -131,6 +132,25 @@ describe("account domain", () => {
       createdAt: now,
       lastActiveAt: now,
       isAdmin: false,
+    });
+  });
+
+  it("creates empty deletion summaries with explicit counters", () => {
+    expect(createAccountDeletionSummary("acct")).toEqual({
+      accountId: "acct",
+      savesDeleted: 0,
+      scenesDeleted: 0,
+      turnHistoryDeleted: 0,
+      endingsDeleted: 0,
+      entitlementsDeleted: 0,
+      usageMetersDeleted: 0,
+      dailyCountersDeleted: 0,
+      analyticsDeleted: 0,
+      assetsDeleted: 0,
+      taleReadsDeleted: 0,
+      taleForksDeleted: 0,
+      authoredSeedsArchived: 0,
+      publishedTalesRevoked: 0,
     });
   });
 });

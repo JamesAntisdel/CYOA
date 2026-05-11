@@ -68,9 +68,9 @@ const spacing = {
 } as const;
 
 const radii = {
-  xs: 3,
-  sm: 4,
-  md: 8,
+  xs: 4,
+  sm: 8,
+  md: 12,
   pill: 999,
 } as const;
 

@@ -89,6 +89,7 @@ export async function submitTurn(input: TurnRequest): Promise<TurnResult> {
       seed: node.seed ?? "",
       memory: [],
       choices: node.choices.map((choice) => ({ choiceId: choice.id, label: choice.label })),
+      sceneLength: node.sceneLength ?? input.story.defaultSceneLength ?? "standard",
       contentContext: {
         surface: "generation",
         entitlementTier: "free",

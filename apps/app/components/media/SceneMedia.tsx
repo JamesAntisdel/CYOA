@@ -39,7 +39,10 @@ export function SceneMedia({
 
   if (media.kind === "audio") return ambient;
 
-  if (media.status !== "ready" || !media.uri) {
+  const missingReadyAsset =
+    media.kind === "image" ? !media.uri && media.source == null : !media.uri;
+
+  if (media.status !== "ready" || missingReadyAsset) {
     const label =
       media.status === "queued"
         ? media.kind === "video"
@@ -66,13 +69,19 @@ export function SceneMedia({
   }
 
   if (media.kind === "video") {
+    const uri = media.uri;
+    if (!uri) return null;
+
     return (
       <>
         {ambient}
-        <VeoCinematic alt={media.alt} reducedMotion={resolvedReducedMotion} uri={media.uri} />
+        <VeoCinematic alt={media.alt} reducedMotion={resolvedReducedMotion} uri={uri} />
       </>
     );
   }
+
+  const imageSource = media.source ?? { uri: media.uri ?? "" };
+  const imageWidth = resolvedReducedMotion ? 180 : 220;
 
   return (
     <>
@@ -80,17 +89,25 @@ export function SceneMedia({
       <View
         accessibilityLabel={media.alt}
         style={{
+          alignItems: "center",
+          backgroundColor: tokens.colors.surfaceMuted,
           borderColor: tokens.colors.borderMuted,
           borderRadius: tokens.radii.sm,
           borderWidth: tokens.borderWidths.hairline,
-          minHeight: resolvedReducedMotion ? 180 : 220,
+          justifyContent: "center",
           overflow: "hidden",
+          padding: tokens.spacing.md,
+          width: "100%",
         }}
       >
         <Image
           accessibilityIgnoresInvertColors
-          source={{ uri: media.uri }}
-          style={{ height: "100%", width: "100%" }}
+          resizeMode="contain"
+          source={imageSource}
+          style={{
+            height: Math.round(imageWidth * 10 / 7),
+            width: imageWidth,
+          }}
         />
       </View>
     </>

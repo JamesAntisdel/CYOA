@@ -152,3 +152,39 @@ export function buildAccountExport(account: AccountRecord): Record<string, unkno
     isAdmin: account.isAdmin === true,
   };
 }
+
+export type AccountDeletionSummary = {
+  accountId: string;
+  savesDeleted: number;
+  scenesDeleted: number;
+  turnHistoryDeleted: number;
+  endingsDeleted: number;
+  entitlementsDeleted: number;
+  usageMetersDeleted: number;
+  dailyCountersDeleted: number;
+  analyticsDeleted: number;
+  assetsDeleted: number;
+  taleReadsDeleted: number;
+  taleForksDeleted: number;
+  authoredSeedsArchived: number;
+  publishedTalesRevoked: number;
+};
+
+export function createAccountDeletionSummary(accountId: string): AccountDeletionSummary {
+  return {
+    accountId,
+    savesDeleted: 0,
+    scenesDeleted: 0,
+    turnHistoryDeleted: 0,
+    endingsDeleted: 0,
+    entitlementsDeleted: 0,
+    usageMetersDeleted: 0,
+    dailyCountersDeleted: 0,
+    analyticsDeleted: 0,
+    assetsDeleted: 0,
+    taleReadsDeleted: 0,
+    taleForksDeleted: 0,
+    authoredSeedsArchived: 0,
+    publishedTalesRevoked: 0,
+  };
+}

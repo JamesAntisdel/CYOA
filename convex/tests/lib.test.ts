@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { assertAdmin, assertOwns, forbidden, makeDayKey, projectCoopParticipant } from "../index";
+import {
+  assertAccountSessionAccess,
+  assertAdmin,
+  assertOwns,
+  forbidden,
+  makeDayKey,
+  projectCoopParticipant,
+} from "../index";
 
 describe("convex helpers", () => {
   it("projects co-op participants without private fields", () => {
@@ -35,6 +42,27 @@ describe("convex helpers", () => {
     expect(() => assertAdmin({ _id: "acct", isAdmin: true })).not.toThrow();
     expect(() => assertOwns({ _id: "owner" }, { accountId: "other" })).toThrow("resource_not_owned");
     expect(() => assertOwns({ _id: "owner" }, { ownerAccountId: "owner" })).not.toThrow();
+  });
+
+  it("allows guest accounts and validates user account identity", async () => {
+    const ctx = (subject?: string) => ({
+      auth: {
+        getUserIdentity: async () => (subject ? { subject } : null),
+      },
+    });
+
+    await expect(
+      assertAccountSessionAccess(ctx(), { _id: "guest", kind: "guest", guestTokenHash: "guest_hash" }, "guest_hash"),
+    ).resolves.toBeUndefined();
+    await expect(
+      assertAccountSessionAccess(ctx(), { _id: "guest", kind: "guest", guestTokenHash: "guest_hash" }),
+    ).rejects.toThrow("resource_not_owned");
+    await expect(
+      assertAccountSessionAccess(ctx("user_1"), { _id: "acct", kind: "user", userId: "user_1" }),
+    ).resolves.toBeUndefined();
+    await expect(
+      assertAccountSessionAccess(ctx("user_2"), { _id: "acct", kind: "user", userId: "user_1" }),
+    ).rejects.toThrow("resource_not_owned");
   });
 
   it("creates stable day keys and app errors", () => {

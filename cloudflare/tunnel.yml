@@ -1,0 +1,24 @@
+# Cloudflare Tunnel config for local Docker testing.
+#
+# Replace these placeholders after creating a named tunnel:
+#   cloudflared tunnel create cyoa-local
+#   cloudflared tunnel route dns cyoa-local <your-hostname.example.com>
+#
+# Then run from the repo root:
+#   cloudflared tunnel --config cloudflare/tunnel.yml run
+
+tunnel: <CLOUDFLARE_TUNNEL_ID_OR_NAME>
+credentials-file: /home/j/.cloudflared/<CLOUDFLARE_TUNNEL_ID>.json
+
+ingress:
+  - hostname: <your-hostname.example.com>
+    service: http://localhost:8081
+    originRequest:
+      httpHostHeader: localhost:8081
+      noTLSVerify: true
+
+  # Optional: expose local provider mocks only if you explicitly need browser-visible mock APIs.
+  # - hostname: providers.<your-hostname.example.com>
+  #   service: http://localhost:4010
+
+  - service: http_status:404

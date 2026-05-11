@@ -54,7 +54,7 @@ export function calculateOverageCents(
   const premiumOver = Math.max(0, meter.premiumTextTokens - (entitlement.includedPremiumTokens ?? 0));
   const imageOver = Math.max(0, meter.imageGenerations - (entitlement.includedImages ?? 0));
   const videoOver = Math.max(0, meter.videoGenerations - (entitlement.includedVideos ?? 0));
-  return Math.ceil(premiumOver / 1000) + imageOver * 25 + videoOver * 100;
+  return Math.ceil(premiumOver / 1000) + imageOver * 25 + videoOver * 20;
 }
 
 export function enableOverage(input: {

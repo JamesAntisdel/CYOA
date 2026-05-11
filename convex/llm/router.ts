@@ -3,7 +3,7 @@ import { createAnthropicProvider } from "./anthropic";
 import { createDeepSeekProvider } from "./deepseek";
 import { createDeterministicProvider } from "./deterministic";
 import { parseSceneOutput } from "./parse";
-import { chooseProvider, providerEligible } from "./providerPolicy";
+import { chooseProvider, orderedProviders, providerEligible } from "./providerPolicy";
 import type { LlmProvider, ParsedScene, ProviderGeneration, ProviderHealth, SceneGenerationRequest, TokenChunk } from "./types";
 import { createVertexProvider } from "./vertex";
 
@@ -25,26 +25,43 @@ export class LlmRouter {
   }
 
   async generateScene(request: SceneGenerationRequest): Promise<RouterResult> {
-    const provider = this.choose(request);
-    const generation = await provider.generate(request);
-    const policy = evaluateTextPolicy({
-      text: generation.text,
-      context: request.contentContext,
-    });
-    if (policy.action === "block" || policy.action === "safe_end") {
-      const fallback = this.providers.find((candidate) => candidate.name === "deterministic");
-      if (!fallback) throw new Error("deterministic_provider_missing");
-      const safeGeneration = await fallback.generate(request);
-      return {
-        generation: safeGeneration,
-        parsed: parseSceneOutput(safeGeneration.text),
-        safetyAction: policy.action,
-      };
+    const candidates = orderedProviders(this.providers, request);
+    let lastError: unknown;
+
+    for (const provider of candidates) {
+      try {
+        const generation = await provider.generate(request);
+        const parsed = parseSceneOutput(generation.text);
+        const policy = evaluateTextPolicy({
+          text: parsed.prose,
+          context: request.contentContext,
+        });
+        const safetyAction = lastError && provider.name === "deterministic" ? "fallback" : policy.action;
+        if (policy.action === "block" || policy.action === "safe_end") {
+          return this.generateDeterministicFallback(request, policy.action);
+        }
+        return {
+          generation,
+          parsed,
+          safetyAction,
+        };
+      } catch (error) {
+        lastError = error;
+      }
     }
+
+    if (!lastError) throw new Error("llm_provider_missing");
+    return this.generateDeterministicFallback(request, "fallback");
+  }
+
+  private async generateDeterministicFallback(request: SceneGenerationRequest, safetyAction: string): Promise<RouterResult> {
+    const fallback = this.providers.find((candidate) => candidate.name === "deterministic");
+    if (!fallback) throw new Error("deterministic_provider_missing");
+    const safeGeneration = await fallback.generate(request);
     return {
-      generation,
-      parsed: parseSceneOutput(generation.text),
-      safetyAction: policy.action,
+      generation: safeGeneration,
+      parsed: parseSceneOutput(safeGeneration.text),
+      safetyAction,
     };
   }
 

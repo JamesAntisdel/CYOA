@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { listStarterStories, type StorySummary } from "@cyoa/stories";
 
-import type { GuestSession } from "./useGuestSession";
+import { createRemoteSave, hasRemoteGameApi, listRemoteLibrary } from "../lib/gameApi";
+import { guestAuthArgs, type GuestSession } from "./useGuestSession";
 
 export type LibrarySave = {
   saveId: string;
@@ -24,7 +25,32 @@ export function useLibrary(session: GuestSession | null) {
   const starterStories: StorySummary[] = useMemo(() => listStarterStories(), []);
 
   useEffect(() => {
+    let cancelled = false;
     setSaves(session ? readSaves(session.accountId) : []);
+    if (session && hasRemoteGameApi()) {
+      void listRemoteLibrary({
+        accountId: session.accountId,
+        ...guestAuthArgs(),
+      }).then((remoteSaves) => {
+        if (cancelled || !remoteSaves) return;
+        const nextSaves = remoteSaves.map((save) => ({
+          saveId: save.saveId,
+          accountId: session.accountId,
+          storyId: save.storyId,
+          title: save.title,
+          mode: save.mode,
+          status: save.status,
+          turnNumber: save.turnNumber,
+          createdAt: save.updatedAt,
+          updatedAt: save.updatedAt,
+        }));
+        writeSaves(session.accountId, nextSaves);
+        setSaves(nextSaves);
+      });
+    }
+    return () => {
+      cancelled = true;
+    };
   }, [session]);
 
   const persistSaves = useCallback(
@@ -37,13 +63,14 @@ export function useLibrary(session: GuestSession | null) {
   );
 
   const createSave = useCallback(
-    (storyId: string, mode: "story" | "hardcore" = "story") => {
+    async (storyId: string, mode: "story" | "hardcore" = "story", titleOverride?: string) => {
       if (!session) {
         throw new Error("guest_session_required");
       }
 
       const story = starterStories.find((starter: StorySummary) => starter.id === storyId);
-      if (!story) {
+      const title = titleOverride ?? story?.title;
+      if (!title) {
         throw new Error(`story_not_found:${storyId}`);
       }
 
@@ -60,7 +87,7 @@ export function useLibrary(session: GuestSession | null) {
         saveId: createId("save"),
         accountId: session.accountId,
         storyId,
-        title: story.title,
+        title,
         mode,
         status: "active",
         turnNumber: 0,
@@ -68,13 +95,26 @@ export function useLibrary(session: GuestSession | null) {
         updatedAt: now,
       };
 
+      const remote = hasRemoteGameApi()
+        ? await createRemoteSave({
+            accountId: session.accountId,
+            ...guestAuthArgs(),
+            storyId,
+            mode,
+          })
+        : null;
+      if (remote) {
+        save.saveId = remote.saveId;
+        save.turnNumber = remote.scene.turnNumber;
+      }
+
       persistSaves([save, ...existing]);
       return save;
     },
     [persistSaves, session, starterStories],
   );
 
-  const launchTutorialSave = useCallback(() => {
+  const launchTutorialSave = useCallback(async () => {
     return createSave(TUTORIAL_STORY_ID, "story");
   }, [createSave]);
 

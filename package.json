@@ -16,15 +16,33 @@
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "pnpm -r --if-present test",
     "test:unit": "pnpm -r --if-present test:unit",
+    "test:coverage": "pnpm -r --if-present test:coverage",
     "test:e2e": "pnpm --filter @cyoa/app test:e2e",
     "convex:codegen": "pnpm --filter @cyoa/convex codegen",
     "convex:deploy": "pnpm --filter @cyoa/convex deploy",
+    "secrets:local:check": "node scripts/secrets/check-local-env.mjs",
+    "secrets:vault:check": "node scripts/secrets/vault-check.mjs",
+    "secrets:vault:exec": "node scripts/secrets/vault-exec.mjs",
+    "secrets:vault:sync-convex": "node scripts/secrets/vault-sync-convex.mjs",
+    "smoke:live-readiness": "node scripts/smoke/live-readiness.mjs",
     "infra:preview": "pnpm --filter @cyoa/infra preview",
     "infra:deploy": "pnpm --filter @cyoa/infra deploy",
     "verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm build"
   },
   "devDependencies": {
     "@types/node": "^20.17.10",
+    "@vitest/coverage-v8": "2.1.9",
+    "convex": "^1.19.4",
     "typescript": "^5.7.2"
+  },
+  "pnpm": {
+    "overrides": {
+      "@xmldom/xmldom": "0.8.13",
+      "esbuild": "0.25.12",
+      "postcss": "8.5.10",
+      "tar": "7.5.11",
+      "uuid": "14.0.0",
+      "vite": "6.4.2"
+    }
   }
 }

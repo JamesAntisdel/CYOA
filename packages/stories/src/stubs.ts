@@ -18,6 +18,7 @@ function starterStub(args: {
       id: args.id,
       version: 1,
       title: args.title,
+      defaultSceneLength: args.difficulty === "hard" ? "rich" : "standard",
       startNodeId: "start",
       deathNodeId: "ending-death",
       initialState: {

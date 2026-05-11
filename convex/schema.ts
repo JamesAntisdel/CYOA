@@ -261,7 +261,12 @@ export default defineSchema({
     saveId: v.optional(saveId),
     taleId: v.optional(taleId),
     kind: v.union(v.literal("image"), v.literal("video"), v.literal("audio")),
-    provider: v.union(v.literal("vertex-imagen"), v.literal("vertex-veo"), v.literal("uploaded")),
+    provider: v.union(
+      v.literal("vertex-imagen"),
+      v.literal("vertex-veo"),
+      v.literal("gemini-veo"),
+      v.literal("uploaded"),
+    ),
     url: v.string(),
     status: v.union(v.literal("queued"), v.literal("generating"), v.literal("ready"), v.literal("failed"), v.literal("blocked")),
     entitlementRequired: v.literal("pro"),
@@ -298,4 +303,12 @@ export default defineSchema({
   })
     .index("by_scope_request", ["scope", "requestId"])
     .index("by_expiresAt", ["expiresAt"]),
+
+  stripe_webhook_events: defineTable({
+    eventId: v.string(),
+    type: v.string(),
+    processedAt: v.number(),
+  })
+    .index("by_eventId", ["eventId"])
+    .index("by_processedAt", ["processedAt"]),
 });

@@ -1,23 +1,59 @@
 import { useRouter } from "expo-router";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import type { StorySummary } from "@cyoa/stories";
+import { useEffect, useState } from "react";
 
 import { AgeGate } from "../../components/account/AgeGate";
-import { useGuestSession, type AgeSelection } from "../../hooks/useGuestSession";
+import { AppNav } from "../../components/navigation";
+import { hasRemoteGameApi, listRemotePublishedCreatorSeeds, type RemoteCreatorSeedItem } from "../../lib/gameApi";
+import { getStoryCoverSource } from "../../lib/designAssets";
+import { creatorSeedSaveId, listLocalCreatorSeeds, type LocalCreatorSeed } from "../../lib/localCreatorSeeds";
+import { guestAuthArgs, useGuestSession, type AgeSelection } from "../../hooks/useGuestSession";
 import { useLibrary, type LibrarySave } from "../../hooks/useLibrary";
 
 export default function LibraryRoute() {
   const router = useRouter();
   const guest = useGuestSession();
   const library = useLibrary(guest.session);
+  const [creatorSeeds, setCreatorSeeds] = useState<LocalCreatorSeed[]>([]);
+  const [remoteCreatorSeeds, setRemoteCreatorSeeds] = useState<RemoteCreatorSeedItem[]>([]);
+
+  useEffect(() => {
+    setCreatorSeeds(listLocalCreatorSeeds().filter((seed) => seed.status === "published"));
+    if (!guest.session || !hasRemoteGameApi()) {
+      setRemoteCreatorSeeds([]);
+      return;
+    }
+
+    let cancelled = false;
+    void listRemotePublishedCreatorSeeds({
+      accountId: guest.session.accountId,
+      ...guestAuthArgs(),
+    }).then((seeds) => {
+      if (!cancelled) setRemoteCreatorSeeds(seeds ?? []);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [guest.session]);
 
   const handleAgeSubmit = (selection: AgeSelection) => {
-    guest.createGuestSession(selection);
+    void guest.createGuestSession(selection);
   };
 
   const openSave = (saveId: string) => {
     router.push(`/read/${saveId}`);
   };
+
+  const openRemoteCreatorSeed = async (seed: RemoteCreatorSeedItem) => {
+    const save = await library.createSave(seed.storyId, "story", seed.title);
+    openSave(save.saveId);
+  };
+
+  const localOnlyCreatorSeeds = creatorSeeds.filter(
+    (seed) => !remoteCreatorSeeds.some((remoteSeed) => remoteSeed.seedId === seed.seedId),
+  );
+  const hasCreatedSeeds = remoteCreatorSeeds.length > 0 || localOnlyCreatorSeeds.length > 0;
 
   if (!guest.session) {
     return (
@@ -33,13 +69,11 @@ export default function LibraryRoute() {
   return (
     <ScrollView contentContainerStyle={styles.page}>
       <View style={styles.header}>
+        <AppNav current="library" />
         <View>
           <Text style={styles.eyebrow}>Guest shelf</Text>
           <Text style={styles.title}>Choose a starter adventure.</Text>
         </View>
-        <Pressable accessibilityRole="button" onPress={() => router.push("/")}>
-          <Text style={styles.textButton}>Cover</Text>
-        </Pressable>
       </View>
 
       {library.continueSave ? (
@@ -50,10 +84,18 @@ export default function LibraryRoute() {
             onPress={() => openSave(library.continueSave!.saveId)}
             style={styles.continueCard}
           >
-            <Text style={styles.storyTitle}>{library.continueSave.title}</Text>
-            <Text style={styles.storySummary}>
-              Turn {library.continueSave.turnNumber} · Story mode
-            </Text>
+            <Image
+              accessibilityLabel={`${library.continueSave.title} cover`}
+              resizeMode="contain"
+              source={getStoryCoverSource(library.continueSave.storyId)}
+              style={styles.continueCover}
+            />
+            <View style={styles.continueBody}>
+              <Text style={styles.continueTitle}>{library.continueSave.title}</Text>
+              <Text style={styles.continueSummary}>
+                Turn {library.continueSave.turnNumber} · Story mode
+              </Text>
+            </View>
           </Pressable>
         </View>
       ) : null}
@@ -65,25 +107,95 @@ export default function LibraryRoute() {
             <Pressable
               accessibilityRole="button"
               key={story.id}
-              onPress={() => {
-                const save: LibrarySave = library.createSave(story.id);
+              onPress={async () => {
+                const save: LibrarySave = await library.createSave(story.id);
                 openSave(save.saveId);
               }}
               style={styles.storyCard}
             >
-              <View style={styles.storyHeader}>
-                <Text style={styles.storyMeta}>
-                  {story.difficulty.toUpperCase()} · {story.estimatedLength}
-                </Text>
-                <Text style={styles.storyTone}>{story.tone}</Text>
+              <View style={styles.storyCover}>
+                <Image
+                  accessibilityLabel={`${story.title} cover`}
+                  resizeMode="contain"
+                  source={getStoryCoverSource(story.id)}
+                  style={styles.storyCoverImage}
+                />
+                <View style={styles.storyBadge}>
+                  <Text style={styles.storyBadgeText}>{story.difficulty}</Text>
+                </View>
               </View>
-              <Text style={styles.storyTitle}>{story.title}</Text>
-              <Text style={styles.storySummary}>{story.summary}</Text>
-              <Text style={styles.launchText}>Launch story</Text>
+              <View style={styles.storyBody}>
+                <View style={styles.storyHeader}>
+                  <Text style={styles.storyMeta}>{story.estimatedLength}</Text>
+                  <Text style={styles.storyTone}>{story.tone}</Text>
+                </View>
+                <Text style={styles.storyTitle}>{story.title}</Text>
+                <Text style={styles.storySummary}>{story.summary}</Text>
+                <Text style={styles.launchText}>Launch story</Text>
+              </View>
             </Pressable>
           ))}
         </View>
       </View>
+
+      {hasCreatedSeeds ? (
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Created by you</Text>
+            <Pressable accessibilityRole="button" onPress={() => router.push("/creator")}>
+              <Text style={styles.textButton}>New seed</Text>
+            </Pressable>
+          </View>
+          <View style={styles.storyList}>
+            {remoteCreatorSeeds.map((seed) => (
+              <Pressable
+                accessibilityRole="button"
+                key={seed.seedId}
+                onPress={() => {
+                  void openRemoteCreatorSeed(seed);
+                }}
+                style={[styles.storyCard, styles.creatorCard]}
+              >
+                <View style={styles.creatorMark}>
+                  <Text style={styles.creatorMarkText}>Seed</Text>
+                </View>
+                <View style={styles.storyBody}>
+                  <View style={styles.storyHeader}>
+                    <Text style={styles.storyMeta}>Published</Text>
+                    <Text style={styles.storyTone}>account shelf</Text>
+                  </View>
+                  <Text style={styles.storyTitle}>{seed.title}</Text>
+                  <Text style={styles.storySummary}>{seed.opening}</Text>
+                  <Text style={styles.launchText}>Launch story</Text>
+                </View>
+              </Pressable>
+            ))}
+            {localOnlyCreatorSeeds.map((seed) => (
+              <Pressable
+                accessibilityRole="button"
+                key={seed.seedId}
+                onPress={() => openSave(creatorSeedSaveId(seed.seedId))}
+                style={[styles.storyCard, styles.creatorCard]}
+              >
+                <View style={styles.creatorMark}>
+                  <Text style={styles.creatorMarkText}>Seed</Text>
+                </View>
+                <View style={styles.storyBody}>
+                  <View style={styles.storyHeader}>
+                    <Text style={styles.storyMeta}>Published</Text>
+                    <Text style={styles.storyTone}>saved draft</Text>
+                  </View>
+                  <Text style={styles.storyTitle}>{seed.title}</Text>
+                  <Text style={styles.storySummary}>
+                    {seed.story.nodes[seed.story.startNodeId]?.seed ?? "Open the seed and test the first branch."}
+                  </Text>
+                  <Text style={styles.launchText}>Read story</Text>
+                </View>
+              </Pressable>
+            ))}
+          </View>
+        </View>
+      ) : null}
     </ScrollView>
   );
 }
@@ -104,11 +216,15 @@ const styles = StyleSheet.create({
   },
   header: {
     alignItems: "flex-start",
-    flexDirection: "row",
     gap: 16,
-    justifyContent: "space-between",
     maxWidth: 900,
     width: "100%",
+  },
+  headerTitleRow: {
+    alignItems: "flex-start",
+    flex: 1,
+    flexDirection: "row",
+    gap: 12,
   },
   eyebrow: {
     color: "#7b5a35",
@@ -138,10 +254,42 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: "800",
   },
+  sectionHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+  },
   continueCard: {
+    alignItems: "stretch",
     backgroundColor: "#2d1d12",
+    borderRadius: 8,
+    flexDirection: "row",
     gap: 8,
+    height: 150,
+    minHeight: 132,
+    overflow: "hidden",
+  },
+  continueCover: {
+    aspectRatio: 7 / 10,
+    backgroundColor: "#17100b",
+    height: 150,
+    width: 92,
+  },
+  continueBody: {
+    flex: 1,
+    gap: 8,
+    justifyContent: "center",
     padding: 16,
+  },
+  continueTitle: {
+    color: "#fff8ea",
+    fontSize: 20,
+    fontWeight: "800",
+  },
+  continueSummary: {
+    color: "#ead9bd",
+    fontSize: 15,
+    lineHeight: 21,
   },
   storyList: {
     gap: 12,
@@ -149,8 +297,59 @@ const styles = StyleSheet.create({
   storyCard: {
     backgroundColor: "#fff8ea",
     borderColor: "#d5b98f",
+    borderRadius: 8,
     borderWidth: 1,
+    flexDirection: "row",
     gap: 8,
+    height: 220,
+    minHeight: 186,
+    overflow: "hidden",
+  },
+  creatorCard: {
+    height: 178,
+    minHeight: 164,
+  },
+  creatorMark: {
+    alignItems: "center",
+    backgroundColor: "#2d1d12",
+    justifyContent: "center",
+    width: 128,
+  },
+  creatorMarkText: {
+    color: "#e6ca85",
+    fontSize: 18,
+    fontWeight: "800",
+    textTransform: "uppercase",
+  },
+  storyCover: {
+    alignItems: "center",
+    backgroundColor: "#17100b",
+    borderBottomLeftRadius: 8,
+    borderTopLeftRadius: 8,
+    height: 220,
+    justifyContent: "center",
+    padding: 8,
+    width: 128,
+  },
+  storyCoverImage: {
+    aspectRatio: 7 / 10,
+    width: "100%",
+  },
+  storyBadge: {
+    backgroundColor: "rgba(19, 17, 13, 0.74)",
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  storyBadgeText: {
+    color: "#e6ca85",
+    fontSize: 11,
+    fontWeight: "800",
+    textTransform: "uppercase",
+  },
+  storyBody: {
+    flex: 1,
+    gap: 8,
+    justifyContent: "center",
     padding: 16,
   },
   storyHeader: {

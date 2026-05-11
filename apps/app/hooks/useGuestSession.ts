@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import type { AgeBand } from "@cyoa/shared";
 
+import { createRemoteGuestAccount, hasRemoteGameApi } from "../lib/gameApi";
+
 export type AgeSelection = AgeBand | "under_13";
 
 export type GuestSession = {
@@ -19,6 +21,16 @@ type GuestSessionState =
   | { status: "error"; session: null; blocked: false; error: string };
 
 const GUEST_SESSION_KEY = "cyoa.guestSession.v1";
+const GUEST_TOKEN_KEY = "cyoa.guestToken.v1";
+
+export function getGuestTokenHash(): string | null {
+  return getStorage()?.getItem(GUEST_TOKEN_KEY) ?? null;
+}
+
+export function guestAuthArgs(): { guestTokenHash?: string } {
+  const token = getGuestTokenHash();
+  return token ? { guestTokenHash: token } : {};
+}
 
 export function useGuestSession() {
   const [state, setState] = useState<GuestSessionState>({
@@ -31,9 +43,32 @@ export function useGuestSession() {
   useEffect(() => {
     const restored = readStoredSession();
     setState({ status: "ready", session: restored, blocked: false, error: null });
+
+    if (!restored || !hasRemoteGameApi()) return undefined;
+
+    let cancelled = false;
+    void createRemoteGuestAccount({
+      ageSelection: restored.ageBand,
+      guestTokenHash: getOrCreateGuestToken(),
+    }).then((remote) => {
+      if (cancelled || !remote) return;
+      const session: GuestSession = {
+        accountId: remote.account.accountId,
+        kind: "guest",
+        ageBand: remote.account.ageBand,
+        createdAt: restored.createdAt,
+        lastActiveAt: Date.now(),
+      };
+      writeStoredSession(session);
+      setState({ status: "ready", session, blocked: false, error: null });
+    });
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  const createGuestSession = useCallback((ageSelection: AgeSelection) => {
+  const createGuestSession = useCallback(async (ageSelection: AgeSelection) => {
     if (ageSelection === "under_13") {
       clearStoredSession();
       setState({
@@ -47,10 +82,16 @@ export function useGuestSession() {
 
     const now = Date.now();
     const existing = readStoredSession();
+    const remote = hasRemoteGameApi()
+      ? await createRemoteGuestAccount({
+          ageSelection,
+          guestTokenHash: getOrCreateGuestToken(),
+        })
+      : null;
     const session: GuestSession = {
-      accountId: existing?.accountId ?? createId("guest"),
+      accountId: remote?.account.accountId ?? existing?.accountId ?? createId("guest"),
       kind: "guest",
-      ageBand: ageSelection,
+      ageBand: remote?.account.ageBand ?? ageSelection,
       createdAt: existing?.createdAt ?? now,
       lastActiveAt: now,
     };
@@ -116,7 +157,18 @@ function writeStoredSession(session: GuestSession): void {
 }
 
 function clearStoredSession(): void {
-  getStorage()?.removeItem(GUEST_SESSION_KEY);
+  const storage = getStorage();
+  storage?.removeItem(GUEST_SESSION_KEY);
+  storage?.removeItem(GUEST_TOKEN_KEY);
+}
+
+function getOrCreateGuestToken(): string {
+  const storage = getStorage();
+  const existing = storage?.getItem(GUEST_TOKEN_KEY);
+  if (existing) return existing;
+  const token = createId("guest_token");
+  storage?.setItem(GUEST_TOKEN_KEY, token);
+  return token;
 }
 
 function getStorage(): Pick<Storage, "getItem" | "setItem" | "removeItem"> | null {

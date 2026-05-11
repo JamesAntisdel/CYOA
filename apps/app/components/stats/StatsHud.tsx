@@ -6,6 +6,7 @@ import type { ReaderInventoryItem, ReaderStats } from "../../hooks/useTurn";
 
 type StatsHudProps = {
   inventory: ReaderInventoryItem[];
+  mode?: "full" | "quiet";
   stats: ReaderStats;
 };
 
@@ -15,8 +16,9 @@ const statLabels: Array<[keyof ReaderStats, string]> = [
   ["insight", "Insight"],
 ];
 
-export function StatsHud({ inventory, stats }: StatsHudProps) {
+export function StatsHud({ inventory, mode = "full", stats }: StatsHudProps) {
   const { tokens } = useAppTheme();
+  const inventoryLabel = inventory.length === 1 ? "1 item" : `${inventory.length} items`;
 
   return (
     <View style={{ gap: tokens.spacing.md }}>
@@ -30,21 +32,24 @@ export function StatsHud({ inventory, stats }: StatsHudProps) {
             {"○".repeat(Math.max(0, 5 - stats[key]))}
           </Chip>
         ))}
+        {mode === "quiet" ? <Chip>Inventory: {inventoryLabel}</Chip> : null}
       </View>
-      <View style={{ gap: tokens.spacing.xs }}>
-        <Text muted variant="caption">
-          Inventory
-        </Text>
-        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: tokens.spacing.sm }}>
-          {inventory.length > 0 ? (
-            inventory.map((item) => <Chip key={item.id}>{item.label}</Chip>)
-          ) : (
-            <Text muted variant="bodySmall">
-              Empty
-            </Text>
-          )}
+      {mode === "full" ? (
+        <View style={{ gap: tokens.spacing.xs }}>
+          <Text muted variant="caption">
+            Inventory
+          </Text>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: tokens.spacing.sm }}>
+            {inventory.length > 0 ? (
+              inventory.map((item) => <Chip key={item.id}>{item.label}</Chip>)
+            ) : (
+              <Text muted variant="bodySmall">
+                Empty
+              </Text>
+            )}
+          </View>
         </View>
-      </View>
+      ) : null}
     </View>
   );
 }

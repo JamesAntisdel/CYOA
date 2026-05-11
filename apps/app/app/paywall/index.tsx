@@ -1,23 +1,46 @@
 import { useState } from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
 
+import { AppNav } from "../../components/navigation";
 import { PaywallPanel, type PaywallPlan } from "../../components/paywall";
+import { checkoutUnavailableMessage, publicAppUrl } from "../../lib/billingConfig";
+import { useGuestSession } from "../../hooks/useGuestSession";
+import { createRemoteCheckoutSession, previewRemotePlan } from "../../lib/gameApi";
 
 export default function PaywallRoute() {
+  const guest = useGuestSession();
   const [overageEnabled, setOverageEnabled] = useState(false);
   const [spendCapCents, setSpendCapCents] = useState(1000);
   const [preview, setPreview] = useState("Select a plan to preview server-confirmed pricing.");
 
-  const selectPlan = (planId: PaywallPlan["id"]) => {
-    setPreview(
-      planId === "pro"
-        ? "Pro preview: $25/mo before credits. Media jobs remain async and safety-gated."
-        : "Unlimited preview: $10/mo before credits. General turns become unlimited after Stripe confirmation.",
-    );
+  const selectPlan = async (planId: PaywallPlan["id"]) => {
+    const accountId = guest.session?.accountId;
+    const previewResult = await previewRemotePlan({
+      currentTier: "free",
+      targetTier: planId,
+    });
+    if (previewResult) {
+      setPreview(
+        `Due now: $${(previewResult.immediateChargeCents / 100).toFixed(2)}. Credit applied: $${(previewResult.creditAppliedCents / 100).toFixed(2)}.`,
+      );
+    } else {
+      setPreview(checkoutUnavailableMessage(planId));
+    }
+
+    if (!accountId) return;
+    const checkout = await createRemoteCheckoutSession({
+      accountId,
+      targetTier: planId,
+      interval: "monthly",
+      successUrl: `${publicAppUrl}/paywall/success`,
+      cancelUrl: `${publicAppUrl}/paywall`,
+    });
+    if (checkout) setPreview(`Checkout ready: ${checkout.url}`);
   };
 
   return (
     <ScrollView contentContainerStyle={styles.page}>
+      <AppNav />
       <PaywallPanel
         onSelectPlan={selectPlan}
         onSpendCapChange={setSpendCapCents}
@@ -44,6 +67,7 @@ const styles = StyleSheet.create({
   preview: {
     backgroundColor: "#fff8ea",
     borderColor: "#d5b98f",
+    borderRadius: 8,
     borderWidth: 1,
     gap: 8,
     padding: 16,

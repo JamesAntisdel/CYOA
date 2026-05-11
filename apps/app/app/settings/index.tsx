@@ -1,6 +1,10 @@
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ScrollView, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
-import { useReaderSettings, type ReaderSettings } from "../../hooks/useReaderSettings";
+import { AppNav } from "../../components/navigation";
+import { Button, Divider, Stamp, Surface, Text } from "../../components/primitives";
+import { useReaderSettings } from "../../hooks/useReaderSettings";
+import { useAppTheme } from "../../theme";
 
 type Option<T extends string | boolean> = {
   label: string;
@@ -9,82 +13,102 @@ type Option<T extends string | boolean> = {
 
 export default function SettingsRoute() {
   const { resetSettings, settings, updateSettings } = useReaderSettings();
+  const { tokens } = useAppTheme();
 
   return (
-    <ScrollView contentContainerStyle={styles.page}>
-      <View style={styles.header}>
-        <Text style={styles.kicker}>Reader settings</Text>
-        <Text style={styles.title}>Tune the page.</Text>
-      </View>
+    <SafeAreaView style={{ backgroundColor: tokens.colors.background, flex: 1 }}>
+      <ScrollView
+        contentContainerStyle={{
+          gap: tokens.spacing.xl,
+          marginHorizontal: "auto",
+          maxWidth: 980,
+          padding: tokens.spacing.xl,
+          width: "100%",
+        }}
+      >
+        <AppNav current="settings" />
 
-      <SettingGroup
-        label="Theme"
-        options={[
-          { label: "System", value: "system" },
-          { label: "Day", value: "day" },
-          { label: "Night", value: "night" },
-          { label: "Sepia", value: "sepia" },
-        ]}
-        selected={settings.theme}
-        onSelect={(theme) => updateSettings({ theme })}
-      />
+        <View style={{ gap: tokens.spacing.sm, maxWidth: 680 }}>
+          <Stamp>settings</Stamp>
+          <Text variant="title">Reader preferences</Text>
+          <Text muted>
+            These controls affect the reading surface immediately and persist in this browser.
+          </Text>
+        </View>
 
-      <SettingGroup
-        label="Typography"
-        options={[
-          { label: "Compact", value: "compact" },
-          { label: "Default", value: "default" },
-          { label: "Large", value: "large" },
-        ]}
-        selected={settings.fontScale}
-        onSelect={(fontScale) => updateSettings({ fontScale })}
-      />
+        <View style={{ alignItems: "flex-start", flexDirection: "row", flexWrap: "wrap", gap: tokens.spacing.lg }}>
+          <Surface padded style={{ flex: 1, minWidth: 320 }}>
+            <View style={{ gap: tokens.spacing.lg }}>
+              <SettingGroup
+                label="Theme"
+                options={[
+                  { label: "System", value: "system" },
+                  { label: "Day", value: "day" },
+                  { label: "Night", value: "night" },
+                  { label: "Sepia", value: "sepia" },
+                ]}
+                selected={settings.theme}
+                onSelect={(theme) => updateSettings({ theme })}
+              />
 
-      <SettingGroup
-        label="HUD"
-        options={[
-          { label: "Full", value: "full" },
-          { label: "Quiet", value: "quiet" },
-          { label: "Hidden", value: "hidden" },
-        ]}
-        selected={settings.hudMode}
-        onSelect={(hudMode) => updateSettings({ hudMode })}
-      />
+              <SettingGroup
+                label="Typography"
+                options={[
+                  { label: "Compact", value: "compact" },
+                  { label: "Default", value: "default" },
+                  { label: "Large", value: "large" },
+                ]}
+                selected={settings.fontScale}
+                onSelect={(fontScale) => updateSettings({ fontScale })}
+              />
 
-      <SettingGroup
-        label="Layout"
-        options={[
-          { label: "Book", value: "book" },
-          { label: "Focus", value: "focus" },
-        ]}
-        selected={settings.layoutMode}
-        onSelect={(layoutMode) => updateSettings({ layoutMode })}
-      />
+              <SettingGroup
+                label="Reader HUD"
+                options={[
+                  { label: "Full", value: "full" },
+                  { label: "Quiet", value: "quiet" },
+                  { label: "Hidden", value: "hidden" },
+                ]}
+                selected={settings.hudMode}
+                onSelect={(hudMode) => updateSettings({ hudMode })}
+              />
 
-      <SettingGroup
-        label="Motion and audio"
-        options={[
-          { label: "Motion on", value: false },
-          { label: "Reduce motion", value: true },
-        ]}
-        selected={settings.reduceMotion}
-        onSelect={(reduceMotion) => updateSettings({ reduceMotion })}
-      />
+              <SettingGroup
+                label="Layout"
+                options={[
+                  { label: "Book", value: "book" },
+                  { label: "Focus", value: "focus" },
+                ]}
+                selected={settings.layoutMode}
+                onSelect={(layoutMode) => updateSettings({ layoutMode })}
+              />
 
-      <SettingGroup
-        label="Ambient sound"
-        options={[
-          { label: "Sound on", value: false },
-          { label: "Muted", value: true },
-        ]}
-        selected={settings.muted}
-        onSelect={(muted) => updateSettings({ muted })}
-      />
+              <SettingGroup
+                label="Motion"
+                options={[
+                  { label: "Motion on", value: false },
+                  { label: "Reduce motion", value: true },
+                ]}
+                selected={settings.reduceMotion}
+                onSelect={(reduceMotion) => updateSettings({ reduceMotion })}
+              />
 
-      <Pressable accessibilityRole="button" onPress={resetSettings} style={styles.secondaryButton}>
-        <Text style={styles.secondaryText}>Reset settings</Text>
-      </Pressable>
-    </ScrollView>
+              <Divider />
+              <Button onPress={resetSettings}>Reset settings</Button>
+            </View>
+          </Surface>
+
+          <Surface padded style={{ flex: 1, minWidth: 300 }} variant="muted">
+            <View style={{ gap: tokens.spacing.md }}>
+              <Text variant="subtitle">Reading feel</Text>
+              <Text muted>
+                These settings only change how the story is displayed. Story progress, choices, and account features are handled automatically.
+              </Text>
+            </View>
+          </Surface>
+        </View>
+      </ScrollView>
+    </SafeAreaView>
   );
 }
 
@@ -99,95 +123,26 @@ function SettingGroup<T extends string | boolean>({
   selected: T;
   onSelect: (value: T) => void;
 }) {
+  const { tokens } = useAppTheme();
+
   return (
-    <View style={styles.group}>
-      <Text style={styles.groupLabel}>{label}</Text>
-      <View style={styles.options}>
+    <View style={{ gap: tokens.spacing.sm }}>
+      <Text style={{ fontWeight: "800" }} variant="subtitle">{label}</Text>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: tokens.spacing.sm }}>
         {options.map((option) => {
           const isSelected = selected === option.value;
           return (
-            <Pressable
-              accessibilityRole="button"
+            <Button
               accessibilityState={{ selected: isSelected }}
               key={String(option.value)}
               onPress={() => onSelect(option.value)}
-              style={[styles.option, isSelected && styles.optionSelected]}
+              variant={isSelected ? "primary" : "default"}
             >
-              <Text style={styles.optionText}>{option.label}</Text>
-            </Pressable>
+              {option.label}
+            </Button>
           );
         })}
       </View>
     </View>
   );
 }
-
-const styles = StyleSheet.create({
-  page: {
-    backgroundColor: "#efe2c8",
-    flexGrow: 1,
-    gap: 18,
-    padding: 18,
-  },
-  header: {
-    gap: 8,
-    maxWidth: 760,
-  },
-  kicker: {
-    color: "#7b5a35",
-    fontSize: 12,
-    fontWeight: "800",
-    textTransform: "uppercase",
-  },
-  title: {
-    color: "#24180f",
-    fontSize: 30,
-    fontWeight: "800",
-  },
-  group: {
-    backgroundColor: "#fff8ea",
-    borderColor: "#d5b98f",
-    borderWidth: 1,
-    gap: 10,
-    maxWidth: 760,
-    padding: 16,
-  },
-  groupLabel: {
-    color: "#24180f",
-    fontSize: 18,
-    fontWeight: "800",
-  },
-  options: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-  },
-  option: {
-    borderColor: "#7b5a35",
-    borderWidth: 1,
-    minHeight: 42,
-    justifyContent: "center",
-    paddingHorizontal: 14,
-  },
-  optionSelected: {
-    backgroundColor: "#ead9b6",
-  },
-  optionText: {
-    color: "#24180f",
-    fontWeight: "800",
-  },
-  secondaryButton: {
-    alignItems: "center",
-    borderColor: "#7b5a35",
-    borderWidth: 1,
-    justifyContent: "center",
-    maxWidth: 220,
-    minHeight: 46,
-    paddingHorizontal: 16,
-  },
-  secondaryText: {
-    color: "#2d1d12",
-    fontSize: 15,
-    fontWeight: "800",
-  },
-});

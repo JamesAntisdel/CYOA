@@ -6,7 +6,7 @@ import { AppError } from "./lib/errors";
 import type { EntitlementRecord } from "./billing/entitlements";
 
 export type AssetKind = "image" | "video" | "audio";
-export type AssetProvider = "vertex-imagen" | "vertex-veo" | "uploaded";
+export type AssetProvider = "vertex-imagen" | "vertex-veo" | "gemini-veo" | "uploaded";
 export type AssetStatus = "queued" | "generating" | "ready" | "failed" | "blocked";
 
 export type AssetProvenance = {

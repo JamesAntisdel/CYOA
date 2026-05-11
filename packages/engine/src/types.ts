@@ -8,6 +8,8 @@ export type ChoiceVisibility = z.infer<typeof choiceVisibilitySchema>;
 
 export type AttributeVisibility = "visible" | "hidden";
 
+export type SceneLength = "brief" | "standard" | "rich" | "chapter";
+
 export type AttributeState = {
   id: string;
   label: string;
@@ -56,6 +58,7 @@ export type StoryNode = {
   id: string;
   title?: string;
   seed?: string;
+  sceneLength?: SceneLength;
   choices: Choice[];
   effectsOnEnter?: Effect[];
   endingId?: string;
@@ -72,6 +75,7 @@ export type Story = {
   id: string;
   version: number;
   title: string;
+  defaultSceneLength?: SceneLength;
   startNodeId: string;
   deathNodeId?: string;
   initialState: PlayerStateSeed;

@@ -6,10 +6,17 @@ import type { ReaderProjection } from "../../hooks/useTurn";
 
 type EndingPanelProps = {
   ending: NonNullable<ReaderProjection["ending"]>;
-  onClose?: () => void;
+  onOpenEndings?: () => void;
+  onOpenLibrary?: () => void;
+  onReturnHome?: () => void;
 };
 
-export function EndingPanel({ ending, onClose }: EndingPanelProps) {
+export function EndingPanel({
+  ending,
+  onOpenEndings,
+  onOpenLibrary,
+  onReturnHome,
+}: EndingPanelProps) {
   const { tokens } = useAppTheme();
   const isDeath = ending.kind === "death";
 
@@ -27,11 +34,29 @@ export function EndingPanel({ ending, onClose }: EndingPanelProps) {
         <Text variant="title">{ending.title}</Text>
       </View>
       <Text>{ending.body}</Text>
-      {onClose ? (
-        <Button onPress={onClose} variant="primary">
-          Return to endings
-        </Button>
-      ) : null}
+      <View
+        style={{
+          flexDirection: "row",
+          flexWrap: "wrap",
+          gap: tokens.spacing.sm,
+        }}
+      >
+        {onReturnHome ? (
+          <Button onPress={onReturnHome} variant="primary">
+            Home
+          </Button>
+        ) : null}
+        {onOpenLibrary ? (
+          <Button onPress={onOpenLibrary}>
+            Library
+          </Button>
+        ) : null}
+        {onOpenEndings ? (
+          <Button onPress={onOpenEndings} variant="ghost">
+            Endings
+          </Button>
+        ) : null}
+      </View>
     </Surface>
   );
 }

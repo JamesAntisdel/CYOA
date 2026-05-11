@@ -21,7 +21,7 @@ x-workspace: &workspace
 services:
   app:
     <<: *workspace
-    command: pnpm dev:app -- --host 0.0.0.0
+    command: node tests/e2e/serve-expo-web.mjs
     ports:
       - "8081:8081"
       - "19000:19000"
@@ -31,7 +31,9 @@ services:
       provider-mocks:
         condition: service_healthy
     environment:
-      EXPO_PUBLIC_PROVIDER_MOCKS_URL: http://localhost:4010
+      E2E_HOST: 0.0.0.0
+      E2E_PORT: 8081
+      EXPO_PUBLIC_PROVIDER_MOCKS_URL: ${EXPO_PUBLIC_PROVIDER_MOCKS_URL:-http://localhost:4010}
 
   convex:
     <<: *workspace
