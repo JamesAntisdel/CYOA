@@ -5,6 +5,7 @@ import {
   createInitialState,
   evaluateNodeChoices,
   resolveTerminal,
+  type EngineDiff,
   type PlayerState,
   type Story,
 } from "@cyoa/engine";
@@ -57,6 +58,20 @@ export type ReaderProjection = {
   };
 };
 
+/**
+ * One visible decision the reader made earlier this chapter, with the
+ * publicly-safe echo it produced. Hidden flags and hidden stats are never
+ * surfaced here — the consequence reel only narrates visible-tier effects.
+ */
+export type ChoiceHistoryEntry = {
+  turnNumber: number;
+  fromSceneTitle: string;
+  toSceneTitle: string;
+  choiceLabel: string;
+  echo: string;
+  tone: "positive" | "neutral" | "negative";
+};
+
 const tutorialProjection: ReaderProjection = {
   saveId: "training-room-demo",
   storyTitle: "Training Room",
@@ -84,6 +99,14 @@ const tutorialProjection: ReaderProjection = {
 const TRAINING_ROOM_SAVE_IDS = new Set(["training-room-demo", "training-room"]);
 const engineContext = { now: 1, rngSeed: "training-room-demo" };
 
+/**
+ * Chapter window. A chapter boundary fires after every CHAPTER_TURNS visible
+ * turns, which gives the consequence reel a natural rhythm regardless of whether
+ * the underlying story uses explicit `sceneLength: "chapter"` nodes. When a
+ * story does mark a node as a chapter terminus, that signal takes precedence.
+ */
+const CHAPTER_TURNS = 4;
+
 export function useTurn(saveId: string) {
   const guest = useGuestSession();
   const story = useMemo(() => storyForSave(saveId), [saveId]);
@@ -96,6 +119,8 @@ export function useTurn(saveId: string) {
       : initialProjection(saveId),
   );
   const [pendingChoiceId, setPendingChoiceId] = useState<string | null>(null);
+  const [choiceHistory, setChoiceHistory] = useState<ChoiceHistoryEntry[]>([]);
+  const [acknowledgedChapter, setAcknowledgedChapter] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -109,6 +134,8 @@ export function useTurn(saveId: string) {
         : initialProjection(saveId),
     );
     setPendingChoiceId(null);
+    setChoiceHistory([]);
+    setAcknowledgedChapter(0);
     if (guest.session && hasRemoteGameApi() && !isLocalDemoSave(saveId)) {
       void getRemoteCurrentScene({
         accountId: guest.session.accountId,
@@ -127,6 +154,7 @@ export function useTurn(saveId: string) {
   const submitChoice = useCallback(async (choice: ChoiceProjection) => {
     if (choice.locked || pendingChoiceId) return;
 
+    const fromSceneTitle = projection.scene.title;
     setPendingChoiceId(choice.id);
     if (guest.session && hasRemoteGameApi() && !isLocalDemoSave(saveId)) {
       try {
@@ -139,7 +167,15 @@ export function useTurn(saveId: string) {
         });
         if (remote) {
           if (!remote.stream) {
-            setProjection(projectRemoteScene(saveId, remote.scene));
+            const nextProjection = projectRemoteScene(saveId, remote.scene);
+            setProjection(nextProjection);
+            appendChoiceHistory(setChoiceHistory, {
+              choiceLabel: choice.label,
+              fromSceneTitle,
+              toSceneTitle: nextProjection.scene.title,
+              tone: "neutral",
+              echo: deriveRemoteEcho(remote.scene),
+            });
             return;
           }
           let streamedProse = "";
@@ -161,6 +197,14 @@ export function useTurn(saveId: string) {
             });
             if (fallback) setProjection(projectRemoteScene(saveId, fallback));
           }
+          const finalProjection = projectRemoteScene(saveId, remote.scene, streamedProse || undefined);
+          appendChoiceHistory(setChoiceHistory, {
+            choiceLabel: choice.label,
+            fromSceneTitle,
+            toSceneTitle: finalProjection.scene.title,
+            tone: "neutral",
+            echo: deriveRemoteEcho(remote.scene),
+          });
           return;
         }
       } finally {
@@ -172,45 +216,93 @@ export function useTurn(saveId: string) {
       if (story && engineState) {
         const result = applyChoiceAndEnterNode(engineState, story, choice.id, engineContext);
         setEngineState(result.state);
-        setProjection(projectEngineState(saveId, story, result.state, "ready"));
+        const nextProjection = projectEngineState(saveId, story, result.state, "ready");
+        setProjection(nextProjection);
+        const echo = deriveEngineEcho(result.diffs, story, engineState);
+        appendChoiceHistory(setChoiceHistory, {
+          choiceLabel: choice.label,
+          fromSceneTitle,
+          toSceneTitle: nextProjection.scene.title,
+          tone: echo.tone,
+          echo: echo.text,
+        });
       } else {
-        setProjection((current) => ({
-          ...current,
-          scene: {
-            id: `${choice.id}-result`,
-            title: choice.id === "dial" ? "Dawn Setting" : "Beyond the Door",
-            prose:
-              choice.id === "dial"
-                ? "The dial warms under your thumb. The harshest shadows soften, and a safe path opens back toward the reading table."
-                : "A low chime answers from the other side. The door has not opened yet, but the room has revealed one more honest clue.",
-            media: {
-              status: "ready",
-              kind: "image",
-              alt: "Warm candlelight spreading across a training room floor.",
+        let nextTitle = "Beyond the Door";
+        setProjection((current) => {
+          nextTitle = choice.id === "dial" ? "Dawn Setting" : "Beyond the Door";
+          return {
+            ...current,
+            scene: {
+              id: `${choice.id}-result`,
+              title: nextTitle,
+              prose:
+                choice.id === "dial"
+                  ? "The dial warms under your thumb. The harshest shadows soften, and a safe path opens back toward the reading table."
+                  : "A low chime answers from the other side. The door has not opened yet, but the room has revealed one more honest clue.",
+              media: {
+                status: "ready",
+                kind: "image",
+                alt: "Warm candlelight spreading across a training room floor.",
+              },
             },
-          },
-          stats: {
-            vitality: current.stats.vitality,
-            nerve: Math.min(5, current.stats.nerve + 1),
-            insight: Math.min(5, current.stats.insight + 1),
-          },
-          choices: [
-            { id: "return", label: "Return to the reading table" },
-            { id: "continue", label: "Continue carefully" },
-          ],
-        }));
+            stats: {
+              vitality: current.stats.vitality,
+              nerve: Math.min(5, current.stats.nerve + 1),
+              insight: Math.min(5, current.stats.insight + 1),
+            },
+            choices: [
+              { id: "return", label: "Return to the reading table" },
+              { id: "continue", label: "Continue carefully" },
+            ],
+          };
+        });
+        appendChoiceHistory(setChoiceHistory, {
+          choiceLabel: choice.label,
+          fromSceneTitle,
+          toSceneTitle: nextTitle,
+          tone: "positive",
+          echo: "the room remembered",
+        });
       }
       setPendingChoiceId(null);
     }, 360);
-  }, [engineState, guest.session, pendingChoiceId, saveId, story]);
+  }, [engineState, guest.session, pendingChoiceId, projection.scene.title, saveId, story]);
+
+  const completedChapters = Math.floor(choiceHistory.length / CHAPTER_TURNS);
+  const chapterBoundary =
+    completedChapters > acknowledgedChapter && !projection.ending
+      ? {
+          index: completedChapters,
+          entries: choiceHistory.slice(
+            (completedChapters - 1) * CHAPTER_TURNS,
+            completedChapters * CHAPTER_TURNS,
+          ),
+        }
+      : null;
+
+  const acknowledgeChapter = useCallback(() => {
+    setAcknowledgedChapter((current) => Math.max(current, completedChapters));
+  }, [completedChapters]);
 
   return useMemo(
     () => ({
       projection,
       pendingChoiceId,
       submitChoice,
+      choiceHistory,
+      chapterIndex: completedChapters,
+      chapterBoundary,
+      acknowledgeChapter,
     }),
-    [pendingChoiceId, projection, submitChoice],
+    [
+      acknowledgeChapter,
+      chapterBoundary,
+      choiceHistory,
+      completedChapters,
+      pendingChoiceId,
+      projection,
+      submitChoice,
+    ],
   );
 }
 
@@ -423,4 +515,71 @@ function createRequestId(): string {
       ? globalThis.crypto.randomUUID()
       : Math.random().toString(36).slice(2);
   return `turn_${random}`;
+}
+
+type ChoiceHistoryDraft = Omit<ChoiceHistoryEntry, "turnNumber">;
+type ChoiceHistorySetter = (updater: (current: ChoiceHistoryEntry[]) => ChoiceHistoryEntry[]) => void;
+
+function appendChoiceHistory(
+  setHistory: ChoiceHistorySetter,
+  draft: ChoiceHistoryDraft,
+): void {
+  setHistory((current) => [
+    ...current,
+    { ...draft, turnNumber: current.length + 1 },
+  ]);
+}
+
+/**
+ * Translate engine diffs into a single short echo line for the consequence
+ * reel. Only visible-tier effects are surfaced — diffs that touch hidden
+ * attributes or flags marked hidden in the underlying story are intentionally
+ * dropped so the reel never reveals secret state to the reader.
+ */
+function deriveEngineEcho(
+  diffs: EngineDiff[],
+  story: Story,
+  priorState: PlayerState,
+): { text: string; tone: ChoiceHistoryEntry["tone"] } {
+  let tone: ChoiceHistoryEntry["tone"] = "neutral";
+  const fragments: string[] = [];
+
+  for (const diff of diffs) {
+    if (diff.kind === "stat") {
+      const attribute = priorState.attributes[diff.target];
+      if (!attribute || attribute.visibility !== "visible") continue;
+      const sign = diff.delta > 0 ? "+" : "";
+      fragments.push(`${attribute.label} ${sign}${diff.delta}`);
+      if (diff.delta < 0) tone = "negative";
+      else if (tone !== "negative" && diff.delta > 0) tone = "positive";
+    } else if (diff.kind === "currency") {
+      const sign = diff.delta > 0 ? "+" : "";
+      fragments.push(`Currency ${sign}${diff.delta}`);
+      if (diff.delta < 0) tone = "negative";
+      else if (tone !== "negative") tone = "positive";
+    } else if (diff.kind === "inventory_add") {
+      fragments.push(`Gained ${diff.target}`);
+      if (tone === "neutral") tone = "positive";
+    } else if (diff.kind === "inventory_remove") {
+      fragments.push(`Lost ${diff.target}`);
+      tone = "negative";
+    } else if (diff.kind === "ending") {
+      const ending = story.endings[diff.target];
+      if (ending && ending.kind !== "death") {
+        fragments.push(ending.label);
+      }
+    }
+    // flag_set / flag_unset / delayed_scheduled / node deliberately omitted —
+    // flags are story-internal and may be hidden; node and delayed are not
+    // reader-facing echoes.
+  }
+
+  if (fragments.length === 0) return { text: "the story remembered", tone };
+  return { text: fragments.slice(0, 3).join(" · "), tone };
+}
+
+function deriveRemoteEcho(scene: RemoteScene): string {
+  const visibleStats = scene.visibleStats?.slice(0, 2) ?? [];
+  if (visibleStats.length === 0) return "the story remembered";
+  return visibleStats.map((stat) => `${stat.label}: ${stat.value}`).join(" · ");
 }
