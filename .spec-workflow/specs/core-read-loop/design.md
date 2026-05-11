@@ -90,26 +90,37 @@ graph TD
 ```mermaid
 sequenceDiagram
   participant C as Client
-  participant X as Convex turn.submit
+  participant X as Convex game.beginStreamingChoice
   participant E as Engine
   participant S as Safety
   participant L as LLM Router
   participant H as HTTP Stream
 
-  C->>X: submit(saveId, choiceId, requestId)
+  C->>X: beginStreamingChoice(saveId, choiceId, requestId)
   X->>X: auth/age/entitlement/rate/idempotency checks
   X->>E: evaluate choice + apply effects + enter next node
   E-->>X: next state + engine events + visible choices
-  X->>S: classify seeds, memory, choice labels, prompt
   alt terminal/dead/safe-ended/paywall
     X->>X: persist terminal state
     X-->>C: reactive query update
   else non-terminal
-    X->>L: generate prose with engine-owned state
+    X->>X: persist pending scene + active request lock
+    X-->>C: pending scene id
+    C->>H: POST /llm/scene-stream(accountId, saveId, guest proof)
+    H->>X: getAuthorizedSceneStreamRequest(accountId, saveId)
+    X->>X: verify account/save access and current pending scene
+    X-->>H: canonical SceneGenerationRequest
+    H->>S: classify seeds, memory, choice labels, prompt
+    H->>L: generate prose with engine-owned state
     L-->>H: streamed text tokens
     H-->>C: SSE tokens
-    X->>S: classify generated prose/media metadata
-    X->>X: persist scene + turn_history + analytics
+    H->>S: classify generated prose/media metadata
+    H->>X: completeSceneStream(prose, provider)
+    X->>X: persist scene + turn_history + analytics, clear request lock
+    alt provider/stream failure
+      H->>X: failSceneStream()
+      X->>X: mark scene failed and clear request lock
+    end
     X-->>C: reactive query update
   end
 ```
@@ -174,7 +185,7 @@ sequenceDiagram
 - **Interfaces:**
   - `turn.submit({ saveId, choiceId, requestId })`
   - `turn.current({ saveId })`
-  - HTTP SSE endpoint for scene streaming
+  - HTTP SSE endpoint for scene streaming, authenticated before any provider call
 - **Responsibilities:** idempotency, locks, daily turns, age/mature gates, engine calls, safety classification, memory, LLM, persistence, analytics.
 
 ### LLM Provider Router
@@ -191,6 +202,7 @@ sequenceDiagram
   - Vertex Gemini: independent fallback and some classification/summarization.
   - DeepSeek: cost-optimized text provider for eligible general-audience prose, summaries, retries, or low-risk continuations.
   - Deterministic: local fallback scene when all providers fail or content is blocked.
+- **Prose budget:** `Story.defaultSceneLength` and `StoryNode.sceneLength` support `brief`, `standard`, `rich`, and `chapter`. The turn orchestrator resolves node override -> story default -> `standard` and includes it in `SceneGenerationRequest`; prompts translate this into concrete paragraph/word-count guidance while preserving engine-owned choices/state.
 - **Gates:** Every provider output uses the same Zod parser, state-mutation rejection, safety classifier, mature-content classifier, logging redaction, and entitlement policy. A cheaper provider is never allowed to bypass quality or safety gates.
 - **Routing signals:** story tier, player entitlement, mature-content setting, safety risk, provider health, latency SLO, cost budget, token estimate, retry count, and admin-controlled rollout percentage.
 
@@ -213,10 +225,18 @@ sequenceDiagram
 - **Purpose:** Age-gated guest sessions and BetterAuth account claiming.
 - **Files:** `convex/account.ts`, `convex/auth.config.ts`, `apps/app/app/account/*`, `apps/app/hooks/useAccount.ts`.
 - **Interfaces:**
-  - `account.createGuest({ ageBand })`
-  - `account.claimGuest({ guestToken })`
-  - `account.export()`, `account.delete()`
-  - `account.updateMatureContent({ enabled })`
+  - `game.createGuestAccount({ ageSelection, guestTokenHash })`
+  - `game.listLibrary({ accountId, guestTokenHash? })`
+  - `game.createSave({ accountId, guestTokenHash?, storyId, mode })`
+  - `game.submitChoice({ accountId, guestTokenHash?, saveId, choiceId, requestId })`
+  - `game.beginStreamingChoice({ accountId, guestTokenHash?, saveId, choiceId, requestId })`
+  - `game.getAuthorizedSceneStreamRequest({ accountId, guestTokenHash?, saveId })`
+  - `game.completeSceneStream({ accountId, guestTokenHash?, saveId, prose, provider })`
+  - `game.failSceneStream({ accountId, guestTokenHash?, saveId })`
+  - `account.claimGuest({ accountId, guestTokenHash?, userId })`
+  - `account.exportAccount({ accountId, guestTokenHash? })`, `account.deleteAccount({ accountId, guestTokenHash?, confirm: "DELETE" })`
+  - `account.updateMatureContent({ accountId, guestTokenHash?, enabled })`
+- **Authorization model:** user-owned rows require BetterAuth `ctx.auth` identity matching `accounts.userId`; guest-owned rows require the opaque guest token proof matching `accounts.guestTokenHash`.
 - **Dependencies:** BetterAuth, Convex auth, shared auth schemas.
 
 ### Billing and Entitlements
@@ -297,7 +317,9 @@ sequenceDiagram
   - `tales.publish(saveId, metadata)`
   - `tales.read(taleId)`
   - `tales.fork(taleId, turnId)`
-  - `creator.createSeed`, `creator.publishSeed`
+  - `creatorFunctions.createDraft`, `creatorFunctions.publish`, `creatorFunctions.listPublishedMine`
+  - `game.createSave({ storyId: "authored_seed:<seedId>" })`
+- **Launch model:** starter stories are package-owned and validated by `seeds.loadStarterStories`; published account seeds are Convex-owned and become launchable library items with `authored_seed:<seedId>` story ids. Read queries and turn submission resolve that id back to the published seed story on the server.
 - **Constraints:** mature and safety classification before publish and fork.
 
 ### Seasons and Achievements
@@ -640,6 +662,8 @@ Typography:
 - Scope every Convex query by account/guest/room membership.
 - Return projected room participant records, never raw account rows.
 - Validate all client args with Zod before database access.
+- Authenticate SSE stream requests and authorize the requested account/save before any LLM provider call; the HTTP route must derive the provider request server-side from the current pending scene rather than trusting client-supplied seeds, choices, or prompt fields.
+- Clear active turn locks on both stream completion and stream failure so provider errors cannot leave a save permanently stuck in a pending state.
 - Verify Stripe webhook signatures and enforce idempotency on event ids.
 - Verify native IAP receipts server-side before entitlement changes.
 - Keep provider API keys and Stripe secrets in Convex env/GCP Secret Manager only.
@@ -718,6 +742,7 @@ Typography:
 - Convex tests with mocked engine, LLM providers, Stripe, native IAP receipts, Vertex, Anthropic, and DeepSeek.
 - Turn submission: success, death, delayed consequence, duplicate request, provider fallback, safety block, mature block.
 - Account claiming: guest saves/endings/settings/tales move to BetterAuth account.
+- Guest authorization: account-id-only access is invalid for guest rows; guest profile/library/save/turn/creator/export/delete and LLM stream checks require the guest token proof.
 - Billing: daily turn decrement, paywall trigger, Stripe entitlement unlock, native entitlement normalization, Pro media unlock, credit packs, overage opt-in, plan changes, mature opt-in eligibility.
 - Publishing/forking: immutable snapshot, privacy rules, mature blocking, fork state restoration.
 - Co-op: room create/join, vote, pass mode, disconnect recovery, invite rotation, participant projection privacy, mature-room eligibility.
@@ -753,3 +778,108 @@ The task phase should split work into disjoint ownership groups:
 - **Infra/admin team:** Pulumi, CI/CD, admin analytics.
 
 Each implementation task should own a small file set, cite requirement ids, and log artifacts with the implementation-log tool after completion.
+
+---
+
+## Wave 0 — Hi-Fi Design Reconciliation (added)
+
+A hi-fi design pass on top of the wireframes (`design-bundle/`) produced production-ready mockups, logos, icons, covers, and tokens. They live in the repo at `apps/app/assets/design/`. Below are the contract changes that supersede earlier sections of this document where they conflict.
+
+### Token Reconciliation (canonical)
+
+The "UI Design System → Tokens" section above lists primitives (`paper`, `paper2`, `ink`, `inkSoft`, `inkFaint`, `inkGhost`, `candle`, `candleSoft`, `shadow`). These remain valid as **alias tokens**, but production code MUST reference them by alias name only. The full alias layer is defined in `apps/app/assets/design/tokens/tokens.css` and `apps/app/assets/design/tokens/tokens.json`.
+
+Additions to the alias layer:
+
+| Alias        | Hex (sepia/parchment) | Use                                                                |
+|--------------|-----------------------|--------------------------------------------------------------------|
+| `paper3`   | `#ddd2bb`           | Tertiary parchment panels (peek-drawer, locked-choice fill)        |
+| `danger`   | `#7a2218`           | **Reserved** — death, locked, paywall, mature opt-in only          |
+| `success`  | `#3a5a3a`           | Stat gain pip, success ending stamp                                |
+| `night`    | `#0c0d10`           | Night-theme surface (replaces `midnight`)                        |
+| `day`      | `#fafaf7`           | Day-theme high-contrast accessibility surface                      |
+
+**The Ember Rule.** `danger` (the deep-red ember, `#7a2218`) is the strongest accent in the system and MUST be reserved for death, locked choices, paywall, and mature opt-in. It is NEVER used for ambient gold accents or general emphasis. For ambient gold use `candle` (`#a87a1c`); for soft emphasis fills use `candleSoft`.
+
+### Theme Set (canonical)
+
+The wireframes named themes `parchment` and `midnight`. The canonical names are now:
+
+| Canonical | Aliases (back-compat)  | Surface base | Notes                                  |
+|-----------|------------------------|--------------|----------------------------------------|
+| `sepia` | `parchment`          | `paper`    | Default reading theme                  |
+| `night` | `midnight`           | `night`    | Low-light reading                      |
+| `day`   | —                      | `day`      | High-contrast accessibility (new)      |
+
+Requirement 18.1 ("Day, Night, and Sepia themes") already names these correctly. The token theme map in `apps/app/assets/design/tokens/tokens.json` resolves both aliases.
+
+### Typography (canonical)
+
+The wireframes used `IM Fell English`, `Patrick Hand`, and `Special Elite`. The canonical reader-side stack is:
+
+- **Display** (chapter titles, ending names, death plate): `IM Fell English` → `EB Garamond` → serif fallback.
+- **Reader serif** (default body): `Lora` → `EB Garamond` → serif fallback. Setting label: "Serif".
+- **Reader sans** (accessibility): `Atkinson Hyperlegible` → `Inter` → system-ui. Setting label: "Sans".
+- **Reader mono** (journal layout, code seeds): `JetBrains Mono` → ui-monospace. Setting label: "Mono".
+- **UI / Stamps**: `Special Elite` for stamps, decorative; `Inter` for forms, controls, dashboards.
+- **Hand** (`Patrick Hand`) is removed from production. The wireframes used it for sketch flavor; production uses Lora/EB Garamond.
+
+### Asset References
+
+The following shipped assets are referenced by the components in `apps/app/assets/design/design-system.html`. Implementation MUST lift them, not regenerate:
+
+- **Logos** (`apps/app/assets/design/logos/`): `lockup-primary.svg`, `wordmark.svg`, `glyph-candle.svg` (favicon-source), `glyph-candle-light.svg`, `glyph-eye.svg` (mature-content stamp), `glyph-seal.svg` (publish stamp), `glyph-book-quill.svg` (creator stamp).
+- **Icons** (`apps/app/assets/design/icons/`): 16 SVGs at `currentColor` — `candle`, `book`, `heart`, `coin`, `skull`, `eye`, `key`, `flame`, `compass`, `crown`, `hourglass`, `scroll`, `quill`, `sack`, `people`, `sparkle`. The "Production Primitive Mapping" line "Icon → `lucide-react-native` where available" is superseded — these 16 are the supported set; lucide is fallback only for icons NOT in this set.
+- **Covers** (`apps/app/assets/design/covers/`): 560×800 SVG + PNG for `training-room`, `bone-cathedral`, `iron-court`, `ashfall`. Library cards (Requirement 26) MUST use these.
+- **Marketing** (`apps/app/assets/design/marketing/`): `favicon.svg`, `favicon-{32,64,180,512}.png`, `og-card.{svg,png}` for social share.
+
+### Hi-Fi Surface Coverage
+
+`apps/app/assets/design/design-system.html` now renders production-fidelity versions of every surface named in this design doc. When implementing a route, open the canvas, find the section, and lift exact values from the JSX (do NOT take screenshots — the JSX is the source). The canvas has 25 sections; each is a `<DCSection id="…">` block near the bottom of the HTML.
+
+| § id in canvas        | Title                       | Maps to design-doc / requirement                                          |
+|-----------------------|-----------------------------|---------------------------------------------------------------------------|
+| `foundations` (01)  | Foundations                 | UI Design System → Tokens, Typography                                     |
+| `brand` (02)        | Brand (logos + icons)       | Asset References; Requirement 30.6, 30.8                                  |
+| `components` (03)   | Components                  | Production Primitive Mapping (Btn, Choice, Chip, Bar, Stamp, etc.)        |
+| `imagery` (04)      | Story covers / scene plates | Stories Package, Requirement 26.1                                         |
+| `tiers` (05)        | Subscription tier crests    | Billing and Entitlements                                                  |
+| `applied` (06)      | Landing / reading / OG card | Reader Components, OG marketing                                           |
+| `themes` (07)       | Three paper stocks          | Requirement 18.1; Canonical Theme Set above                               |
+| `enriched-flow` (08)| Shelf / seeding / settings  | Library (Req 26), Creator seeding, Settings (Req 18)                      |
+| `journeys` (09)     | Four end-to-end flows       | Onboarding, seeding, settings, daily return                               |
+| `auth` (10)         | Sign in / magic link / profile | Requirement 3 (auth)                                                    |
+| `pricing` (11)      | Patronage & upgrade compare | Requirement 17 (entitlements + tiers)                                     |
+| `chapter-end` (12)  | Consequence reel            | (new) between-chapter interstitial — see Requirement 19 / 6 consequences  |
+| `discovery` (13)    | Discover & share modal      | Publishing/discovery surfaces (Req 22, 23)                                |
+| `narrator` (14)     | Voice picker with waveform  | Requirement 24.4 (ambient/voice) and 24F continuity                       |
+| `mobile` (15)       | Phone shelf + reading view  | Requirement 25.1 (Expo single tree on web/iOS/Android)                    |
+| `states` (16)       | Toasts, empty, error        | NFR Usability + error surfaces                                            |
+| `hifi` (17)         | Hero pitch-deck mockup      | Marketing reference only — not a production surface                       |
+| `spec-gaps` (18)    | Age gate, under-13, mature opt-in, locked-choice copy, streaming placeholder | Requirements 1, 11, 12; streaming behavior (Req 5) |
+| `reading-layouts` (19) | Mobile / GraphicNovel / ModernApp / Journal | Requirement 18.3 (Book / Modern App / Graphic Novel / Journal / Mobile) |
+| `hud` (20)          | Stats HUD modes + pip motion| Requirement 6 (peek-drawer + 4 modes) and 18.4                            |
+| `death-paywall` (21)| Three death + three paywall variants | Requirements 8 (death), 17 (paywall entry contexts)                |
+| `coop` (22)         | Lobby / Turn / Vote         | Requirement 20                                                            |
+| `endings` (23)      | Endings web + trophy crypt  | Requirement 19                                                            |
+| `media-arch` (24)   | Imagen / Veo i2v / audio / journeys / narrator continuity | Requirement 24; MediaPlate Upgrade Pattern below |
+| `operator` (25)     | Operator dashboard          | Requirement 27                                                            |
+
+### MediaPlate Upgrade Pattern (clarification to Requirement 24)
+
+The "Pro media" components have a four-state upgrade pattern that production MUST implement:
+
+1. **Skeleton** — paper-textured frame with candle ornament + "the scene is being drawn…" while Imagen job queues.
+2. **Image ready** — Imagen plate fades in (typical ≤3s); prose remains primary.
+3. **Video buffering** — small corner pip indicates Veo is en route; image stays.
+4. **Video playing** — crossfade to Veo loop; image kept as poster frame for reduced-motion fallback or Veo failure.
+
+Reduced-motion preference (Requirement 18.5) → stay on state 2 (image) permanently, never advance to video. Veo failure → stay on state 2 and log to operator dashboard (Requirement 27.5).
+
+### Source-of-Truth Hierarchy
+
+1. `design.md` (this file) — product + visual contract.
+2. `apps/app/assets/design/tokens/tokens.json` — exact color/font/spacing values.
+3. `apps/app/assets/design/design-system.html` — reference rendering of (1) + (2).
+
+If (3) drifts from (1) or (2), fix (3). Never promote a value to a token without team review.

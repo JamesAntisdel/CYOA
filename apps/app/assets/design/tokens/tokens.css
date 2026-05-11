@@ -1,0 +1,127 @@
+/* The Unwritten — design tokens (canonical)
+ * Generated from CYOA Design System.html · 2026-05-10
+ * Use the alias names (--c-paper, --c-ink, etc) in component code.
+ * Theme switches are flat reassignments under [data-theme="..."].
+ */
+
+:root {
+  /* primitive scales (one-off use only) */
+  --c-paper-50:  #faf6ec;
+  --c-paper-100: #f4ecd8;
+  --c-paper-200: #ebe0c4;
+  --c-paper-300: #dfd0a8;
+  --c-paper-400: #c9b683;
+  --c-ink-300: #c4bda6;
+  --c-ink-400: #a09a87;
+  --c-ink-500: #7a7464;
+  --c-ink-600: #544f44;
+  --c-ink-700: #33302a;
+  --c-ink-800: #1f1c16;
+  --c-ink-900: #13110d;
+  --c-ember-300: #dc8678;
+  --c-ember-400: #c45445;
+  --c-ember-500: #a83232;
+  --c-ember-600: #7a2218;
+  --c-ember-700: #5c1a14;
+  --c-candle-300: #e6ca85;
+  --c-candle-400: #d8b158;
+  --c-candle-500: #c8993a;
+  --c-candle-600: #a87a1c;
+  --c-candle-700: #8b6312;
+  --c-night-600: #2a231a;
+  --c-night-700: #1d1812;
+  --c-night-800: #14110b;
+  --c-night-900: #0a0805;
+
+  /* canonical aliases */
+  --c-paper:      #f4ecd8;
+  --c-paper2:     #faf6ec;
+  --c-paper-edge: #c4bda6;
+  --c-night:      #0e0c08;
+  --c-night2:     #1a160f;
+  --c-night-edge: #3a3326;
+  --c-ink:        #13110d;
+  --c-ink-soft:   #3a342b;
+  --c-ink-faint:  #544f44;
+  --c-ink-ghost:  #7a7466;
+  --c-paper-ink:       #e8d9b3;
+  --c-paper-ink-soft:  #a89e85;
+  --c-danger:      #7a2218;
+  --c-danger-soft: #a83a2c;
+  --c-candle:      #a87a1c;
+  --c-candle-soft: #c8993a;
+  --c-shadow:      rgba(60,40,20,0.35);
+  --c-shadow-deep: rgba(60,40,20,0.55);
+
+  /* fonts */
+  --f-display: "IM Fell English", "EB Garamond", "Cormorant Garamond", Georgia, serif;
+  --f-serif:   "EB Garamond", "Cormorant Garamond", Georgia, serif;
+  --f-body:    "Lora", Georgia, serif;
+  --f-ui:      "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --f-mono:    "Special Elite", "Courier Prime", ui-monospace, monospace;
+
+  /* sizes */
+  --s-display1: 56px;
+  --s-display2: 38px;
+  --s-h1: 30px;
+  --s-h2: 22px;
+  --s-body: 16px;
+  --s-ui:   14px;
+  --s-micro: 11px;
+  --s-stamp: 11px;
+
+  /* spacing */
+  --sp-0: 0;
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+  --sp-12: 48px;
+  --sp-16: 64px;
+
+  /* radii */
+  --r-none: 0;
+  --r-sm: 2px;
+  --r-md: 4px;
+
+  /* shadows */
+  --sh-card:  0 1px 3px rgba(0,0,0,0.08), 0 4px 16px rgba(0,0,0,0.06);
+  --sh-plate: 0 8px 24px rgba(0,0,0,0.18), 0 1px 2px rgba(0,0,0,0.1);
+
+  /* default theme = sepia */
+  --t-bg:      var(--c-paper);
+  --t-surface: var(--c-paper2);
+  --t-edge:    var(--c-paper-edge);
+  --t-ink:     var(--c-ink);
+  --t-muted:   var(--c-ink-faint);
+  --t-accent:  var(--c-danger);
+  --t-glint:   var(--c-candle);
+}
+
+[data-theme="day"] {
+  --t-bg: #fbf8f0; --t-surface: #ffffff; --t-edge: #d6cfb8;
+  --t-ink: #0a0907; --t-muted: #3a342b; --t-accent: var(--c-danger); --t-glint: #8a6212;
+}
+[data-theme="sepia"] {
+  --t-bg: var(--c-paper); --t-surface: var(--c-paper2); --t-edge: var(--c-paper-edge);
+  --t-ink: var(--c-ink);  --t-muted: var(--c-ink-faint); --t-accent: var(--c-danger); --t-glint: var(--c-candle);
+}
+[data-theme="dusk"] {
+  --t-bg: #e8d4ad; --t-surface: #f0e0bd; --t-edge: #a09275;
+  --t-ink: #1d1610; --t-muted: #5a4d38; --t-accent: var(--c-danger); --t-glint: var(--c-candle-soft);
+}
+[data-theme="night"] {
+  --t-bg: var(--c-night); --t-surface: var(--c-night2); --t-edge: var(--c-night-edge);
+  --t-ink: var(--c-paper-ink); --t-muted: var(--c-paper-ink-soft);
+  --t-accent: var(--c-danger-soft); --t-glint: var(--c-candle-soft);
+}
+
+/* The Ember Rule
+ * --c-danger is reserved for: locked choices, paywall emphasis,
+ * death surfaces, the Pro chip. Do not use as a hover/decorative accent.
+ * For ambient gold accents, use --c-candle / --c-candle-soft.
+ */

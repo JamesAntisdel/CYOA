@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 800" width="560" height="800">
+  <defs>
+    
+  <filter id="grain" x="0" y="0" width="100%" height="100%">
+    <feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="2"></feTurbulence>
+    <feColorMatrix values="0 0 0 0 0.1  0 0 0 0 0.08  0 0 0 0 0.05  0 0 0 0.35 0"></feColorMatrix>
+  </filter>
+    
+  <radialGradient id="vg" cx="50%" cy="50%" r="65%">
+    <stop offset="30%" stop-color="black" stop-opacity="0"></stop>
+    <stop offset="100%" stop-color="black" stop-opacity="0.5"></stop>
+  </radialGradient>
+    <linearGradient id="bg" x1="0" y1="0" x2="0.26" y2="1">
+      <stop offset="0%" stop-color="#2a1f1a"></stop><stop offset="40%" stop-color="#4a1f1a"></stop><stop offset="100%" stop-color="#1a0e08"></stop>
+    </linearGradient>
+    <linearGradient id="lblFade" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0%" stop-color="black" stop-opacity="0.85"></stop>
+      <stop offset="100%" stop-color="black" stop-opacity="0"></stop>
+    </linearGradient>
+    <radialGradient id="innerShadow" cx="50%" cy="50%" r="50%">
+      <stop offset="60%" stop-color="black" stop-opacity="0"></stop>
+      <stop offset="100%" stop-color="black" stop-opacity="0.45"></stop>
+    </radialGradient>
+  </defs>
+  <rect width="560" height="800" fill="url(#bg)"></rect>
+  <g transform="scale(2 2.1052631578947367)">
+  <radialGradient id="moon" cx="35%" cy="35%" r="50%">
+    <stop offset="0%" stop-color="#f8e9c4"></stop>
+    <stop offset="60%" stop-color="#c9a14a"></stop>
+    <stop offset="100%" stop-color="#c9a14a" stop-opacity="0"></stop>
+  </radialGradient>
+  <circle cx="208" cy="83" r="35" fill="url(#moon)" opacity="0.95"></circle>
+  <circle cx="208" cy="83" r="60" fill="#e8ca85" opacity="0.18"></circle>
+  <path d="M0 380 V 240 L 30 240 L 30 200 L 60 180 L 70 220 L 80 180 L 110 200 L 110 140 L 130 100 L 140 60 L 150 100 L 170 140 L 170 200 L 200 180 L 210 220 L 220 180 L 250 200 L 250 240 L 280 240 V 380 Z" fill="#0a0604"></path>
+  <path d="M134 130 L 146 130 L 146 100 L 140 80 L 134 100 Z" fill="#c9a14a" opacity="0.4"></path>
+  <ellipse cx="140" cy="170" rx="6" ry="14" fill="#e6ca85" opacity="0.55"></ellipse>
+  <rect x="60" y="220" width="6" height="12" fill="#e6ca85" opacity="0.4"></rect>
+  <rect x="218" y="220" width="6" height="12" fill="#e6ca85" opacity="0.4"></rect></g>
+  <rect width="560" height="800" fill="url(#vg)"></rect>
+  <rect width="560" height="800" filter="url(#grain)" opacity="0.6" style="mix-blend-mode:multiply"></rect>
+  <rect width="560" height="800" fill="url(#innerShadow)"></rect>
+  
+  <rect x="0" y="600" width="560" height="200" fill="url(#lblFade)"></rect>
+  <text x="44" y="690" font-family="Special Elite, monospace" font-size="14" letter-spacing="5.6" fill="#f4ecd8" fill-opacity="0.7">GOTHIC · LONG</text>
+  <text x="44" y="740" font-family="EB Garamond, Georgia, serif" font-size="44" font-style="italic" fill="#f4ecd8" letter-spacing="-0.5">Bone Cathedral</text>
+  <text x="44" y="770" font-family="Special Elite, monospace" font-size="14" fill="#f4ecd8" fill-opacity="0.7">where saints still hum</text>
+  <rect x="0.5" y="0.5" width="559" height="799" fill="none" stroke="#1f1c16" stroke-width="1"></rect>
+</svg>

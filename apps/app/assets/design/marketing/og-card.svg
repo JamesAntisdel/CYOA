@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630">
+  <defs>
+    <radialGradient id="glow" cx="50%" cy="60%" r="55%">
+      <stop offset="0%" stop-color="#c8993a" stop-opacity="0.32"></stop>
+      <stop offset="40%" stop-color="#7a2218" stop-opacity="0.18"></stop>
+      <stop offset="100%" stop-color="#0a0805" stop-opacity="0"></stop>
+    </radialGradient>
+    <filter id="grain" x="0" y="0" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="2"></feTurbulence>
+      <feColorMatrix values="0 0 0 0 0.1  0 0 0 0 0.08  0 0 0 0 0.05  0 0 0 0.25 0"></feColorMatrix>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="630" fill="#0a0805"></rect>
+  <ellipse cx="600" cy="400" rx="600" ry="350" fill="url(#glow)"></ellipse>
+  <rect width="1200" height="630" filter="url(#grain)" opacity="0.5" style="mix-blend-mode:screen"></rect>
+
+  
+  <rect x="40" y="40" width="1120" height="550" fill="none" stroke="#c8993a" stroke-opacity="0.35" stroke-width="1"></rect>
+  <rect x="46" y="46" width="1108" height="538" fill="none" stroke="#c8993a" stroke-opacity="0.15" stroke-width="1"></rect>
+
+  
+  <g transform="translate(560, 100)">
+    <path d="M40 8 c3 6 7 9 7 16 c0 6-4 9-7 9 c-3 0-7-3-7-9 c0-4 1.5-6 3-9 c0 2 1 3 2 3 c-1-3 0-6 2-10 z" fill="#c8993a"></path>
+    <path d="M40 33 v8" stroke="#e6ca85" stroke-width="2" stroke-linecap="round" fill="none"></path>
+    <rect x="28" y="41" width="24" height="28" rx="0.5" fill="none" stroke="#f4ecd8" stroke-width="2"></rect>
+    <path d="M28 41 h24" stroke="#f4ecd8" stroke-width="2"></path>
+    <path d="M34 50 v10" stroke="#f4ecd8" stroke-opacity="0.4" stroke-width="2"></path>
+  </g>
+
+  
+  <text x="600" y="220" text-anchor="middle" font-family="Special Elite, monospace" font-size="14" letter-spacing="6" fill="#c8993a" fill-opacity="0.85">❦    A N   A D V E N T U R E   T H A T   W R I T E S   I T S E L F    ❦</text>
+
+  
+  <text x="600" y="350" text-anchor="middle" font-family="EB Garamond, Georgia, serif" font-size="120" font-style="italic" font-weight="500" fill="#f4ecd8" letter-spacing="-2">The Unwritten</text>
+
+  
+  <line x1="500" y1="395" x2="700" y2="395" stroke="#c8993a" stroke-opacity="0.5"></line>
+  <text x="600" y="402" text-anchor="middle" font-family="EB Garamond, serif" font-size="18" fill="#c8993a">❧</text>
+
+  
+  <text x="600" y="455" text-anchor="middle" font-family="Lora, Georgia, serif" font-size="22" font-style="italic" fill="#ebe0c4" fill-opacity="0.85">A choose-your-own-adventure where the page turns back.</text>
+
+  
+  <text x="600" y="540" text-anchor="middle" font-family="Special Elite, monospace" font-size="13" letter-spacing="4" fill="#a09a87">L I G H T    A    C A N D L E .     T U R N    T H E    P A G E .</text>
+
+  
+  <text x="80" y="80" font-family="Special Elite, monospace" font-size="10" letter-spacing="2" fill="#7a7464">VOL · I</text>
+  <text x="1120" y="80" text-anchor="end" font-family="Special Elite, monospace" font-size="10" letter-spacing="2" fill="#7a7464">EDITION · NO.1</text>
+</svg>

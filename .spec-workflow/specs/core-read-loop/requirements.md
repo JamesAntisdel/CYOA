@@ -84,6 +84,7 @@ This spec includes Key Features 11–17 (co-op, publishing, authoring, ambient s
 5. WHEN a scene's prose has been generated and persisted on a previous turn THEN the reactive query SHALL return the persisted text immediately (no LLM call) and the client SHALL render it without the placeholder.
 6. WHEN scene rendering completes THEN the client SHALL keep the prose pinned to a single readable column ≤640px wide on web and the device width on native.
 7. IF the same node is revisited via a return-loop in the story THEN Convex SHALL either return the persisted prose for the existing scene instance or create a new scene instance keyed by `{saveId, nodeId, turnNumber, stateFingerprint}`; the same scene instance SHALL never be regenerated after prose has been persisted.
+8. WHEN a story or node declares `sceneLength` THEN Convex SHALL pass that prose budget into the LLM prompt; tutorials and fallbacks may use `brief`, normal adventures use `standard`, richer scenes use `rich`, and chapter-scale beats use `chapter`.
 
 ### Requirement 4 — Choices reflect engine-evaluated visibility
 
@@ -105,11 +106,13 @@ This spec includes Key Features 11–17 (co-op, publishing, authoring, ambient s
 
 #### Acceptance Criteria
 
-1. WHEN the player selects a `"visible"` choice THEN the client SHALL call the Convex action `turn.submit({ saveId, choiceId })` immediately and SHALL render an optimistic disabled state on all choices.
-2. WHEN `turn.submit` is invoked THEN Convex SHALL load the save, call `engine.applyChoice(state, choice) → state'`, and call `engine.enterNode(state', nextNode) → state''` (which fires Auto-Modifiers per Game Spec §2.C) in a single transactional mutation **before** invoking the LLM.
+1. WHEN the player selects a `"visible"` choice THEN the client SHALL call the Convex mutation `game.beginStreamingChoice({ saveId, choiceId, requestId })` immediately and SHALL render an optimistic disabled state on all choices.
+2. WHEN `game.beginStreamingChoice` is invoked THEN Convex SHALL load the save, call `engine.applyChoice(state, choice) → state'`, and call `engine.enterNode(state', nextNode) → state''` (which fires Auto-Modifiers per Game Spec §2.C) in a single transactional mutation **before** invoking the LLM or opening the HTTP stream.
 3. WHEN the post-engine state has `vitality ≤ 0` THEN Convex SHALL transition the save to the designated Death node per Game Spec §2.B, persist the death, record the ending unlock, and SHALL NOT call the LLM for the chosen-but-now-dead branch.
 4. WHEN the post-engine state is non-terminal THEN Convex SHALL build a memory window (the current node's authored seed + the last N turn summaries) and SHALL call the LLM provider router (Anthropic quality-first, Vertex AI Gemini fallback, DeepSeek cost-optimized where eligible) to generate prose for the new scene around the engine-computed state and engine-computed available choices.
-5. WHEN the LLM begins streaming THEN the first prose token SHALL arrive at the client within 1500ms p50, 3000ms p95, of `turn.submit` invocation.
+5. WHEN the LLM begins streaming THEN the first prose token SHALL arrive at the client within 1500ms p50, 3000ms p95, of the choice submission.
+5a. WHEN the LLM stream HTTP endpoint is called directly THEN Convex SHALL verify the caller can access the requested account/save and that the save has a current pending scene before invoking any provider; unauthenticated, mismatched, or non-pending requests SHALL return 401/403-equivalent errors and SHALL NOT spend provider tokens.
+5b. WHEN provider streaming fails before completion THEN Convex SHALL mark the pending scene failed, clear the active turn request lock, redact raw provider error details from the SSE response, and allow the client to recover without trapping the save in an in-progress state.
 6. WHEN the LLM completes generation THEN Convex SHALL parse the model's output against a Zod schema that yields ONLY the prose text plus optional presentation metadata for engine-provided choices (for example tone labels or short flavor text); any field outside the schema SHALL be discarded.
 7. WHEN the LLM's output cannot be parsed against the schema after 1 retry THEN Convex SHALL fall back to the secondary provider; if both fail twice THEN Convex SHALL persist a deterministic default scene ("the candle gutters; the page is blank...") with the canonical engine-provided choices and a flag for retry.
 8. WHEN a turn completes successfully THEN Convex SHALL append a `turn_history` row containing the prior state, the chosen choice id, the engine-applied diffs, the LLM provider used, and the resulting prose; the row SHALL be append-only.
@@ -265,6 +268,8 @@ This spec includes Key Features 11–17 (co-op, publishing, authoring, ambient s
 3. WHEN an authenticated user signs in on another device THEN Convex SHALL expose their saves, endings, subscriptions, settings, published tales, and co-op rooms through reactive queries.
 4. WHEN a user authenticates THEN the app SHALL support Google, Apple, GitHub, Microsoft, Discord, and email magic link as configured providers.
 5. WHEN a user requests account export or deletion THEN Convex SHALL provide export and deletion actions that include saves, turn history, endings, settings, analytics rows tied to the account, and published content ownership metadata.
+6. WHEN a guest-owned account operation is requested THEN Convex SHALL require the opaque guest token proof tied to that `accounts` row; `accountId` alone SHALL NOT authorize profile, library, save, turn, creator, export, delete, or stream operations.
+7. WHEN an authenticated user-owned account operation is requested THEN Convex SHALL authorize with `ctx.auth.getUserIdentity().subject` matching `accounts.userId`; guest token proof SHALL NOT authorize user-owned rows.
 
 ### Requirement 17 — Daily turn limits, subscriptions, and billing
 
@@ -280,6 +285,7 @@ This spec includes Key Features 11–17 (co-op, publishing, authoring, ambient s
 6. WHEN a player has Pro entitlement THEN the app SHALL unlock generated illustrations, scene-cinematic videos, and ambient soundscape features.
 7. WHEN a player exceeds included Pro media or premium-model usage THEN the app SHALL offer transparent upgrades, one-time credit packs, or metered overage opt-in before additional billable usage is incurred.
 8. WHEN any paid plan is changed mid-cycle THEN Stripe proration or credit behavior SHALL be shown before confirmation and reflected in Convex entitlements only after webhook-confirmed state changes.
+9. IF a higher "Max" media tier is introduced THEN it SHALL be represented as a distinct entitlement tier with explicit image/video quotas, safety gates, and Stripe/native product ids before the UI advertises it.
 
 ### Requirement 18 — Reader settings, themes, typography, and layout modes
 
@@ -343,6 +349,7 @@ This spec includes Key Features 11–17 (co-op, publishing, authoring, ambient s
 3. WHEN a player launches a creator seed THEN Convex SHALL create a new save whose story id references the authored seed and whose continuation uses the same server-authoritative engine.
 4. WHEN creator revenue share is enabled THEN play-time and subscription-attribution events SHALL be recorded for payout calculations.
 5. WHEN a creator views their dashboard THEN the app SHALL show plays, completions, deaths, forks, ending distribution, and estimated earnings.
+6. WHEN an account has published creator seeds THEN the library SHALL surface those account-backed seeds across browser reloads/devices, and launching one SHALL create a normal remote save instead of relying on browser-local draft state.
 
 ### Requirement 23 — Seasons, achievements, and leaderboards
 
@@ -439,7 +446,7 @@ This spec includes Key Features 11–17 (co-op, publishing, authoring, ambient s
 ### Performance
 
 - **Time-to-first-scene** ≤ 1500ms p50 of cover-CTA activation (excluding LLM stream which begins inside this window).
-- **Time-to-first-token** ≤ 1500ms p50, ≤ 3000ms p95, of `turn.submit` invocation.
+- **Time-to-first-token** ≤ 1500ms p50, ≤ 3000ms p95, of accepted choice submission.
 - **Stat pip latency** ≤ 100ms after the corresponding structured engine event or prose-anchor metadata is received by the client.
 - **Stats peek-drawer reveal** ≤ 16ms (one frame).
 - **Reactive query push** ≤ 1s from server mutation to client render.
@@ -453,7 +460,7 @@ This spec includes Key Features 11–17 (co-op, publishing, authoring, ambient s
 - **Narrative safety defense**: structurally enforced by Requirement 11 — unsafe self-harm, suicide, depressive, or player-directed despair content is blocked before prompting, before persistence, and before rendering.
 - **Mature-content defense**: structurally enforced by Requirement 12 — adult-only language, subject matter, and imagery are blocked unless the account is paid, `18+`, and explicitly opted in.
 - **Age gate enforcement**: structurally enforced by Requirement 1 — under-13 visitors cannot create playable sessions or saves, and eligible visitors store only an age band rather than date of birth.
-- **Guest sessions**: opaque, randomly generated, tied to a single `accounts` row; not crawlable; not enumerable.
+- **Guest sessions**: opaque, randomly generated, tied to a single `accounts` row; not crawlable; not enumerable; required as proof for guest-owned reads, mutations, and LLM stream authorization.
 - **No secrets in the client bundle**: Anthropic and Vertex AI keys live exclusively in Convex env (sourced from GCP Secret Manager).
 
 ### Reliability
@@ -462,7 +469,7 @@ This spec includes Key Features 11–17 (co-op, publishing, authoring, ambient s
 - **Deterministic fallback**: if both providers fail, Convex persists canonical default prose with engine-provided choices so the loop never blocks the player permanently.
 - **Safety fallback**: if safety classification or provider moderation blocks a turn, Convex SHALL choose safe redirection or safe story closure over repeated generation attempts.
 - **Save durability**: every accepted turn SHALL be persisted in `turn_history` (append-only) before the response returns to the client; a crash mid-turn SHALL leave the save resumable from the last persisted state.
-- **Idempotent retries**: `turn.submit` SHALL accept an optional client-generated request id; duplicate ids within 60s SHALL return the original result without re-running the engine or LLM.
+- **Idempotent retries**: turn submission SHALL accept an optional client-generated request id; duplicate ids within 60s SHALL return the original result without re-running the engine or LLM.
 
 ### Usability
 
@@ -477,3 +484,22 @@ This spec includes Key Features 11–17 (co-op, publishing, authoring, ambient s
 ## Delivery and Agent-Team Handoff
 
 All requirements above are in scope for the product. During the Design and Tasks phases, implementation SHALL be split into parallelizable workstreams with clear ownership boundaries: engine, Convex read loop, LLM/safety, client reader UI, auth/accounts, billing, co-op, publishing/creator, media, native, infrastructure, analytics/admin, and content/stories. Each task prompt SHALL include file ownership, leverage points, requirement references, test expectations, and implementation-log instructions so downstream agent teams can work without duplicating APIs or crossing module boundaries.
+
+---
+
+### Requirement 30 — Visual design contract and asset pipeline
+
+**User Story:** As an implementer, I want a frozen visual contract — tokens, fonts, icons, logos, covers — so the production app matches the approved hi-fi design without me having to re-derive values.
+
+#### Acceptance Criteria
+
+1. WHEN `apps/app/theme/` is built THEN it SHALL import color, spacing, radius, shadow, and font tokens from `apps/app/assets/design/tokens/tokens.json` (or a generated TS module derived from it) and SHALL NOT define inline color or font values that conflict with the token file.
+2. WHEN any production component references a color THEN it SHALL use a semantic alias (`paper`, `paper2`, `paper3`, `ink`, `inkSoft`, `inkFaint`, `inkGhost`, `candle`, `candleSoft`, `danger`, `success`, `night`, `day`, `shadow`) and SHALL NOT reference primitive scales (`paper.50`, `ember.700`, etc.) directly.
+3. WHEN any production component references the danger token (`#7a2218`, alias `danger`) THEN the use SHALL be a death surface, locked choice, paywall surface, or mature opt-in surface; ambient gold accents SHALL use `candle` instead. Lint or visual review SHALL flag other uses.
+4. WHEN three themes are configured (Requirement 18.1) THEN their canonical names SHALL be `sepia`, `night`, and `day`; the back-compat aliases `parchment` (→`sepia`) and `midnight` (→`night`) MAY resolve via the token file but SHALL NOT appear in new code.
+5. WHEN the reader font setting is rendered THEN options SHALL be `Serif` (default Lora), `Sans` (Atkinson Hyperlegible), and `Mono` (JetBrains Mono); the display face for chapter titles, ending names, and death plates SHALL be `IM Fell English` independent of the reader-font setting.
+6. WHEN icons are required THEN the production app SHALL use the 16-icon set in `apps/app/assets/design/icons/` for `candle`, `book`, `heart`, `coin`, `skull`, `eye`, `key`, `flame`, `compass`, `crown`, `hourglass`, `scroll`, `quill`, `sack`, `people`, and `sparkle`; lucide-react-native MAY be used as fallback only for icons not in this set.
+7. WHEN starter adventures are listed in the library (Requirement 26.1) THEN their cover assets SHALL be loaded from `apps/app/assets/design/covers/cover-{training-room,bone-cathedral,iron-court,ashfall}.{svg,png}`.
+8. WHEN the app's brand mark is rendered (header lockup, splash, share card, favicon) THEN it SHALL be loaded from `apps/app/assets/design/logos/` and `apps/app/assets/design/marketing/`; the production app SHALL NOT inline a regenerated SVG of the wordmark or candle glyph.
+9. WHEN a Pro media frame is rendered (Requirement 24.1, 24.2) THEN it SHALL implement the four-state upgrade pattern (Skeleton → Image ready → Video buffering → Video playing) defined in design.md "MediaPlate Upgrade Pattern"; reduced-motion preference SHALL keep the frame on state 2 (image) and SHALL NOT advance to video.
+10. WHEN any visual surface differs between `apps/app/assets/design/design-system.html` and the implemented production component THEN the canvas is the reference rendering — the discrepancy SHALL be either patched in production or, if the canvas itself is wrong, patched in the canvas with a token/spec change ratified in this document. Drift SHALL NOT be left silent.

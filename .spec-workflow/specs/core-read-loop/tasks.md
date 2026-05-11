@@ -1,5 +1,10 @@
 # Tasks Document - Core Read Loop / Full V1 App
 
+> Status note: Tasks 1-25 track the V1 implementation scaffold and local/mock-verified product surface.
+> They do not mean the product is ready for real credentials, paid provider traffic, app-store submission,
+> or production deployment. The launch-readiness tracker at the end of this file is the source of truth
+> for remaining P0 work before real keys and production traffic.
+
 - [x] 1. Bootstrap the pnpm monorepo and shared build tooling
   - Files: `package.json`, `pnpm-workspace.yaml`, `tsconfig.base.json`, `.gitignore`, `.npmrc`, workspace package configs
   - Create the root workspace for `apps/app`, `packages/engine`, `packages/stories`, `packages/shared`, `convex`, and `infra`
@@ -83,6 +88,8 @@
   - Files: `convex/llm/router.ts`, `anthropic.ts`, `vertex.ts`, `deepseek.ts`, `parse.ts`, `providerPolicy.ts`, `prompts/*`, `convex/memory.ts`, `convex/http.ts`
   - Add provider roles for Anthropic quality-first, Vertex Gemini fallback, DeepSeek cost-optimized eligible text, and deterministic fallback
   - Implement prompt construction, memory-window retrieval, stream handling, parser retry, provider fallback, provider health, token usage capture, and redacted failure metadata
+  - 2026-04-30 update: Scene prose budgets are now typed as `brief`, `standard`, `rich`, or `chapter` and flow from story/node metadata into `SceneGenerationRequest` and provider prompts.
+  - 2026-04-30 update: Main gameplay now uses a two-step streaming lifecycle: `game.beginStreamingChoice` creates the authoritative pending scene, `/llm/scene-stream` derives a canonical server-side `SceneGenerationRequest`, streams SSE tokens, and persists or fails the scene through completion/failure mutations.
   - Purpose: Make providers swappable without giving them state authority
   - _Leverage: shared schemas, safety gates, design LLM Provider Router section_
   - _Requirements: 5.4-5.9, 9.1-9.7, 11.1-11.8, 15.1-15.6, reliability NFR_
@@ -211,3 +218,242 @@
   - _Leverage: spec workflow implementation logging requirements_
   - _Requirements: 28.4, all_
   - _Prompt: Role: Release integrator | Task: Complete final docs, verification, cleanup, and implementation logs for the full V1 app | Restrictions: Do not mark tasks complete without passing or explicitly documenting required verification, do not omit implementation artifacts from logs | Success: docs are usable, full verification status is clear, and implementation logs describe APIs, components, functions, classes, integrations, and files changed_
+
+## Launch Readiness Tracker
+
+These items are intentionally separate from the V1 scaffold tasks above. They must remain unchecked until they pass against real development/staging services with Vault-backed secrets. Local provider mocks and deterministic fixtures are not sufficient to mark these complete.
+
+- [ ] LR-1. Wire Convex-backed BetterAuth runtime and session auth
+  - Files: `convex/betterAuth/*`, `convex/http.ts`, `apps/app/lib/authClient.ts`, `apps/app/lib/authConfig.ts`, `docs/convex-auth.md`
+  - Implement generated BetterAuth runtime files after Convex codegen, register BetterAuth HTTP routes, set `EXPO_PUBLIC_AUTH_MODE=better-auth`, and verify guest claim/sign-in/session restore through Convex identity.
+  - Replace local-auth-only assumptions in account/profile flows with server-backed identity where required.
+  - 2026-04-30 progress: BetterAuth runtime, `/api/auth/*` route registration, app BetterAuth mode switch, Convex token provider, user-row `ctx.auth` ownership guard, and guest-token proof for guest rows are implemented locally. Keep unchecked until HTTPS tunnel smoke verifies sign-up/sign-in/sign-out/reload/guest-claim against a configured Convex deployment.
+  - Success: tunnel HTTPS sign-up/sign-in/sign-out/guest-claim works on a clean browser and across reloads; Convex `ctx.auth` gates account-owned functions; local auth remains development-only.
+
+- [ ] LR-2. Replace temporary LLM stream secret with account/save authorization
+  - Files: `convex/http.ts`, `convex/saves.ts`, `convex/lib/authz.ts`, `apps/app/hooks/useTurn.ts`, `docs/local-docker.md`
+  - Current `/llm/scene-stream` is guarded by account/save authorization and current pending-scene validation through `game.getAuthorizedSceneStreamRequest`; the old `LLM_STREAM_SECRET` env has been removed from app env contracts and Vault allowlists.
+  - 2026-04-30 progress: `/llm/scene-stream` parses account/save identity, calls a Convex authorization query before provider work, refuses non-pending scene requests, builds the provider request server-side, persists streamed prose via `game.completeSceneStream`, and clears pending locks through `game.failSceneStream` on provider failure. Keep unchecked until live Convex HTTP smoke confirms unauthenticated direct calls fail and authorized calls stream tokens.
+  - Success: direct unauthenticated calls return 401/403; authorized reads stream tokens; provider spend cannot be triggered for another user's save.
+
+- [ ] LR-3. Validate live Anthropic, Vertex/Gemini, and DeepSeek calls
+  - Files: `convex/llm/*`, `scripts/secrets/*`, `docs/vault.md`, `docs/local-docker.md`
+  - Sync real provider keys/tokens from Vault into a Convex dev deployment.
+  - Run smoke tests for Anthropic quality route, Vertex fallback route, DeepSeek low-risk route, parse failure fallback, provider outage fallback, timeout behavior, and no-state-mutation parsing.
+  - 2026-04-30 note: Provider clients, request validation, prompt construction, fallback, and local provider mocks are implemented and tested. Keep unchecked until Vault-backed live credentials are synced and live calls are smoke-tested through the configured deployment.
+  - Success: live calls produce persisted/streamed prose, provider health reflects config, unsafe output is redacted/falls back, and no provider credentials appear in logs or client bundles.
+
+- [ ] LR-4. Stripe test-mode checkout and webhook entitlement pass
+  - Files: `convex/billing/*`, `convex/billingFunctions.ts`, `convex/http.ts`, `apps/app/app/paywall/*`, `docs/stripe-mobile.md`
+  - Sync Stripe test keys and price IDs from Vault, create a Checkout session, complete test payment, forward webhook through Stripe CLI, and verify entitlement changes are server-confirmed and idempotent.
+  - Success: free -> Unlimited/Pro test upgrade updates Convex entitlements; duplicate webhook events are ignored; paywall UI never grants access before server confirmation.
+
+- [ ] LR-5. Replace native receipt placeholders
+  - Files: `convex/billing/apple.ts`, `convex/billing/google.ts`, `convex/billing/nativeReceipts.ts`, `docs/stripe-mobile.md`, `eas.json`
+  - Replace local transaction-id placeholder verification with App Store Server API and Google Play Developer API validation.
+  - Store App Store Connect and Google Play credentials in Vault and verify sandbox receipts before app-store submission.
+  - 2026-04-30 progress: Native receipt helpers no longer accept non-empty transaction ids as proof. They validate store-returned Apple transaction and Google subscription records for transaction/purchase-token match, product id, account binding, expiry, revocation/inactive state, and bundle/package identity. Keep unchecked until sandbox API calls run with Vault-backed store credentials.
+  - Success: verified sandbox receipts normalize to the shared entitlement model; malformed, replayed, expired, and cross-account receipts are rejected.
+
+- [ ] LR-6. Implement explicit Convex seed/import command
+  - Files: `scripts/dev/seed-local.mjs`, `convex/seeds.ts`, `convex/creatorFunctions.ts`, `convex/game.ts`, `packages/stories/*`, `docs/local-docker.md`
+  - Replace the documented seed placeholder with a Convex mutation/action that imports starter stories or validates that package-owned starter data is already addressable by the live backend.
+  - 2026-04-30 progress: `seeds:loadStarterStories` now validates the package-owned starter catalog through Convex, `scripts/dev/seed-local.mjs` calls that mutation, published creator seeds are listed from Convex in the library, and launching `authored_seed:<seedId>` creates a normal remote save. Keep unchecked until the seed command is run against a clean configured Convex dev deployment.
+  - Success: a clean Convex dev deployment can be bootstrapped without hand-editing tables, and the library shows expected starter adventures.
+
+- [ ] LR-7. Production/staging deployment rehearsal
+  - Files: `infra/*`, `.github/workflows/*`, `cloudflare/*`, `docs/vault.md`, `README.md`
+  - Replace placeholder Pulumi stack config with real project IDs/domains, sync Vault secrets, deploy Convex, export web, publish hosting assets, and verify monitoring.
+  - Success: staging URL over HTTPS passes health checks, app loads without local-only env, provider fallback alerts are wired, and rollback steps are documented.
+
+- [ ] LR-8. Native build, signing, submit, and push validation
+  - Files: `apps/app/app.json`, `eas.json`, `docs/stripe-mobile.md`, `docs/vault.md`
+  - Run Vault-backed EAS build for iOS and Android, validate signing profiles, submit dry run where possible, and verify push notification permission/delivery path if enabled.
+  - Success: development/staging native builds install and authenticate, native billing sandbox is testable, and release-channel separation is verified.
+
+- [ ] LR-9. Final launch verification bundle
+  - Files: `README.md`, `docs/*`, `.spec-workflow/specs/core-read-loop/Implementation Logs/*`
+  - Run and record: `pnpm typecheck`, `pnpm test`, `pnpm test:e2e`, `pnpm audit --audit-level moderate`, `pnpm secrets:local:check`, live provider smoke, Stripe webhook smoke, BetterAuth tunnel smoke, and deployment smoke.
+  - 2026-04-30 progress: `pnpm smoke:live-readiness` now provides a non-spending HTTPS smoke for app HTML, BetterAuth route mount, Stripe webhook mount, and unauthorized LLM stream rejection.
+  - Success: every command has a dated implementation log entry with environment, exact command, result, residual risk, and owner for any deferred item.
+
+---
+
+## Wave 0 — Visual Design Hardening (added)
+
+These tasks fold the hi-fi design pass into production. They follow tasks 1-25 (all marked complete) and reference the assets shipped at `apps/app/assets/design/`.
+
+- [ ] 26. Wire token file as the single source of theme values
+  - Files: `apps/app/theme/tokens.ts` (generated or hand-mirrored from `apps/app/assets/design/tokens/tokens.json`), `apps/app/theme/themes.ts`, `apps/app/theme/fonts.ts`, theme tests
+  - Replace any inline hex colors, font names, or spacing constants in `apps/app/theme/` and `apps/app/components/primitives/` with imports from the generated token module
+  - Add a build-time check (lint rule or codegen diff) that fails CI if `apps/app/theme/tokens.ts` drifts from `apps/app/assets/design/tokens/tokens.json`
+  - Wire the three canonical themes `sepia`, `night`, `day` and keep `parchment`/`midnight` as resolving aliases for one release cycle, then remove
+  - Purpose: Make the token file the single source of truth and prevent silent drift
+  - _Leverage: `apps/app/assets/design/tokens/tokens.json`, `apps/app/assets/design/tokens/tokens.css`_
+  - _Requirements: 18.1, 30.1, 30.2, 30.4_
+  - _Prompt: Role: Design-systems frontend engineer | Task: Replace inline color/font/spacing constants in the Expo theme with imports from a token module sourced from `apps/app/assets/design/tokens/tokens.json`, wire the three canonical themes, and add a CI drift check | Restrictions: Do not introduce new tokens not present in the JSON, do not reference primitive scales from components, keep back-compat alias names resolving for one release | Success: production components reference only semantic aliases, theme switch covers `sepia`/`night`/`day`, and CI fails when the theme module drifts from the JSON_
+
+- [ ] 27. Lift production iconography, logos, covers, and marketing assets
+  - Files: `apps/app/components/icons/*` (16 components mapping to `apps/app/assets/design/icons/`), `apps/app/components/brand/Logo.tsx`, `apps/app/app.json` (favicon/icon/splash references), library card cover wiring
+  - Implement the 16 icon components rendering the SVGs from `apps/app/assets/design/icons/` at `currentColor`
+  - Wire library cards (Requirement 26.1) to load the four starter-tale covers from `apps/app/assets/design/covers/` by id
+  - Replace any inline SVG re-creation of the wordmark or candle glyph with imports of the shipped assets from `apps/app/assets/design/logos/`
+  - Point `apps/app/app.json` `icon`, `splash`, `android.adaptiveIcon`, and `web.favicon` at the canonical files in `apps/app/assets/design/marketing/` and `apps/app/assets/design/logos/`
+  - Purpose: Match approved hi-fi visual identity in production without regenerating shapes
+  - _Leverage: `apps/app/assets/design/{icons,logos,covers,marketing}/`_
+  - _Requirements: 26.1, 30.6, 30.7, 30.8_
+  - _Prompt: Role: Frontend asset integration engineer | Task: Build typed icon components for the 16-icon set, wire library covers, replace any inline regenerated brand SVG with imports of the shipped logos, and point app.json at the canonical marketing/logo assets | Restrictions: Do not redraw shapes, keep file names stable so the asset map matches the canvas, ensure icons render at currentColor | Success: every icon in the 16-set has a typed component, library cards render the four covers, brand mark is sourced from `apps/app/assets/design/logos/`, and app.json points at the canonical marketing assets_
+
+- [ ] 28. Implement the MediaPlate upgrade pattern
+  - Files: `apps/app/components/media/MediaPlate.tsx`, `MediaPlate.skeleton.tsx`, `MediaPlate.image.tsx`, `MediaPlate.video.tsx`, `apps/app/hooks/useMediaPlate.ts`, MediaPlate tests
+  - Implement the four states (Skeleton, Image ready, Video buffering, Video playing) per design.md "MediaPlate Upgrade Pattern"
+  - Crossfade timing matches the canvas: ≤3s typical to image, image stays as poster frame for Veo failure or reduced motion
+  - Honor reduced motion: stay on state 2 permanently
+  - Wire reactive Convex asset query so transitions happen as ready/failed events arrive
+  - Purpose: Deliver the asynchronous Pro media UX the design doc and Requirement 24 require
+  - _Leverage: `convex/media/imagen.ts`, `convex/media/veo.ts`, `convex/assets.ts`, `apps/app/assets/design/design-system.html` § 24A (Frames overview) and § 24B (Playback model)_
+  - _Requirements: 24.1-24.5, 30.9, 18.5_
+  - _Prompt: Role: Reader media frontend engineer | Task: Build the MediaPlate component with the four upgrade states, reactive asset wiring, reduced-motion handling, and Veo-failure fallback to image | Restrictions: Text streaming must not block on media, reduced-motion users must never see autoplaying video, Veo failure must not break the reader | Success: MediaPlate renders all four states from real Convex asset events, reduced-motion users stop at image, Veo failure falls back to image, and tests cover each transition_
+
+- [ ] 29. Visual regression baseline against the design canvas
+  - Files: `tests/visual/*`, Playwright + pixelmatch config, baseline screenshots from `apps/app/assets/design/design-system.html`
+  - Capture baseline screenshots of every section of the design canvas at 1280×900
+  - For each implemented production surface (reader, library, paywall, death, co-op, endings, dashboard), capture a matching screenshot at the same viewport with seed data
+  - Diff token-bound regions (color, type) with strict tolerance; layout regions with relaxed tolerance
+  - Fail CI on color/type drift; surface layout drift as a warning for review
+  - Purpose: Catch silent visual drift between the canvas and production before release
+  - _Leverage: `apps/app/assets/design/design-system.html`, Playwright config from task 23_
+  - _Requirements: 30.10, NFR Performance/Usability_
+  - _Prompt: Role: Visual QA automation engineer | Task: Build a Playwright visual regression suite that compares production surfaces against canvas baselines with token-region strictness and layout-region tolerance | Restrictions: Do not lock layout pixel-perfectly across viewports, do not run live provider calls in visual tests, do not commit baseline images that include any user data | Success: CI fails on token drift between production and the design canvas, surfaces layout drift as a reviewable warning, and produces a per-surface diff report_
+
+- [ ] 30. Reader layout variants (Book / ModernApp / GraphicNovel / Journal / Mobile)
+  - Files: `apps/app/components/reading/ReaderScreen.tsx`, `apps/app/components/reading/layouts/{Book,ModernApp,GraphicNovel,Journal,Mobile}.tsx`, `apps/app/hooks/useReaderSettings.ts`, reader tests
+  - Implement the four desktop layouts and the phone-optimized mobile layout per canvas § 19 (`reading-layouts`); each layout consumes the same scene+choices state and only varies typography, gutter, chrome, and media affordance
+  - Wire the layout setting from `useReaderSettings` to switch at render time; persist per account/guest
+  - Purpose: Deliver Requirement 18.3 reading layout variants matching the canvas
+  - _Leverage: canvas § 19 (HR.ReadMobile/ReadGraphicNovel/ReadModernApp/ReadJournal), `useReaderSettings`_
+  - _Requirements: 18.2, 18.3, 30.10_
+  - _Prompt: Role: Reader UI engineer | Task: Lift the four canvas reading layouts into production components that share scene state and switch by setting | Restrictions: Do not fork scene-state per layout, do not block prose streaming on layout chrome, keep all four within token system | Success: a single setting changes layout instantly, all five variants render real scene+choices, and visual regression vs canvas § 19 passes_
+
+- [ ] 31. Stats HUD modes and stat-pip motion
+  - Files: `apps/app/components/stats/StatsHud.tsx`, `apps/app/components/stats/modes/{Persistent,PeekDrawer,Contextual,FullSheet}.tsx`, `apps/app/components/stats/StatPip.tsx`, HUD tests
+  - Implement the four HUD modes per canvas § 20A and the stat-pip spec per § 20B; PeekDrawer is the default; pip fades next to the prose anchor while HUD updates immediately
+  - Honor reduced motion (Req 18.5) for pip and HUD transitions; never reveal hidden stats in any mode
+  - Purpose: Deliver Requirement 6 HUD modes with the canvas-spec motion
+  - _Leverage: canvas § 20 (HS.StatsModes, HS.StatPipSpec), Req 6.2-6.7_
+  - _Requirements: 6.1-6.7, 18.4, 18.5_
+  - _Prompt: Role: Reader UI engineer | Task: Build the four HUD modes and the stat-pip spec, wired to the same Convex stats state with mode toggled by setting | Restrictions: Hidden stats must remain hidden in every mode, pip motion must respect reduced motion, HUD must not compete visually with prose | Success: every mode renders real stat state, pip animates per spec, reduced motion replaces animation with instant change, and tests cover each mode_
+
+- [ ] 32. Death variants — Brutal / Bookish / Cinematic
+  - Files: `apps/app/components/death/EndingPanel.tsx`, `apps/app/components/death/variants/{Brutal,Bookish,Cinematic}.tsx`, `convex/llm/prompts/scene.ts` (death-trigger metadata), death tests
+  - Implement the three death variants per canvas § 21A; default is Brutal; Bookish is a tonal alternative; Cinematic fires once per first-find death and only on Pro entitlement
+  - Surface variant selection from save metadata + entitlement; never replay Cinematic for a death the reader has already seen
+  - Purpose: Deliver Requirement 8 death surfaces matching the canvas
+  - _Leverage: canvas § 21A (HS.DeathVariants), Req 8, 17_
+  - _Requirements: 8.1-8.5, 17.1-17.4, 24.2_
+  - _Prompt: Role: Reader UI engineer | Task: Build the three death variants and the per-save selection logic that respects entitlement and first-find rules | Restrictions: Cinematic is Pro-only and once per ending, Bookish only when tale tone is suitable, no variant may block the "Begin again" CTA | Success: each ending unlocks the correct variant for tier + first-find state, Begin-again remains reachable, and Cinematic uses Veo through MediaPlate not a bespoke player_
+
+- [ ] 33. Paywall variants — Soft / Inline / TopBar
+  - Files: `apps/app/components/paywall/PaywallPanel.tsx`, `apps/app/components/paywall/variants/{Soft,Inline,TopBar}.tsx`, `apps/app/app/paywall/index.tsx`, paywall tests
+  - Implement the three paywall entry contexts per canvas § 21B: Soft (today's candle fully burned), Inline (next "scene" position so the story breathes around it), TopBar (gentle reminder ribbon with turns remaining)
+  - Wire entry-context selection to the candle/turns state; never show two paywall variants simultaneously
+  - Purpose: Deliver Requirement 17 paywall surfaces matching the canvas
+  - _Leverage: canvas § 21B (HS.PaywallVariants), Req 17_
+  - _Requirements: 17.1-17.7, 13.1-13.5_
+  - _Prompt: Role: Billing UI engineer | Task: Build the three paywall variants and the selection logic that maps candle state to the correct context | Restrictions: Only one variant may be active per render, all variants must offer the same upgrade actions, copy must not blame the reader | Success: entry context drives variant choice, upgrade flow is identical across variants, and tests cover each entry state_
+
+- [ ] 34. Auth surfaces — Sign in, magic link sent, profile archetypes
+  - Files: `apps/app/app/login/index.tsx`, `apps/app/components/auth/SignInForm.tsx`, `apps/app/components/auth/MagicLinkSent.tsx`, `apps/app/components/auth/ProfileArchetypes.tsx`, auth tests
+  - Implement the three auth boards per canvas § 10: sign-in (email + provider buttons), magic-link-sent confirmation, profile "archetypes the narrator learned"
+  - Profile surfaces the narrator-inferred archetype tags; user can mute/edit; never display raw prose history
+  - Purpose: Match the canvas auth UX without exposing analytics or prose history
+  - _Leverage: canvas § 10 (W.SignInBoard, W.MagicLinkBoard, W.ProfileBoard), BetterAuth provider_
+  - _Requirements: 3.1-3.4, 15.1-15.4_
+  - _Prompt: Role: Auth UI engineer | Task: Build the sign-in form, magic-link-sent surface, and profile archetypes view per canvas § 10 | Restrictions: Do not expose prose history, do not bypass BetterAuth provider, keep profile archetypes editable | Success: each surface renders per canvas, BetterAuth magic-link flow works end-to-end, profile archetypes are editable and persist_
+
+- [ ] 35. Patronage tier compare surface
+  - Files: `apps/app/app/paywall/index.tsx` (compare view), `apps/app/components/paywall/TierCompare.tsx`, `apps/app/components/paywall/TierCard.tsx`, paywall tests
+  - Implement the four-tier compare board per canvas § 11 with Wanderer / Reader / Patron / Magus; surface limits, media tier, soft caps, and per-cycle price; native builds show the platform-required price + restore flow
+  - Purpose: Deliver the patronage upgrade compare needed for Requirement 17.5 and conversion
+  - _Leverage: canvas § 11 (W.PricingBoard), Req 17, Stripe + native IAP normalizers_
+  - _Requirements: 17.1-17.9, 25.3_
+  - _Prompt: Role: Billing UI engineer | Task: Build the four-tier compare board with per-tier crest, included features, soft caps, and price; wire to current entitlement and CTA | Restrictions: Native must use platform IAP not Stripe checkout, copy must not say "free" if usage caps exist, do not advertise a Max tier until it is real | Success: every tier renders with crest + features, current tier is marked, CTA respects platform, and tests cover web + native paths_
+
+- [ ] 36. Chapter end consequence reel (between-chapter interstitial)
+  - Files: `apps/app/components/reading/ChapterEnd.tsx`, `apps/app/components/reading/ConsequenceReel.tsx`, `convex/turn.ts` (chapter-boundary hook), reader tests
+  - Implement the consequence-reel interstitial per canvas § 12: at chapter boundaries, surface the choices the reader made and how they echoed, then resume reading on tap/continue
+  - Source the reel content from `turn_history` + ending-flag metadata; never reveal hidden flags
+  - Purpose: New chapter-end surface — replays meaningful choices for emotional weight between chapters
+  - _Leverage: canvas § 12 (W.ChapterEndBoard), `turn_history`, engine chapter-boundary metadata_
+  - _Requirements: 19.1-19.5, 6.1, NFR Usability_
+  - _Prompt: Role: Reader UI engineer | Task: Build the consequence reel that fires at chapter boundaries, replays meaningful choices, and returns the reader to the prose stream | Restrictions: Never reveal hidden flags or stats, never block the next chapter behind paywall, must be skippable | Success: chapter boundaries reliably trigger the reel, the reel surfaces only visible-tier consequences, and continuing returns the reader to prose without losing place_
+
+- [ ] 37. Discover & share surfaces
+  - Files: `apps/app/app/discover/index.tsx`, `apps/app/components/discovery/DiscoverList.tsx`, `apps/app/components/discovery/ShareModal.tsx`, share/discover tests
+  - Implement the Discover page and Share modal per canvas § 13: archive browser for published tales (tone, length, tier, completion count) and a share modal that respects share-eligibility (Req 22.4)
+  - Share modal uses the canonical OG card asset; never embeds personal stats
+  - Purpose: Deliver publishing/discovery reader surfaces tied to Requirements 22 and 19.4
+  - _Leverage: canvas § 13 (W.DiscoverBoard, W.ShareBoard), `convex/tales/*`_
+  - _Requirements: 19.4, 22.1-22.5_
+  - _Prompt: Role: Publishing UI engineer | Task: Build the Discover archive list and Share modal per canvas § 13, gated by share-eligibility and using the canonical OG asset | Restrictions: Personal stats may never appear on a shared card, share links must respect tale visibility, do not embed raw prose excerpts that violate safety | Success: Discover lists published tales with filters, Share modal produces a working link + image card, eligibility gates work_
+
+- [ ] 38. Narrator voice picker + per-tale continuity
+  - Files: `apps/app/components/narrator/VoicePicker.tsx`, `apps/app/components/narrator/NarratorContinuity.tsx`, `apps/app/hooks/useNarratorVoice.ts`, `convex/media/narrator.ts`, narrator tests
+  - Implement the voice picker per canvas § 14 (waveform sample, default-to-last-used, lock on tap) and the per-tale continuity rules per canvas § 24F (voice id pinned to save, restored on resume, confirm modal to change mid-tale)
+  - Voice IDs are TTS-provider-stable; same paragraph plays identically across sessions
+  - Purpose: Deliver Requirement 24.4 narration continuity matching the canvas voice flow
+  - _Leverage: canvas § 14 (W.NarratorBoard) and § 24F (HCE.NarratorContinuity)_
+  - _Requirements: 24.4, 24.5, NFR Usability_
+  - _Prompt: Role: Narrator media engineer | Task: Build the voice picker, the per-save voice pin, the resume restore, and the mid-tale change confirm | Restrictions: Voice id is per save not per account, TTS provider voice ids must not drift, mid-tale change requires explicit confirm | Success: picker shows on tale-start, sample auto-plays, voice persists per save across sessions, mid-tale change requires confirm and re-plays current paragraph in new voice_
+
+- [ ] 39. Audio architecture — 5-layer mix with narrator ducking
+  - Files: `apps/app/components/media/AmbientSoundscape.tsx`, `apps/app/components/media/AudioMix.tsx`, `apps/app/hooks/useAudioMix.ts`, `convex/media/audio.ts`, audio tests
+  - Implement the five-layer mix per canvas § 24C: narrator → Veo diegetic audio → generated music → library ambient → SFX; narrator ducks the rest; Veo audio dominates during motion
+  - Honor system mute, user mute, and native background rules (Req 24.4)
+  - Purpose: Deliver the audio model the canvas specifies for Pro media
+  - _Leverage: canvas § 24C (HCE.AudioArch), `AmbientSoundscape`, `VeoCinematic`_
+  - _Requirements: 24.3, 24.4, 18.5_
+  - _Prompt: Role: Reader audio engineer | Task: Build the 5-layer mix with priority ducking, mute respect, and native background rules | Restrictions: Narrator never gets ducked, ambient must pause on system mute, do not autoplay video audio with reduced motion | Success: all five layers render together with correct ducking, mute and reduced-motion preferences work, native background does not leak audio_
+
+- [ ] 40. Mobile shelf + reading view optimization
+  - Files: `apps/app/components/reading/layouts/Mobile.tsx` (from task 30), `apps/app/app/library/index.tsx` (mobile shelf variant), mobile tests
+  - Tune the mobile shelf and mobile reading view per canvas § 15: phone-first chrome, thumb-reachable choices, single-column shelf with cover-forward cards
+  - Purpose: Deliver Requirement 25.1 phone parity with the canvas mobile board
+  - _Leverage: canvas § 15 (W.MobileBoard), task 30 Mobile layout_
+  - _Requirements: 25.1, 18.3, NFR Usability_
+  - _Prompt: Role: Mobile UI engineer | Task: Tune the mobile shelf and reading view to match canvas § 15 with thumb-reachable controls and cover-forward shelf cards | Restrictions: Same React Native tree as web, no native-only hacks, choices must be ≥44pt tap targets | Success: shelf and reading view match canvas at iPhone-13/Pixel-7 widths, choices are tap-friendly, and visual regression matches the canvas mobile board_
+
+- [ ] 41. State surfaces — toast / empty / error
+  - Files: `apps/app/components/states/Toast.tsx`, `apps/app/components/states/EmptyState.tsx`, `apps/app/components/states/ErrorBoundary.tsx`, `apps/app/hooks/useToast.ts`, state tests
+  - Implement toast/empty/error surfaces per canvas § 16; copy stays in the book voice; error surfaces never expose stack traces or internal ids to the reader
+  - Wire a single toast queue with reduced-motion-safe animation
+  - Purpose: Deliver the system state surfaces the canvas defines
+  - _Leverage: canvas § 16 (W.StatesBoard)_
+  - _Requirements: NFR Usability, 18.5_
+  - _Prompt: Role: Frontend platform engineer | Task: Build toast, empty, and error surfaces with a single queue and reduced-motion-safe animation | Restrictions: No stack traces in user-facing error copy, no native alerts, all copy in book voice | Success: every error surface renders the canvas state board, toasts queue without overlap, reduced motion replaces animation with instant change_
+
+- [ ] 42. Spec-gap surfaces — under-13 block, mature opt-in, locked-choice copy, streaming placeholder
+  - Files: `apps/app/components/account/AgeGate.tsx` (under-13 path), `apps/app/components/account/Under13Block.tsx`, `apps/app/components/account/MatureOptIn.tsx`, `apps/app/components/choices/LockedChoiceCopy.tsx`, `apps/app/components/reading/StreamingPlaceholder.tsx`, spec-gap tests
+  - Implement the five spec-gap surfaces per canvas § 18: age gate (A — already covered), under-13 block (B), mature opt-in (C), locked-choice guidance copy (D), streaming placeholder skeleton (E)
+  - Under-13 block: permanent block screen, no reset; Mature opt-in: explicit consent, default off, revocable in settings
+  - Purpose: Close compliance + safety surface gaps flagged in the reconciliation pass
+  - _Leverage: canvas § 18 (HG.AgeGate/Under13/MatureOptIn/LockedChoiceGuidance/StreamingPlaceholder), Req 1, 11, 12_
+  - _Requirements: 1.1-1.5, 11.1-11.4, 12.1-12.5, 5.1-5.3_
+  - _Prompt: Role: Safety UI engineer | Task: Build the four missing spec-gap surfaces (under-13 block, mature opt-in, locked-choice copy, streaming placeholder) per canvas § 18 | Restrictions: Under-13 block is permanent and cannot be bypassed, mature opt-in defaults to off, locked-choice copy must not reveal hidden flags, streaming placeholder must not block the first paragraph | Success: every spec-gap surface matches the canvas, age/mature gates correctly route, locked-choice copy is consistent, streaming placeholder renders during slow first-paragraph_
+
+- [ ] 43. Continue-reading shelf and story-seeding flow refinement
+  - Files: `apps/app/app/library/index.tsx`, `apps/app/components/library/ContinueReading.tsx`, `apps/app/components/creator/SeedStoryFlow.tsx`, `apps/app/app/creator/index.tsx`, shelf+seed tests
+  - Refine the home shelf per canvas § 8A (Continue Reading row, last-played beat, candle status) and the seed flow per § 8B (pick where, tone, premise, with starter-tale presets)
+  - Purpose: Deliver the enriched-flow surfaces the canvas defines for first-and-returning reads
+  - _Leverage: canvas § 8 (V.ContinueReadingBoard, V.SeedStoryBoard), library hooks_
+  - _Requirements: 26.1, 26.2, 16.1-16.3_
+  - _Prompt: Role: Library + creator UI engineer | Task: Refine the home shelf and seed flow to match canvas § 8A/8B with continue-reading + seeded-story creation paths | Restrictions: Do not surface tales the reader cannot access, do not start a seeded tale if safety classification fails, keep the four starter tales primary on first run | Success: shelf shows continue-reading entries with last-beat preview and candle status, seed flow creates a real Convex save with starter or custom tone/premise_
+
+- [ ] 44. Operator dashboard board-level refinement
+  - Files: `apps/app/app/admin/index.tsx`, `apps/app/components/admin/AdminDashboardScreen.tsx`, `apps/app/components/admin/boards/{Funnel,Cost,Safety,Live}.tsx`, admin tests
+  - Refine the admin dashboard per canvas § 25 Operator: four boards (Funnel, Cost, Safety, Live load) on the same screen, personal data redacted, no prose ever surfaces
+  - Wire each board to its existing Convex query; add the missing redaction guard on Safety and Live boards
+  - Purpose: Match Requirement 27 + canvas operator surface
+  - _Leverage: canvas § 25 (HCE.OperatorDashboard), existing admin routes (`/admin/{funnel,cost,safety,live}`)_
+  - _Requirements: 27.1-27.5_
+  - _Prompt: Role: Operator UI engineer | Task: Refine the admin dashboard so funnel/cost/safety/live render as four boards per canvas § 25 with a redaction guard | Restrictions: No raw prose may appear, no PII outside hashed/coarse buckets, operator-only role gating on every board | Success: every board renders against its Convex query, redaction guard blocks prose/PII, operator role gating is enforced at the boundary_
