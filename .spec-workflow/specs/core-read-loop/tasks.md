@@ -283,8 +283,9 @@ These items are intentionally separate from the V1 scaffold tasks above. They mu
 
 These tasks fold the hi-fi design pass into production. They follow tasks 1-25 (all marked complete) and reference the assets shipped at `apps/app/assets/design/`.
 
-- [ ] 26. Wire token file as the single source of theme values
+- [x] 26. Wire token file as the single source of theme values
   - Files: `apps/app/theme/tokens.ts` (generated or hand-mirrored from `apps/app/assets/design/tokens/tokens.json`), `apps/app/theme/themes.ts`, `apps/app/theme/fonts.ts`, theme tests
+  - 2026-05-11 progress (Foundation agent, commit ea8b900, merged into feat/visual-design-wave-0): Token module wired from JSON via theme/tokens.generated.ts + themes.ts; canonical sepia/night/day with parchment/midnight back-compat; node:test drift check at theme/__tests__/tokens.test.mjs. pnpm typecheck + tests green offline; no Convex cloud calls.
   - Replace any inline hex colors, font names, or spacing constants in `apps/app/theme/` and `apps/app/components/primitives/` with imports from the generated token module
   - Add a build-time check (lint rule or codegen diff) that fails CI if `apps/app/theme/tokens.ts` drifts from `apps/app/assets/design/tokens/tokens.json`
   - Wire the three canonical themes `sepia`, `night`, `day` and keep `parchment`/`midnight` as resolving aliases for one release cycle, then remove
@@ -293,8 +294,9 @@ These tasks fold the hi-fi design pass into production. They follow tasks 1-25 (
   - _Requirements: 18.1, 30.1, 30.2, 30.4_
   - _Prompt: Role: Design-systems frontend engineer | Task: Replace inline color/font/spacing constants in the Expo theme with imports from a token module sourced from `apps/app/assets/design/tokens/tokens.json`, wire the three canonical themes, and add a CI drift check | Restrictions: Do not introduce new tokens not present in the JSON, do not reference primitive scales from components, keep back-compat alias names resolving for one release | Success: production components reference only semantic aliases, theme switch covers `sepia`/`night`/`day`, and CI fails when the theme module drifts from the JSON_
 
-- [ ] 27. Lift production iconography, logos, covers, and marketing assets
+- [x] 27. Lift production iconography, logos, covers, and marketing assets
   - Files: `apps/app/components/icons/*` (16 components mapping to `apps/app/assets/design/icons/`), `apps/app/components/brand/Logo.tsx`, `apps/app/app.json` (favicon/icon/splash references), library card cover wiring
+  - 2026-05-11 progress (Foundation agent, commit ea8b900, merged into feat/visual-design-wave-0): 16 icon components under components/icons/ (SvgIcon + 16 named), brand/Logo.tsx with wordmark/lockup/glyph/seal variants, app.json points at apps/app/assets/design/marketing/ and logos/. pnpm typecheck + tests green offline; no Convex cloud calls.
   - Implement the 16 icon components rendering the SVGs from `apps/app/assets/design/icons/` at `currentColor`
   - Wire library cards (Requirement 26.1) to load the four starter-tale covers from `apps/app/assets/design/covers/` by id
   - Replace any inline SVG re-creation of the wordmark or candle glyph with imports of the shipped assets from `apps/app/assets/design/logos/`
@@ -326,8 +328,9 @@ These tasks fold the hi-fi design pass into production. They follow tasks 1-25 (
   - _Requirements: 30.10, NFR Performance/Usability_
   - _Prompt: Role: Visual QA automation engineer | Task: Build a Playwright visual regression suite that compares production surfaces against canvas baselines with token-region strictness and layout-region tolerance | Restrictions: Do not lock layout pixel-perfectly across viewports, do not run live provider calls in visual tests, do not commit baseline images that include any user data | Success: CI fails on token drift between production and the design canvas, surfaces layout drift as a reviewable warning, and produces a per-surface diff report_
 
-- [ ] 30. Reader layout variants (Book / ModernApp / GraphicNovel / Journal / Mobile)
+- [x] 30. Reader layout variants (Book / ModernApp / GraphicNovel / Journal / Mobile)
   - Files: `apps/app/components/reading/ReaderScreen.tsx`, `apps/app/components/reading/layouts/{Book,ModernApp,GraphicNovel,Journal,Mobile}.tsx`, `apps/app/hooks/useReaderSettings.ts`, reader tests
+  - 2026-05-11 progress (Reading agent, commit 2942d3b, merged into feat/visual-design-wave-0): Five layouts under components/reading/layouts/, ReaderScreen is now a dispatcher on settings.layout; layout setting wired through useReaderSettings with localStorage persistence. pnpm typecheck + tests green offline; no Convex cloud calls.
   - Implement the four desktop layouts and the phone-optimized mobile layout per canvas § 19 (`reading-layouts`); each layout consumes the same scene+choices state and only varies typography, gutter, chrome, and media affordance
   - Wire the layout setting from `useReaderSettings` to switch at render time; persist per account/guest
   - Purpose: Deliver Requirement 18.3 reading layout variants matching the canvas
@@ -335,8 +338,9 @@ These tasks fold the hi-fi design pass into production. They follow tasks 1-25 (
   - _Requirements: 18.2, 18.3, 30.10_
   - _Prompt: Role: Reader UI engineer | Task: Lift the four canvas reading layouts into production components that share scene state and switch by setting | Restrictions: Do not fork scene-state per layout, do not block prose streaming on layout chrome, keep all four within token system | Success: a single setting changes layout instantly, all five variants render real scene+choices, and visual regression vs canvas § 19 passes_
 
-- [ ] 31. Stats HUD modes and stat-pip motion
+- [x] 31. Stats HUD modes and stat-pip motion
   - Files: `apps/app/components/stats/StatsHud.tsx`, `apps/app/components/stats/modes/{Persistent,PeekDrawer,Contextual,FullSheet}.tsx`, `apps/app/components/stats/StatPip.tsx`, HUD tests
+  - 2026-05-11 progress (HUD agent, commit 443f792, merged into feat/visual-design-wave-0): StatsHud is a dispatcher over modes/{Persistent,PeekDrawer,Contextual,FullSheet}.tsx; StatPip + pipMotion with reduced-motion fallback; hidden-stat guard in filterVisibleStats/diffVisibleStats; 19 vitest cases. pnpm typecheck + tests green offline; no Convex cloud calls.
   - Implement the four HUD modes per canvas § 20A and the stat-pip spec per § 20B; PeekDrawer is the default; pip fades next to the prose anchor while HUD updates immediately
   - Honor reduced motion (Req 18.5) for pip and HUD transitions; never reveal hidden stats in any mode
   - Purpose: Deliver Requirement 6 HUD modes with the canvas-spec motion
@@ -344,8 +348,9 @@ These tasks fold the hi-fi design pass into production. They follow tasks 1-25 (
   - _Requirements: 6.1-6.7, 18.4, 18.5_
   - _Prompt: Role: Reader UI engineer | Task: Build the four HUD modes and the stat-pip spec, wired to the same Convex stats state with mode toggled by setting | Restrictions: Hidden stats must remain hidden in every mode, pip motion must respect reduced motion, HUD must not compete visually with prose | Success: every mode renders real stat state, pip animates per spec, reduced motion replaces animation with instant change, and tests cover each mode_
 
-- [ ] 32. Death variants — Brutal / Bookish / Cinematic
+- [x] 32. Death variants — Brutal / Bookish / Cinematic
   - Files: `apps/app/components/death/EndingPanel.tsx`, `apps/app/components/death/variants/{Brutal,Bookish,Cinematic}.tsx`, `convex/llm/prompts/scene.ts` (death-trigger metadata), death tests
+  - 2026-05-11 progress (Death/Paywall agent, commit c7eb997, merged into feat/visual-design-wave-0): death/variants/{Brutal,Bookish,Cinematic}.tsx + selectVariant.ts (Cinematic first-find Magus-only); EndingPanel is dispatcher; Cinematic renders via existing VeoCinematic. pnpm typecheck + tests green offline; no Convex cloud calls.
   - Implement the three death variants per canvas § 21A; default is Brutal; Bookish is a tonal alternative; Cinematic fires once per first-find death and only on Pro entitlement
   - Surface variant selection from save metadata + entitlement; never replay Cinematic for a death the reader has already seen
   - Purpose: Deliver Requirement 8 death surfaces matching the canvas
@@ -353,8 +358,9 @@ These tasks fold the hi-fi design pass into production. They follow tasks 1-25 (
   - _Requirements: 8.1-8.5, 17.1-17.4, 24.2_
   - _Prompt: Role: Reader UI engineer | Task: Build the three death variants and the per-save selection logic that respects entitlement and first-find rules | Restrictions: Cinematic is Pro-only and once per ending, Bookish only when tale tone is suitable, no variant may block the "Begin again" CTA | Success: each ending unlocks the correct variant for tier + first-find state, Begin-again remains reachable, and Cinematic uses Veo through MediaPlate not a bespoke player_
 
-- [ ] 33. Paywall variants — Soft / Inline / TopBar
+- [x] 33. Paywall variants — Soft / Inline / TopBar
   - Files: `apps/app/components/paywall/PaywallPanel.tsx`, `apps/app/components/paywall/variants/{Soft,Inline,TopBar}.tsx`, `apps/app/app/paywall/index.tsx`, paywall tests
+  - 2026-05-11 progress (Death/Paywall agent, commit c7eb997, merged into feat/visual-design-wave-0): paywall/variants/{Soft,Inline,TopBar}.tsx + selectVariant.ts (mapped from candle/turns state); PaywallPanel is dispatcher; 21 vitest cases. pnpm typecheck + tests green offline; no Convex cloud calls.
   - Implement the three paywall entry contexts per canvas § 21B: Soft (today's candle fully burned), Inline (next "scene" position so the story breathes around it), TopBar (gentle reminder ribbon with turns remaining)
   - Wire entry-context selection to the candle/turns state; never show two paywall variants simultaneously
   - Purpose: Deliver Requirement 17 paywall surfaces matching the canvas
@@ -362,8 +368,9 @@ These tasks fold the hi-fi design pass into production. They follow tasks 1-25 (
   - _Requirements: 17.1-17.7, 13.1-13.5_
   - _Prompt: Role: Billing UI engineer | Task: Build the three paywall variants and the selection logic that maps candle state to the correct context | Restrictions: Only one variant may be active per render, all variants must offer the same upgrade actions, copy must not blame the reader | Success: entry context drives variant choice, upgrade flow is identical across variants, and tests cover each entry state_
 
-- [ ] 34. Auth surfaces — Sign in, magic link sent, profile archetypes
+- [x] 34. Auth surfaces — Sign in, magic link sent, profile archetypes
   - Files: `apps/app/app/login/index.tsx`, `apps/app/components/auth/SignInForm.tsx`, `apps/app/components/auth/MagicLinkSent.tsx`, `apps/app/components/auth/ProfileArchetypes.tsx`, auth tests
+  - 2026-05-11 progress (Auth/Safety agent, commit d329d60, merged into feat/visual-design-wave-0): auth/{SignInForm,MagicLinkSent,ProfileArchetypes}.tsx; new login route uses flow phases; profile route at app/profile/index.tsx; archetype tags grafted onto useAccountProfile alongside the existing remote-profile state. pnpm typecheck + tests green offline; no Convex cloud calls.
   - Implement the three auth boards per canvas § 10: sign-in (email + provider buttons), magic-link-sent confirmation, profile "archetypes the narrator learned"
   - Profile surfaces the narrator-inferred archetype tags; user can mute/edit; never display raw prose history
   - Purpose: Match the canvas auth UX without exposing analytics or prose history
@@ -371,16 +378,18 @@ These tasks fold the hi-fi design pass into production. They follow tasks 1-25 (
   - _Requirements: 3.1-3.4, 15.1-15.4_
   - _Prompt: Role: Auth UI engineer | Task: Build the sign-in form, magic-link-sent surface, and profile archetypes view per canvas § 10 | Restrictions: Do not expose prose history, do not bypass BetterAuth provider, keep profile archetypes editable | Success: each surface renders per canvas, BetterAuth magic-link flow works end-to-end, profile archetypes are editable and persist_
 
-- [ ] 35. Patronage tier compare surface
+- [x] 35. Patronage tier compare surface
   - Files: `apps/app/app/paywall/index.tsx` (compare view), `apps/app/components/paywall/TierCompare.tsx`, `apps/app/components/paywall/TierCard.tsx`, paywall tests
+  - 2026-05-11 progress (Death/Paywall agent, commit c7eb997, merged into feat/visual-design-wave-0): paywall/TierCompare.tsx + TierCard.tsx; lib/billingConfig.ts ships PatronTier metadata + resolvePatronTier; app/paywall/index.tsx composes situational variant + TierCompare. pnpm typecheck + tests green offline; no Convex cloud calls.
   - Implement the four-tier compare board per canvas § 11 with Wanderer / Reader / Patron / Magus; surface limits, media tier, soft caps, and per-cycle price; native builds show the platform-required price + restore flow
   - Purpose: Deliver the patronage upgrade compare needed for Requirement 17.5 and conversion
   - _Leverage: canvas § 11 (W.PricingBoard), Req 17, Stripe + native IAP normalizers_
   - _Requirements: 17.1-17.9, 25.3_
   - _Prompt: Role: Billing UI engineer | Task: Build the four-tier compare board with per-tier crest, included features, soft caps, and price; wire to current entitlement and CTA | Restrictions: Native must use platform IAP not Stripe checkout, copy must not say "free" if usage caps exist, do not advertise a Max tier until it is real | Success: every tier renders with crest + features, current tier is marked, CTA respects platform, and tests cover web + native paths_
 
-- [ ] 36. Chapter end consequence reel (between-chapter interstitial)
+- [x] 36. Chapter end consequence reel (between-chapter interstitial)
   - Files: `apps/app/components/reading/ChapterEnd.tsx`, `apps/app/components/reading/ConsequenceReel.tsx`, `convex/turn.ts` (chapter-boundary hook), reader tests
+  - 2026-05-11 progress (Reading agent, commit 2942d3b, merged into feat/visual-design-wave-0): reading/ChapterEnd.tsx + ConsequenceReel.tsx; chapter boundary derived client-side from choiceHistory in useTurn (CHAPTER_TURNS=4); echo dropped via deriveEngineEcho — never reveals hidden flags. pnpm typecheck + tests green offline; no Convex cloud calls.
   - Implement the consequence-reel interstitial per canvas § 12: at chapter boundaries, surface the choices the reader made and how they echoed, then resume reading on tap/continue
   - Source the reel content from `turn_history` + ending-flag metadata; never reveal hidden flags
   - Purpose: New chapter-end surface — replays meaningful choices for emotional weight between chapters
@@ -388,8 +397,9 @@ These tasks fold the hi-fi design pass into production. They follow tasks 1-25 (
   - _Requirements: 19.1-19.5, 6.1, NFR Usability_
   - _Prompt: Role: Reader UI engineer | Task: Build the consequence reel that fires at chapter boundaries, replays meaningful choices, and returns the reader to the prose stream | Restrictions: Never reveal hidden flags or stats, never block the next chapter behind paywall, must be skippable | Success: chapter boundaries reliably trigger the reel, the reel surfaces only visible-tier consequences, and continuing returns the reader to prose without losing place_
 
-- [ ] 37. Discover & share surfaces
+- [x] 37. Discover & share surfaces
   - Files: `apps/app/app/discover/index.tsx`, `apps/app/components/discovery/DiscoverList.tsx`, `apps/app/components/discovery/ShareModal.tsx`, share/discover tests
+  - 2026-05-11 progress (Discover/States agent, commit ac1b19a, merged into feat/visual-design-wave-0): app/discover/index.tsx + discovery/{DiscoverList,DiscoverCard,ShareModal}.tsx; ShareEligibility discriminated union (guest_account/private_tale/revoked/mature_blocked/no_link); OG asset via OG_CARD_ASSET_PATH. pnpm typecheck + tests green offline; no Convex cloud calls.
   - Implement the Discover page and Share modal per canvas § 13: archive browser for published tales (tone, length, tier, completion count) and a share modal that respects share-eligibility (Req 22.4)
   - Share modal uses the canonical OG card asset; never embeds personal stats
   - Purpose: Deliver publishing/discovery reader surfaces tied to Requirements 22 and 19.4
@@ -423,8 +433,9 @@ These tasks fold the hi-fi design pass into production. They follow tasks 1-25 (
   - _Requirements: 25.1, 18.3, NFR Usability_
   - _Prompt: Role: Mobile UI engineer | Task: Tune the mobile shelf and reading view to match canvas § 15 with thumb-reachable controls and cover-forward shelf cards | Restrictions: Same React Native tree as web, no native-only hacks, choices must be ≥44pt tap targets | Success: shelf and reading view match canvas at iPhone-13/Pixel-7 widths, choices are tap-friendly, and visual regression matches the canvas mobile board_
 
-- [ ] 41. State surfaces — toast / empty / error
+- [x] 41. State surfaces — toast / empty / error
   - Files: `apps/app/components/states/Toast.tsx`, `apps/app/components/states/EmptyState.tsx`, `apps/app/components/states/ErrorBoundary.tsx`, `apps/app/hooks/useToast.ts`, state tests
+  - 2026-05-11 progress (Discover/States agent, commit ac1b19a, merged into feat/visual-design-wave-0): states/{Toast,ToastHost,EmptyState,ErrorBoundary}.tsx + hooks/useToast.ts; single queue, head-only render avoids overlap; reduced-motion collapses fade animations; ErrorBoundary logs to console, never to user. pnpm typecheck + tests green offline; no Convex cloud calls.
   - Implement toast/empty/error surfaces per canvas § 16; copy stays in the book voice; error surfaces never expose stack traces or internal ids to the reader
   - Wire a single toast queue with reduced-motion-safe animation
   - Purpose: Deliver the system state surfaces the canvas defines
@@ -432,8 +443,9 @@ These tasks fold the hi-fi design pass into production. They follow tasks 1-25 (
   - _Requirements: NFR Usability, 18.5_
   - _Prompt: Role: Frontend platform engineer | Task: Build toast, empty, and error surfaces with a single queue and reduced-motion-safe animation | Restrictions: No stack traces in user-facing error copy, no native alerts, all copy in book voice | Success: every error surface renders the canvas state board, toasts queue without overlap, reduced motion replaces animation with instant change_
 
-- [ ] 42. Spec-gap surfaces — under-13 block, mature opt-in, locked-choice copy, streaming placeholder
+- [x] 42. Spec-gap surfaces — under-13 block, mature opt-in, locked-choice copy, streaming placeholder
   - Files: `apps/app/components/account/AgeGate.tsx` (under-13 path), `apps/app/components/account/Under13Block.tsx`, `apps/app/components/account/MatureOptIn.tsx`, `apps/app/components/choices/LockedChoiceCopy.tsx`, `apps/app/components/reading/StreamingPlaceholder.tsx`, spec-gap tests
+  - 2026-05-11 progress (Auth/Safety agent, commit d329d60, merged into feat/visual-design-wave-0): account/{Under13Block,MatureOptIn}.tsx, hooks/useMatureOptIn.ts (cyoa.matureOptIn.v1) + useUnder13Block (cyoa.under13Block.v1, permanent); choices/LockedChoiceCopy.tsx wired into ChoiceList; reading/StreamingPlaceholder.tsx. pnpm typecheck + tests green offline; no Convex cloud calls.
   - Implement the five spec-gap surfaces per canvas § 18: age gate (A — already covered), under-13 block (B), mature opt-in (C), locked-choice guidance copy (D), streaming placeholder skeleton (E)
   - Under-13 block: permanent block screen, no reset; Mature opt-in: explicit consent, default off, revocable in settings
   - Purpose: Close compliance + safety surface gaps flagged in the reconciliation pass
