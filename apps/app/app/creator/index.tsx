@@ -4,16 +4,19 @@ import { ScrollView, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { Story } from "@cyoa/engine";
 
+import { SeedStoryFlow } from "../../components/creator";
 import { AppNav } from "../../components/navigation";
 import { Button, Chip, Divider, Stamp, Surface, Text } from "../../components/primitives";
 import { createRemoteCreatorDraft, publishRemoteCreatorSeed } from "../../lib/gameApi";
 import { saveLocalCreatorSeed } from "../../lib/localCreatorSeeds";
 import { guestAuthArgs, useGuestSession } from "../../hooks/useGuestSession";
+import { useLibrary } from "../../hooks/useLibrary";
 import { useAppTheme } from "../../theme";
 
 export default function CreatorRoute() {
   const router = useRouter();
   const guest = useGuestSession();
+  const library = useLibrary(guest.session);
   const { tokens } = useAppTheme();
   const [title, setTitle] = useState("Lantern Market");
   const [opening, setOpening] = useState(
@@ -160,6 +163,19 @@ export default function CreatorRoute() {
             <Stamp>creator</Stamp>
             <Text variant="title">Seed an adventure</Text>
             <Text muted>Author an opening and a launchable rule seed.</Text>
+          </View>
+
+          <SeedStoryFlow
+            starters={library.starterStories}
+            onLaunchStarter={(starterId) => library.createSave(starterId)}
+            onSeedLaunched={(save) => router.push(`/read/${save.saveId}`)}
+          />
+
+          <Divider />
+
+          <View style={{ gap: tokens.spacing.sm, maxWidth: 680 }}>
+            <Text variant="subtitle">Author a custom seed</Text>
+            <Text muted>Or build a full custom rule-seed from scratch below.</Text>
             {!guest.session ? (
               <Button onPress={() => router.push("/")} variant="ghost">
                 Start reading first

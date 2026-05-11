@@ -4,6 +4,7 @@ import type { StorySummary } from "@cyoa/stories";
 import { useEffect, useState } from "react";
 
 import { AgeGate } from "../../components/account/AgeGate";
+import { ContinueReading } from "../../components/library";
 import { AppNav } from "../../components/navigation";
 import { hasRemoteGameApi, listRemotePublishedCreatorSeeds, type RemoteCreatorSeedItem } from "../../lib/gameApi";
 import { getStoryCoverSource } from "../../lib/designAssets";
@@ -78,25 +79,10 @@ export default function LibraryRoute() {
 
       {library.continueSave ? (
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Continue reading</Text>
-          <Pressable
-            accessibilityRole="button"
-            onPress={() => openSave(library.continueSave!.saveId)}
-            style={styles.continueCard}
-          >
-            <Image
-              accessibilityLabel={`${library.continueSave.title} cover`}
-              resizeMode="contain"
-              source={getStoryCoverSource(library.continueSave.storyId)}
-              style={styles.continueCover}
-            />
-            <View style={styles.continueBody}>
-              <Text style={styles.continueTitle}>{library.continueSave.title}</Text>
-              <Text style={styles.continueSummary}>
-                Turn {library.continueSave.turnNumber} · Story mode
-              </Text>
-            </View>
-          </Pressable>
+          <ContinueReading
+            save={library.continueSave}
+            onContinue={(save) => openSave(save.saveId)}
+          />
         </View>
       ) : null}
 

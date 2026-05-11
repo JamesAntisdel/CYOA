@@ -71,7 +71,7 @@ export type SeedStoryFlowProps = {
   /** Starter stories shown in the "pick where" step. */
   starters: StorySummary[];
   /** Create a real save through the existing useLibrary launch path. */
-  onLaunchStarter: (starterId: string) => LibrarySave | null;
+  onLaunchStarter: (starterId: string) => LibrarySave | null | Promise<LibrarySave | null>;
   /** Called after a successful local validation + save creation. */
   onSeedLaunched: (save: LibrarySave, draft: SeedDraftMetadata) => void;
 };
@@ -99,7 +99,7 @@ export function SeedStoryFlow({
     setSafetyWarning(null);
   }, []);
 
-  const handleLaunch = useCallback(() => {
+  const handleLaunch = useCallback(async () => {
     setError(null);
     setSafetyWarning(null);
 
@@ -133,7 +133,7 @@ export function SeedStoryFlow({
       return;
     }
 
-    const save = onLaunchStarter(starterId);
+    const save = await onLaunchStarter(starterId);
     if (!save) {
       setError("Could not launch the seed save. Try a different starter.");
       return;
@@ -247,7 +247,9 @@ export function SeedStoryFlow({
           <Button
             accessibilityState={{ disabled: !canLaunch }}
             disabled={!canLaunch}
-            onPress={handleLaunch}
+            onPress={() => {
+              void handleLaunch();
+            }}
             variant="primary"
           >
             Launch seeded tale
