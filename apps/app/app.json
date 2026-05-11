@@ -1,13 +1,29 @@
 {
   "expo": {
-    "name": "CYOA",
+    "name": "The Unwritten",
     "slug": "cyoa",
     "scheme": "cyoa",
     "platforms": ["ios", "android", "web"],
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
+    "icon": "./assets/design/marketing/favicon-512.png",
+    "splash": {
+      "image": "./assets/design/marketing/favicon-512.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#f4ecd8"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/design/marketing/favicon-512.png",
+        "backgroundColor": "#f4ecd8"
+      }
+    },
+    "ios": {
+      "icon": "./assets/design/marketing/favicon-512.png"
+    },
     "web": {
-      "bundler": "metro"
+      "bundler": "metro",
+      "favicon": "./assets/design/marketing/favicon.svg"
     },
     "plugins": ["expo-router"]
   }

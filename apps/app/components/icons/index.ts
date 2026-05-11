@@ -1,0 +1,18 @@
+export { Book } from "./Book";
+export { Candle } from "./Candle";
+export { Coin } from "./Coin";
+export { Compass } from "./Compass";
+export { Crown } from "./Crown";
+export { Eye } from "./Eye";
+export { Flame } from "./Flame";
+export { Heart } from "./Heart";
+export { Hourglass } from "./Hourglass";
+export { Key } from "./Key";
+export { People } from "./People";
+export { Quill } from "./Quill";
+export { Sack } from "./Sack";
+export { Scroll } from "./Scroll";
+export { Skull } from "./Skull";
+export { Sparkle } from "./Sparkle";
+export { SvgIcon } from "./SvgIcon";
+export type { SvgIconProps } from "./SvgIcon";
