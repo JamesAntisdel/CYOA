@@ -95,7 +95,7 @@ export function MobileLayout({
         <View style={{ paddingTop: tokens.spacing.xs }}>
           <StatsHud
             inventory={projection.inventory}
-            mode="quiet"
+            // HUD reads mode from useReaderSettings itself
             stats={projection.stats}
           />
         </View>

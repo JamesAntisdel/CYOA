@@ -21,3 +21,5 @@ convex/**/*.js
 apps/app/.expo/
 apps/app/web-build/
 infra/bin/
+
+.claude/

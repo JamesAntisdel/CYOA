@@ -47,7 +47,7 @@ export function BookLayout({
             <Divider />
             <StatsHud
               inventory={projection.inventory}
-              mode={hudMode === "quiet" ? "quiet" : "full"}
+              // HUD reads mode from useReaderSettings itself
               stats={projection.stats}
             />
           </>

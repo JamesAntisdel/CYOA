@@ -7,11 +7,12 @@ import { useAppTheme } from "../../theme";
 import { Text } from "../primitives";
 
 type AppNavProps = {
-  current?: "home" | "library" | "creator" | "account" | "settings" | "login";
+  current?: "home" | "library" | "discover" | "creator" | "account" | "settings" | "login";
 };
 
 const navItems = [
   { key: "library", label: "Library", href: "/library" },
+  { key: "discover", label: "Discover", href: "/discover" },
   { key: "creator", label: "Create", href: "/creator" },
   { key: "account", label: "Account", href: "/account" },
   { key: "settings", label: "Settings", href: "/settings" },

@@ -88,7 +88,7 @@ export function ModernAppLayout({
           <RailLabel>You</RailLabel>
           <StatsHud
             inventory={projection.inventory}
-            mode={hudMode === "quiet" ? "quiet" : "full"}
+            // HUD reads mode from useReaderSettings itself
             stats={projection.stats}
           />
         </Surface>
@@ -98,7 +98,7 @@ export function ModernAppLayout({
           <Stamp>You</Stamp>
           <StatsHud
             inventory={projection.inventory}
-            mode={hudMode === "quiet" ? "quiet" : "full"}
+            // HUD reads mode from useReaderSettings itself
             stats={projection.stats}
           />
         </>

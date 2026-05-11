@@ -79,7 +79,7 @@ export function GraphicNovelLayout({
       {showHud ? (
         <StatsHud
           inventory={projection.inventory}
-          mode="quiet"
+          // HUD reads mode from useReaderSettings itself
           stats={projection.stats}
         />
       ) : null}

@@ -107,13 +107,13 @@ export default function SettingsRoute() {
                 </Text>
                 {showMatureFlow ? (
                   <MatureOptIn
-                    onCancel={() => setShowMatureFlow(false)}
-                    onConfirm={() => {
+                    onDecline={() => setShowMatureFlow(false)}
+                    onAccept={() => {
                       mature.enableMature();
                       setShowMatureFlow(false);
                     }}
                   />
-                ) : mature.state.enabled ? (
+                ) : mature.enabled ? (
                   <Button onPress={mature.revokeMature} variant="default">
                     Mature content is on — revoke
                   </Button>
