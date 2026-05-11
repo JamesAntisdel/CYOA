@@ -1,5 +1,8 @@
+import { useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
+import { MatureOptIn } from "../../components/account/MatureOptIn";
+import { useMatureOptIn } from "../../hooks/useMatureOptIn";
 import { useReaderSettings, type ReaderSettings } from "../../hooks/useReaderSettings";
 
 type Option<T extends string | boolean> = {
@@ -9,6 +12,8 @@ type Option<T extends string | boolean> = {
 
 export default function SettingsRoute() {
   const { resetSettings, settings, updateSettings } = useReaderSettings();
+  const mature = useMatureOptIn();
+  const [showMatureFlow, setShowMatureFlow] = useState(false);
 
   return (
     <ScrollView contentContainerStyle={styles.page}>
@@ -80,6 +85,47 @@ export default function SettingsRoute() {
         selected={settings.muted}
         onSelect={(muted) => updateSettings({ muted })}
       />
+
+      <View style={styles.group}>
+        <Text style={styles.groupLabel}>Mature content</Text>
+        <View style={styles.matureRow}>
+          <View style={styles.matureCopy}>
+            <Text style={styles.matureStatus}>
+              {mature.enabled ? "On — revocable below." : "Off by default."}
+            </Text>
+            <Text style={styles.matureHelp}>
+              Adults only. We never include sexual content involving anyone under 18.
+            </Text>
+          </View>
+          {mature.enabled ? (
+            <Pressable
+              accessibilityRole="button"
+              onPress={mature.revokeMature}
+              style={styles.secondaryButton}
+            >
+              <Text style={styles.secondaryText}>Turn off</Text>
+            </Pressable>
+          ) : (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setShowMatureFlow(true)}
+              style={styles.secondaryButton}
+            >
+              <Text style={styles.secondaryText}>Turn on...</Text>
+            </Pressable>
+          )}
+        </View>
+        {showMatureFlow ? (
+          <MatureOptIn
+            revocable
+            onAccept={() => {
+              mature.enableMature();
+              setShowMatureFlow(false);
+            }}
+            onDecline={() => setShowMatureFlow(false)}
+          />
+        ) : null}
+      </View>
 
       <Pressable accessibilityRole="button" onPress={resetSettings} style={styles.secondaryButton}>
         <Text style={styles.secondaryText}>Reset settings</Text>
@@ -189,5 +235,27 @@ const styles = StyleSheet.create({
     color: "#2d1d12",
     fontSize: 15,
     fontWeight: "800",
+  },
+  matureRow: {
+    alignItems: "flex-start",
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 12,
+    justifyContent: "space-between",
+  },
+  matureCopy: {
+    flex: 1,
+    gap: 4,
+    minWidth: 200,
+  },
+  matureStatus: {
+    color: "#24180f",
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  matureHelp: {
+    color: "#594635",
+    fontSize: 13,
+    lineHeight: 19,
   },
 });
