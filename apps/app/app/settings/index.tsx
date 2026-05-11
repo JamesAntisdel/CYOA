@@ -1,8 +1,11 @@
+import { useState } from "react";
 import { ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import { MatureOptIn } from "../../components/account/MatureOptIn";
 import { AppNav } from "../../components/navigation";
 import { Button, Divider, Stamp, Surface, Text } from "../../components/primitives";
+import { useMatureOptIn } from "../../hooks/useMatureOptIn";
 import { useReaderSettings } from "../../hooks/useReaderSettings";
 import { useAppTheme } from "../../theme";
 
@@ -14,6 +17,8 @@ type Option<T extends string | boolean> = {
 export default function SettingsRoute() {
   const { resetSettings, settings, updateSettings } = useReaderSettings();
   const { tokens } = useAppTheme();
+  const mature = useMatureOptIn();
+  const [showMatureFlow, setShowMatureFlow] = useState(false);
 
   return (
     <SafeAreaView style={{ backgroundColor: tokens.colors.background, flex: 1 }}>
@@ -92,6 +97,32 @@ export default function SettingsRoute() {
                 selected={settings.reduceMotion}
                 onSelect={(reduceMotion) => updateSettings({ reduceMotion })}
               />
+
+              <Divider />
+
+              <View style={{ gap: tokens.spacing.sm }}>
+                <Text style={{ fontWeight: "800" }} variant="subtitle">Mature content</Text>
+                <Text muted variant="bodySmall">
+                  Off by default. Requires age 18+ and an active paid plan in production. Revoking turns mature scenes off immediately.
+                </Text>
+                {showMatureFlow ? (
+                  <MatureOptIn
+                    onCancel={() => setShowMatureFlow(false)}
+                    onConfirm={() => {
+                      mature.enableMature();
+                      setShowMatureFlow(false);
+                    }}
+                  />
+                ) : mature.state.enabled ? (
+                  <Button onPress={mature.revokeMature} variant="default">
+                    Mature content is on — revoke
+                  </Button>
+                ) : (
+                  <Button onPress={() => setShowMatureFlow(true)} variant="default">
+                    Turn mature content on
+                  </Button>
+                )}
+              </View>
 
               <Divider />
               <Button onPress={resetSettings}>Reset settings</Button>

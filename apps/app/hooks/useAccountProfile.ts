@@ -11,6 +11,12 @@ import {
 import { useAuthSession } from "./useAuthSession";
 import { guestAuthArgs, useGuestSession } from "./useGuestSession";
 
+export type ArchetypeTag = {
+  id: string;
+  label: string;
+  muted: boolean;
+};
+
 export type AccountProfile = {
   accountId: string;
   kind: "guest" | "claimed" | "user";
@@ -23,10 +29,21 @@ export type AccountProfile = {
   entitlementStatus: "active" | "grace" | "expired" | "revoked";
   dailyAllowance: number | "unlimited";
   exportReady: boolean;
+  archetypes: ArchetypeTag[];
 };
 
 const CLAIMED_PROFILE_KEY = "cyoa.claimedProfile.v1";
 const DISPLAY_NAMES_KEY = "cyoa.displayNames.v1";
+const ARCHETYPES_KEY = "cyoa.accountProfile.archetypes.v1";
+
+// Narrator-inferred archetype seeds. Tags, never raw prose. Surfaced on the
+// profile screen so a reader can mute/rename/remove what the narrator has
+// "learned" without exposing the underlying turn history.
+const DEFAULT_ARCHETYPES: ArchetypeTag[] = [
+  { id: "cautious-scribe", label: "Cautious scribe", muted: false },
+  { id: "lantern-keeper", label: "Lantern keeper", muted: false },
+  { id: "iron-witness", label: "Iron witness", muted: false },
+];
 
 export function useAccountProfile() {
   const auth = useAuthSession();
@@ -34,10 +51,48 @@ export function useAccountProfile() {
   const [claimed, setClaimed] = useState<ClaimedProfile | null>(null);
   const [displayNames, setDisplayNames] = useState<Record<string, string>>({});
   const [remoteProfile, setRemoteProfile] = useState<RemoteProfileState | null>(null);
+  const [archetypes, setArchetypes] = useState<ArchetypeTag[]>(DEFAULT_ARCHETYPES);
 
   useEffect(() => {
     setClaimed(readClaimedProfile());
     setDisplayNames(readDisplayNames());
+    const restored = readArchetypes();
+    if (restored) setArchetypes(restored);
+  }, []);
+
+  const toggleArchetypeMute = useCallback((id: string) => {
+    setArchetypes((current) => {
+      const next = current.map((tag) =>
+        tag.id === id ? { ...tag, muted: !tag.muted } : tag,
+      );
+      writeArchetypes(next);
+      return next;
+    });
+  }, []);
+
+  const renameArchetype = useCallback((id: string, label: string) => {
+    const trimmed = label.trim();
+    if (!trimmed) return;
+    setArchetypes((current) => {
+      const next = current.map((tag) =>
+        tag.id === id ? { ...tag, label: trimmed } : tag,
+      );
+      writeArchetypes(next);
+      return next;
+    });
+  }, []);
+
+  const removeArchetype = useCallback((id: string) => {
+    setArchetypes((current) => {
+      const next = current.filter((tag) => tag.id !== id);
+      writeArchetypes(next);
+      return next;
+    });
+  }, []);
+
+  const resetArchetypes = useCallback(() => {
+    writeArchetypes(DEFAULT_ARCHETYPES);
+    setArchetypes(DEFAULT_ARCHETYPES);
   }, []);
 
   useEffect(() => {
@@ -181,6 +236,7 @@ export function useAccountProfile() {
           entitlementStatus: "active",
           dailyAllowance: 10,
           exportReady: true,
+          archetypes,
         }
       : guest.session
         ? {
@@ -195,21 +251,46 @@ export function useAccountProfile() {
             entitlementStatus: remoteProfile?.entitlementStatus ?? "active",
             dailyAllowance: remoteProfile?.dailyAllowance ?? 10,
             exportReady: true,
+            archetypes,
           }
         : null;
 
     return {
       profile,
+      archetypes,
       authStatus: auth.status,
       claimWithEmail,
       clearGuestSession: clearProfile,
       deleteAccountData,
       exportAccountData,
+      removeArchetype,
+      renameArchetype,
+      resetArchetypes,
       setMatureContentEnabled,
       signOut,
+      toggleArchetypeMute,
       updateDisplayName,
     };
-  }, [auth.session, auth.status, claimWithEmail, claimed, clearProfile, deleteAccountData, displayNames, exportAccountData, guest.session, remoteProfile, setMatureContentEnabled, signOut, updateDisplayName]);
+  }, [
+    archetypes,
+    auth.session,
+    auth.status,
+    claimWithEmail,
+    claimed,
+    clearProfile,
+    deleteAccountData,
+    displayNames,
+    exportAccountData,
+    guest.session,
+    remoteProfile,
+    removeArchetype,
+    renameArchetype,
+    resetArchetypes,
+    setMatureContentEnabled,
+    signOut,
+    toggleArchetypeMute,
+    updateDisplayName,
+  ]);
 }
 
 type RemoteProfileState = Awaited<ReturnType<typeof getRemoteProfile>>;
@@ -318,4 +399,38 @@ function getStorage(): Pick<Storage, "getItem" | "setItem" | "removeItem"> | nul
   if (typeof globalThis === "undefined") return null;
   const maybeStorage = (globalThis as { localStorage?: Storage }).localStorage;
   return maybeStorage ?? null;
+}
+
+function readArchetypes(): ArchetypeTag[] | null {
+  const storage = getStorage();
+  if (!storage) return null;
+  try {
+    const raw = storage.getItem(ARCHETYPES_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return null;
+    const tags: ArchetypeTag[] = [];
+    for (const entry of parsed) {
+      if (
+        entry &&
+        typeof entry === "object" &&
+        typeof (entry as ArchetypeTag).id === "string" &&
+        typeof (entry as ArchetypeTag).label === "string" &&
+        typeof (entry as ArchetypeTag).muted === "boolean"
+      ) {
+        tags.push({
+          id: (entry as ArchetypeTag).id,
+          label: (entry as ArchetypeTag).label,
+          muted: (entry as ArchetypeTag).muted,
+        });
+      }
+    }
+    return tags;
+  } catch {
+    return null;
+  }
+}
+
+function writeArchetypes(tags: ArchetypeTag[]): void {
+  getStorage()?.setItem(ARCHETYPES_KEY, JSON.stringify(tags));
 }
