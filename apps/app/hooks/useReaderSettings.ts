@@ -3,12 +3,27 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 export type ReaderThemePreference = "day" | "night" | "sepia" | "system";
 export type HudMode = "full" | "quiet" | "hidden";
 export type ReaderLayoutMode = "book" | "focus";
+export type ReaderLayoutVariant =
+  | "book"
+  | "modernApp"
+  | "graphicNovel"
+  | "journal"
+  | "mobile";
+
+export const READER_LAYOUT_VARIANTS: readonly ReaderLayoutVariant[] = [
+  "book",
+  "modernApp",
+  "graphicNovel",
+  "journal",
+  "mobile",
+] as const;
 
 export type ReaderSettings = {
   theme: ReaderThemePreference;
   fontScale: "compact" | "default" | "large";
   hudMode: HudMode;
   layoutMode: ReaderLayoutMode;
+  layout: ReaderLayoutVariant;
   muted: boolean;
   reduceMotion: boolean;
 };
@@ -21,6 +36,7 @@ const defaultSettings: ReaderSettings = {
   fontScale: "default",
   hudMode: "full",
   layoutMode: "book",
+  layout: "book",
   muted: false,
   reduceMotion: false,
 };
@@ -68,6 +84,7 @@ function readSettings(): ReaderSettings {
       fontScale: parsed.fontScale === "compact" || parsed.fontScale === "large" ? parsed.fontScale : "default",
       hudMode: parsed.hudMode === "quiet" || parsed.hudMode === "hidden" ? parsed.hudMode : "full",
       layoutMode: parsed.layoutMode === "focus" ? "focus" : "book",
+      layout: isLayoutVariant(parsed.layout) ? parsed.layout : defaultSettings.layout,
       muted: parsed.muted === true,
       reduceMotion: parsed.reduceMotion === true,
     };
@@ -83,6 +100,10 @@ function writeSettings(settings: ReaderSettings): void {
 
 function isTheme(value: unknown): value is ReaderThemePreference {
   return value === "day" || value === "night" || value === "sepia" || value === "system";
+}
+
+function isLayoutVariant(value: unknown): value is ReaderLayoutVariant {
+  return (READER_LAYOUT_VARIANTS as readonly string[]).includes(value as string);
 }
 
 function getStorage(): Pick<Storage, "getItem" | "setItem"> | null {
