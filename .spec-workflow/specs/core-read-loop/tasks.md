@@ -318,8 +318,9 @@ These tasks fold the hi-fi design pass into production. They follow tasks 1-25 (
   - _Requirements: 24.1-24.5, 30.9, 18.5_
   - _Prompt: Role: Reader media frontend engineer | Task: Build the MediaPlate component with the four upgrade states, reactive asset wiring, reduced-motion handling, and Veo-failure fallback to image | Restrictions: Text streaming must not block on media, reduced-motion users must never see autoplaying video, Veo failure must not break the reader | Success: MediaPlate renders all four states from real Convex asset events, reduced-motion users stop at image, Veo failure falls back to image, and tests cover each transition_
 
-- [ ] 29. Visual regression baseline against the design canvas
+- [x] 29. Visual regression baseline against the design canvas
   - Files: `tests/visual/*`, Playwright + pixelmatch config, baseline screenshots from `apps/app/assets/design/design-system.html`
+  - 2026-05-11 progress (commit 5876cc8 + visual scaffold): tests/visual/{playwright.visual.config.ts,sections.ts,canvas-baseline.spec.ts,production-surface.spec.ts,README.md}; package.json scripts test:visual + test:visual:update routed via apps/app's @playwright/test; playwright list discovers 34 tests (24 canvas + 10 production); first run writes baselines under __snapshots__/. Production-surface diffs gated behind VISUAL_PROD=1 so the Expo dev server only boots when asked. No Convex cloud calls.
   - Capture baseline screenshots of every section of the design canvas at 1280×900
   - For each implemented production surface (reader, library, paywall, death, co-op, endings, dashboard), capture a matching screenshot at the same viewport with seed data
   - Diff token-bound regions (color, type) with strict tolerance; layout regions with relaxed tolerance
@@ -431,6 +432,7 @@ These tasks fold the hi-fi design pass into production. They follow tasks 1-25 (
 - [x] 40. Mobile shelf + reading view optimization
   - Files: `apps/app/components/reading/layouts/Mobile.tsx` (from task 30), `apps/app/app/library/index.tsx` (mobile shelf variant), mobile tests
   - 2026-05-11 progress (Library agent, commit 66cd9a4, merged into feat/visual-design-wave-0): components/library/{ContinueReading,CoverCard,index}.ts/tsx shipped as new files; wired into app/library/index.tsx is deferred — agent worktree was rooted at initial commit so their library/creator/Mobile rewrites were not viable to merge over the WIP integration. Mobile.tsx tuning is captured for follow-up wiring.. pnpm typecheck green offline; no Convex cloud calls.
+  - 2026-05-11 wire-in complete (commit 5876cc8): library/index.tsx now renders <ContinueReading /> for canvas § 8A; reading/layouts/Mobile.tsx still on the wave-1 dispatcher interface (the agent's free-standing rewrite was discarded on merge but its tuning ideas remain to graft in).
   - Tune the mobile shelf and mobile reading view per canvas § 15: phone-first chrome, thumb-reachable choices, single-column shelf with cover-forward cards
   - Purpose: Deliver Requirement 25.1 phone parity with the canvas mobile board
   - _Leverage: canvas § 15 (W.MobileBoard), task 30 Mobile layout_
@@ -460,6 +462,7 @@ These tasks fold the hi-fi design pass into production. They follow tasks 1-25 (
 - [x] 43. Continue-reading shelf and story-seeding flow refinement
   - Files: `apps/app/app/library/index.tsx`, `apps/app/components/library/ContinueReading.tsx`, `apps/app/components/creator/SeedStoryFlow.tsx`, `apps/app/app/creator/index.tsx`, shelf+seed tests
   - 2026-05-11 progress (Library agent, commit 66cd9a4, merged into feat/visual-design-wave-0): components/creator/{SeedStoryFlow,SeedToneSelector,SeedPremiseInput,index}.ts/tsx shipped as new files; full SeedStoryFlow wiring into app/creator/index.tsx is deferred for the same stale-worktree reason; local classifySeedPremiseLocally mirrors convex/contentPolicy.ts categories.. pnpm typecheck green offline; no Convex cloud calls.
+  - 2026-05-11 wire-in complete (commit 5876cc8): creator/index.tsx now renders <SeedStoryFlow /> above the custom-author flow with starters from useLibrary.starterStories and async onLaunchStarter wired to library.createSave; navigates to /read/<saveId> on launch.
   - Refine the home shelf per canvas § 8A (Continue Reading row, last-played beat, candle status) and the seed flow per § 8B (pick where, tone, premise, with starter-tale presets)
   - Purpose: Deliver the enriched-flow surfaces the canvas defines for first-and-returning reads
   - _Leverage: canvas § 8 (V.ContinueReadingBoard, V.SeedStoryBoard), library hooks_
