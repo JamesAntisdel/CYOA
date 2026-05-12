@@ -18,6 +18,8 @@
     "test:unit": "pnpm -r --if-present test:unit",
     "test:coverage": "pnpm -r --if-present test:coverage",
     "test:e2e": "pnpm --filter @cyoa/app test:e2e",
+    "test:visual": "pnpm --filter @cyoa/app exec playwright test --config ../../tests/visual/playwright.visual.config.ts",
+    "test:visual:update": "pnpm --filter @cyoa/app exec playwright test --config ../../tests/visual/playwright.visual.config.ts --update-snapshots",
     "convex:codegen": "pnpm --filter @cyoa/convex codegen",
     "convex:deploy": "pnpm --filter @cyoa/convex deploy",
     "secrets:local:check": "node scripts/secrets/check-local-env.mjs",
