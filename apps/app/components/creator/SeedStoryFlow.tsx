@@ -133,7 +133,16 @@ export function SeedStoryFlow({
       return;
     }
 
-    const save = await onLaunchStarter(starterId);
+    let save;
+    try {
+      save = await onLaunchStarter(starterId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "seed_launch_failed";
+      setError(message === "guest_session_required"
+        ? "Start a session before launching a seed."
+        : `Could not launch: ${message}`);
+      return;
+    }
     if (!save) {
       setError("Could not launch the seed save. Try a different starter.");
       return;

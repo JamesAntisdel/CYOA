@@ -22,6 +22,7 @@ export function ModernAppLayout({
   pendingChoiceId,
   onChoose,
   hudMode,
+  reducedMotion,
   onOpenEndings,
   onOpenLibrary,
   onReturnHome,
@@ -54,7 +55,7 @@ export function ModernAppLayout({
       <View style={{ flex: 1, gap: tokens.spacing.md, minWidth: 0 }}>
         <RailLabel>{projection.storyTitle}</RailLabel>
         <Text variant="title">{projection.scene.title}</Text>
-        <SceneMedia media={projection.scene.media} />
+        <SceneMedia media={projection.scene.media} reducedMotion={reducedMotion} />
         <Surface padded style={{ gap: tokens.spacing.md }}>
           <Text accessibilityLiveRegion={isStreaming ? "polite" : "none"} variant="body">
             {streamedProse}

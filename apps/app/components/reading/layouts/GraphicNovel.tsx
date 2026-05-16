@@ -21,6 +21,7 @@ export function GraphicNovelLayout({
   pendingChoiceId,
   onChoose,
   hudMode,
+  reducedMotion,
   onOpenEndings,
   onOpenLibrary,
   onReturnHome,
@@ -52,7 +53,7 @@ export function GraphicNovelLayout({
           padding: tokens.spacing.md,
         }}
       >
-        <SceneMedia media={projection.scene.media} />
+        <SceneMedia media={projection.scene.media} reducedMotion={reducedMotion} />
       </View>
 
       <Surface

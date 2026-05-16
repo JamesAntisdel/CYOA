@@ -26,7 +26,11 @@ export function SceneMedia({
 }: SceneMediaProps) {
   const preferences = useMediaPreferences();
   const resolvedReducedMotion = reducedMotion ?? preferences.reducedMotion;
-  const resolvedMuted = muted ?? preferences.muted ?? preferences.nativeBackground;
+  // Mute when ANY signal asks for it: caller override, user mute, OR
+  // native-background. `??` would short-circuit on the first defined
+  // boolean (preferences.muted is always boolean), leaving the
+  // nativeBackground branch unreachable.
+  const resolvedMuted = (muted ?? preferences.muted) || preferences.nativeBackground;
   const resolvedAppActive = appActive ?? preferences.appActive;
 
   if (!media || media.status === "idle") return null;

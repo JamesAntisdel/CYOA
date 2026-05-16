@@ -6,6 +6,7 @@ import { MatureOptIn } from "../../components/account/MatureOptIn";
 import { NarratorContinuity, VoicePicker } from "../../components/narrator";
 import { AppNav } from "../../components/navigation";
 import { Button, Divider, Stamp, Surface, Text } from "../../components/primitives";
+import { useAccountProfile } from "../../hooks/useAccountProfile";
 import { useMatureOptIn } from "../../hooks/useMatureOptIn";
 import { useNarratorVoice } from "../../hooks/useNarratorVoice";
 import { useReaderSettings } from "../../hooks/useReaderSettings";
@@ -25,7 +26,9 @@ export default function SettingsRoute() {
   const { resetSettings, settings, updateSettings } = useReaderSettings();
   const { tokens } = useAppTheme();
   const mature = useMatureOptIn();
+  const account = useAccountProfile();
   const [showMatureFlow, setShowMatureFlow] = useState(false);
+  const [matureError, setMatureError] = useState<string | null>(null);
   const narratorController = useNarratorVoice(SETTINGS_PREVIEW_SAVE_ID);
 
   return (
@@ -87,13 +90,26 @@ export default function SettingsRoute() {
               />
 
               <SettingGroup
-                label="Layout"
+                label="Chrome"
                 options={[
                   { label: "Book", value: "book" },
                   { label: "Focus", value: "focus" },
                 ]}
                 selected={settings.layoutMode}
                 onSelect={(layoutMode) => updateSettings({ layoutMode })}
+              />
+
+              <SettingGroup
+                label="Reading layout"
+                options={[
+                  { label: "Book", value: "book" },
+                  { label: "Modern app", value: "modernApp" },
+                  { label: "Graphic novel", value: "graphicNovel" },
+                  { label: "Journal", value: "journal" },
+                  { label: "Mobile", value: "mobile" },
+                ]}
+                selected={settings.layout}
+                onSelect={(layout) => updateSettings({ layout })}
               />
 
               <SettingGroup
@@ -113,16 +129,54 @@ export default function SettingsRoute() {
                 <Text muted variant="bodySmall">
                   Off by default. Requires age 18+ and an active paid plan in production. Revoking turns mature scenes off immediately.
                 </Text>
+                {matureError ? (
+                  <Text muted style={{ color: tokens.colors.danger }} variant="bodySmall">
+                    {matureError}
+                  </Text>
+                ) : null}
                 {showMatureFlow ? (
                   <MatureOptIn
-                    onDecline={() => setShowMatureFlow(false)}
-                    onAccept={() => {
-                      mature.enableMature();
+                    onDecline={() => {
+                      setMatureError(null);
                       setShowMatureFlow(false);
+                    }}
+                    onAccept={async () => {
+                      setMatureError(null);
+                      // Persist locally for the picker UI, AND mutate the
+                      // server-backed account flag through useAccountProfile
+                      // so the 18+/paid gate is enforced authoritatively.
+                      // Server enforces canEnableMature regardless.
+                      try {
+                        mature.enableMature();
+                        if (account.profile) {
+                          await account.setMatureContentEnabled(true);
+                        }
+                        setShowMatureFlow(false);
+                      } catch (err) {
+                        mature.revokeMature();
+                        setMatureError(
+                          err instanceof Error ? err.message : "mature_opt_in_failed",
+                        );
+                      }
                     }}
                   />
                 ) : mature.enabled ? (
-                  <Button onPress={mature.revokeMature} variant="default">
+                  <Button
+                    onPress={async () => {
+                      setMatureError(null);
+                      mature.revokeMature();
+                      if (account.profile) {
+                        try {
+                          await account.setMatureContentEnabled(false);
+                        } catch (err) {
+                          setMatureError(
+                            err instanceof Error ? err.message : "mature_revoke_failed",
+                          );
+                        }
+                      }
+                    }}
+                    variant="default"
+                  >
                     Mature content is on — revoke
                   </Button>
                 ) : (

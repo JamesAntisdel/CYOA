@@ -20,6 +20,7 @@ export function MobileLayout({
   pendingChoiceId,
   onChoose,
   hudMode,
+  reducedMotion,
   onOpenEndings,
   onOpenLibrary,
   onReturnHome,
@@ -63,7 +64,7 @@ export function MobileLayout({
         </View>
       </View>
 
-      <SceneMedia media={projection.scene.media} />
+      <SceneMedia media={projection.scene.media} reducedMotion={reducedMotion} />
 
       <Surface padded style={{ gap: tokens.spacing.sm }}>
         <Text
