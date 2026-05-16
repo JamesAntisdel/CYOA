@@ -241,11 +241,13 @@ These items are intentionally separate from the V1 scaffold tasks above. They mu
   - Sync real provider keys/tokens from Vault into a Convex dev deployment.
   - Run smoke tests for Anthropic quality route, Vertex fallback route, DeepSeek low-risk route, parse failure fallback, provider outage fallback, timeout behavior, and no-state-mutation parsing.
   - 2026-04-30 note: Provider clients, request validation, prompt construction, fallback, and local provider mocks are implemented and tested. Keep unchecked until Vault-backed live credentials are synced and live calls are smoke-tested through the configured deployment.
+  - 2026-05-15 progress: `scripts/smoke/live-llm.mjs` (pnpm smoke:live-llm) added — probes Anthropic/Vertex/Gemini/DeepSeek with non-spending 10-token prompts, auto-skips per-provider when keys absent, scrubs sk-* / Bearer tokens from any error logging. Use `--require anthropic,vertex,deepseek` to enforce all three in CI once Vault syncs real keys.
   - Success: live calls produce persisted/streamed prose, provider health reflects config, unsafe output is redacted/falls back, and no provider credentials appear in logs or client bundles.
 
 - [ ] LR-4. Stripe test-mode checkout and webhook entitlement pass
   - Files: `convex/billing/*`, `convex/billingFunctions.ts`, `convex/http.ts`, `apps/app/app/paywall/*`, `docs/stripe-mobile.md`
   - Sync Stripe test keys and price IDs from Vault, create a Checkout session, complete test payment, forward webhook through Stripe CLI, and verify entitlement changes are server-confirmed and idempotent.
+  - 2026-05-15 progress: `scripts/smoke/live-stripe.mjs` (pnpm smoke:live-stripe) added — validates sk_test_ key against /v1/payment_methods, well-forms a t=…,v1=… signature header from whsec_, and resolves STRIPE_PRICE_UNLIMITED/PRO against the live API. Live keys (non-test) explicit-fail to prevent prod-mode runs.
   - Success: free -> Unlimited/Pro test upgrade updates Convex entitlements; duplicate webhook events are ignored; paywall UI never grants access before server confirmation.
 
 - [ ] LR-5. Replace native receipt placeholders
@@ -264,17 +266,20 @@ These items are intentionally separate from the V1 scaffold tasks above. They mu
 - [ ] LR-7. Production/staging deployment rehearsal
   - Files: `infra/*`, `.github/workflows/*`, `cloudflare/*`, `docs/vault.md`, `README.md`
   - Replace placeholder Pulumi stack config with real project IDs/domains, sync Vault secrets, deploy Convex, export web, publish hosting assets, and verify monitoring.
+  - 2026-05-15 progress: `docs/deployment.md` shipped — staging deploy sequence (Vault sync → convex:deploy → web export → smoke:live-readiness → live-llm → stripe trigger), production promotion gates, rollback paths for Convex/web/EAS, monitoring pointers. The Pulumi `infra/*` stack still needs real project IDs/domains plus a staging URL before this runbook can execute.
   - Success: staging URL over HTTPS passes health checks, app loads without local-only env, provider fallback alerts are wired, and rollback steps are documented.
 
 - [ ] LR-8. Native build, signing, submit, and push validation
   - Files: `apps/app/app.json`, `eas.json`, `docs/stripe-mobile.md`, `docs/vault.md`
   - Run Vault-backed EAS build for iOS and Android, validate signing profiles, submit dry run where possible, and verify push notification permission/delivery path if enabled.
+  - 2026-05-15 progress: `docs/eas-preflight.md` shipped — Apple/Google Vault prereqs, app.json/eas.json pre-flight checklist, signing+credentials walkthrough, native receipt verification step, EAS Update rollback path, sign-off via `pnpm smoke:launch-verify --require-llm ... --require-stripe`. Awaiting Apple Developer + Google Play credentials in Vault before the build can run.
   - Success: development/staging native builds install and authenticate, native billing sandbox is testable, and release-channel separation is verified.
 
 - [ ] LR-9. Final launch verification bundle
   - Files: `README.md`, `docs/*`, `.spec-workflow/specs/core-read-loop/Implementation Logs/*`
   - Run and record: `pnpm typecheck`, `pnpm test`, `pnpm test:e2e`, `pnpm audit --audit-level moderate`, `pnpm secrets:local:check`, live provider smoke, Stripe webhook smoke, BetterAuth tunnel smoke, and deployment smoke.
   - 2026-04-30 progress: `pnpm smoke:live-readiness` now provides a non-spending HTTPS smoke for app HTML, BetterAuth route mount, Stripe webhook mount, and unauthorized LLM stream rejection.
+  - 2026-05-15 progress: `scripts/smoke/launch-verify.mjs` (pnpm smoke:launch-verify) orchestrates typecheck + test + secrets-check + live-llm + live-stripe + (optional) live-readiness, then emits a dated Markdown log under .spec-workflow/specs/core-read-loop/Implementation Logs/lr-9_<stamp>_launch-verify.md. First dry run logged at lr-9_2026-05-16T0413_launch-verify.md: 4 PASS, 1 FAIL-allowed (the pre-existing llmRouter assertion). Live-only steps SKIP cleanly when keys are absent.
   - Success: every command has a dated implementation log entry with environment, exact command, result, residual risk, and owner for any deferred item.
 
 ---

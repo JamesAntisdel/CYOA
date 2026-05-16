@@ -27,6 +27,9 @@
     "secrets:vault:exec": "node scripts/secrets/vault-exec.mjs",
     "secrets:vault:sync-convex": "node scripts/secrets/vault-sync-convex.mjs",
     "smoke:live-readiness": "node scripts/smoke/live-readiness.mjs",
+    "smoke:live-llm": "node scripts/smoke/live-llm.mjs",
+    "smoke:live-stripe": "node scripts/smoke/live-stripe.mjs",
+    "smoke:launch-verify": "node scripts/smoke/launch-verify.mjs",
     "infra:preview": "pnpm --filter @cyoa/infra preview",
     "infra:deploy": "pnpm --filter @cyoa/infra deploy",
     "verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm build"
