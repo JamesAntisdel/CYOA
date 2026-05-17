@@ -45,7 +45,15 @@ export type ReaderInventoryItem = {
 
 export type ReaderProjection = {
   saveId: string;
+  storyId?: string;
   storyTitle: string;
+  /**
+   * Tonal hint forwarded to the death-variant dispatcher. Tonal manuscript
+   * stories (Bone Cathedral, Iron Court) project as `"bookish"`; survival /
+   * tutorial stories (Training Room, Ashfall) leave this undefined so the
+   * Brutal default fires. Wired from the story metadata at projection time.
+   */
+  storyTone?: "bookish" | "brutal";
   mode: "story" | "hardcore";
   scene: StreamingScene;
   choices: ChoiceProjection[];
@@ -57,6 +65,17 @@ export type ReaderProjection = {
     body: string;
   };
 };
+
+/**
+ * Map a starter story id to the tonal hint the death-variant dispatcher
+ * expects. Bone Cathedral and Iron Court are tonal-manuscript stories — they
+ * render the Bookish variant. Training Room and Ashfall stay undefined so
+ * the dispatcher falls back to Brutal.
+ */
+export function storyToneForStoryId(storyId: string | undefined): "bookish" | undefined {
+  if (storyId === "bone-cathedral" || storyId === "iron-court") return "bookish";
+  return undefined;
+}
 
 /**
  * One visible decision the reader made earlier this chapter, with the
@@ -141,9 +160,45 @@ export function useTurn(saveId: string) {
         accountId: guest.session.accountId,
         ...guestAuthArgs(),
         saveId,
-      }).then((remoteScene) => {
+      }).then(async (remoteScene) => {
         if (cancelled || !remoteScene) return;
         setProjection(projectRemoteScene(saveId, remoteScene));
+
+        // LLM-driven stories materialize prose + choices via SSE on the
+        // very first scene (createSave intentionally leaves prose empty
+        // and choices unresolved). If the scene we just loaded is in
+        // "pending"/"streaming" state, open the stream now so the page
+        // doesn't sit on an empty placeholder waiting for the user to
+        // click something that doesn't exist.
+        if (remoteScene.streamStatus === "pending" || remoteScene.streamStatus === "streaming") {
+          if (!guest.session) return;
+          let streamedProse = "";
+          setProjection(projectRemoteScene(saveId, remoteScene, "The candle is being lit..."));
+          const streamed = await streamRemoteScene({
+            accountId: guest.session.accountId,
+            ...guestAuthArgs(),
+            saveId,
+            onToken: (text) => {
+              if (cancelled) return;
+              streamedProse += text;
+              setProjection(projectRemoteScene(saveId, remoteScene, streamedProse, true));
+            },
+          });
+          if (cancelled) return;
+          // Re-fetch the now-complete scene to pick up choices + final prose.
+          const refreshed = await getRemoteCurrentScene({
+            accountId: guest.session.accountId,
+            ...guestAuthArgs(),
+            saveId,
+          });
+          if (cancelled || !refreshed) {
+            if (!streamed) {
+              setProjection(projectRemoteScene(saveId, remoteScene, "(the candle guttered out)"));
+            }
+            return;
+          }
+          setProjection(projectRemoteScene(saveId, refreshed));
+        }
       });
     }
     return () => {
@@ -189,21 +244,39 @@ export function useTurn(saveId: string) {
               setProjection(projectRemoteScene(saveId, remote.scene, streamedProse, true));
             },
           });
-          if (!streamed) {
-            const fallback = await getRemoteCurrentScene({
-              accountId: guest.session.accountId,
-              ...guestAuthArgs(),
-              saveId,
+          // After the stream completes, refetch the scene so the freshly
+          // persisted choices and terminal flags from completeSceneStream
+          // replace beginStreamingChoice's empty-choice stub. Without this,
+          // the reader sits on a "page with no buttons" until refresh —
+          // see the initial-load path above which already does the same.
+          const refreshed = await getRemoteCurrentScene({
+            accountId: guest.session.accountId,
+            ...guestAuthArgs(),
+            saveId,
+          });
+          if (!streamed && !refreshed) {
+            // Stream silently dropped and the scene record wasn't readable.
+            // Surface the most recent stub so the reader doesn't crash.
+            const finalStub = projectRemoteScene(saveId, remote.scene, streamedProse || undefined);
+            setProjection(finalStub);
+            appendChoiceHistory(setChoiceHistory, {
+              choiceLabel: choice.label,
+              fromSceneTitle,
+              toSceneTitle: finalStub.scene.title,
+              tone: "neutral",
+              echo: deriveRemoteEcho(remote.scene),
             });
-            if (fallback) setProjection(projectRemoteScene(saveId, fallback));
+            return;
           }
-          const finalProjection = projectRemoteScene(saveId, remote.scene, streamedProse || undefined);
+          const canonicalScene = refreshed ?? remote.scene;
+          const finalProjection = projectRemoteScene(saveId, canonicalScene);
+          setProjection(finalProjection);
           appendChoiceHistory(setChoiceHistory, {
             choiceLabel: choice.label,
             fromSceneTitle,
             toSceneTitle: finalProjection.scene.title,
             tone: "neutral",
-            echo: deriveRemoteEcho(remote.scene),
+            echo: deriveRemoteEcho(canonicalScene),
           });
           return;
         }
@@ -312,7 +385,40 @@ function storyForSave(saveId: string): Story | null {
   const creatorStory = storyForCreatorSeedSave(saveId);
   if (creatorStory) return creatorStory;
 
+  // Look up the actual story this save was launched from by scanning the
+  // localStorage library entries (keyed by accountId). Without this the
+  // local-engine fallback always runs the training-room story regardless
+  // of which starter the reader picked.
+  const storyId = lookupStoryIdForSave(saveId);
+  if (storyId) {
+    try {
+      return getStory(storyId);
+    } catch {
+      // Fall through to training-room if the storyId isn't a known
+      // starter (e.g. a future authored seed).
+    }
+  }
   return getStory("training-room");
+}
+
+function lookupStoryIdForSave(saveId: string): string | null {
+  if (typeof globalThis === "undefined") return null;
+  const storage = (globalThis as { localStorage?: Storage }).localStorage;
+  if (!storage) return null;
+  try {
+    for (let i = 0; i < storage.length; i += 1) {
+      const key = storage.key(i);
+      if (!key || !key.startsWith("cyoa.librarySaves.v1.")) continue;
+      const raw = storage.getItem(key);
+      if (!raw) continue;
+      const parsed = JSON.parse(raw) as Array<{ saveId: string; storyId: string }>;
+      const match = parsed.find((s) => s.saveId === saveId);
+      if (match?.storyId) return match.storyId;
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 function isLocalDemoSave(saveId: string): boolean {
@@ -337,9 +443,12 @@ function projectRemoteScene(
   const coverSource = getStoryCoverSource(scene.storyId);
   const inventoryCount = Math.max(0, scene.inventoryCount);
 
+  const tone = storyToneForStoryId(scene.storyId);
   return {
     saveId,
+    storyId: scene.storyId,
     storyTitle: story.title,
+    ...(tone ? { storyTone: tone } : {}),
     mode: "story",
     scene: {
       id: scene.nodeId,
@@ -420,9 +529,12 @@ function projectEngineState(
           return projected;
         });
 
+  const tone = storyToneForStoryId(story.id);
   return {
     saveId,
+    storyId: story.id,
     storyTitle: story.title,
+    ...(tone ? { storyTone: tone } : {}),
     mode: state.mode,
     scene: {
       id: node.id,

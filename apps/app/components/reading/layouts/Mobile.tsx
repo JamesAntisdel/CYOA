@@ -6,7 +6,7 @@ import { SceneMedia } from "../../media/SceneMedia";
 import { Surface, Text } from "../../primitives";
 import { StatsHud } from "../../stats/StatsHud";
 import { useAppTheme } from "../../../theme";
-import { endingPanelHandlers, type ReaderLayoutProps } from "./types";
+import { endingPanelHandlers, endingVariantProps, type ReaderLayoutProps } from "./types";
 
 /**
  * Mobile — canvas § 19 A. Tight gutter, drop-cap-style title row, a peek-
@@ -24,6 +24,9 @@ export function MobileLayout({
   onOpenEndings,
   onOpenLibrary,
   onReturnHome,
+  endingTier,
+  cinematicUri,
+  endingIsFirstFind,
 }: ReaderLayoutProps) {
   const { tokens } = useAppTheme();
   const showHud = hudMode !== "hidden";
@@ -81,6 +84,12 @@ export function MobileLayout({
       {projection.ending ? (
         <EndingPanel
           ending={projection.ending}
+          {...endingVariantProps({
+            projection,
+            ...(endingTier !== undefined ? { tier: endingTier } : {}),
+            ...(cinematicUri !== undefined ? { cinematicUri } : {}),
+            ...(endingIsFirstFind !== undefined ? { isFirstFind: endingIsFirstFind } : {}),
+          })}
           {...endingPanelHandlers({ onOpenEndings, onOpenLibrary, onReturnHome })}
         />
       ) : (

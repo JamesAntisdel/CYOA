@@ -82,20 +82,47 @@ export function useGuestSession() {
 
     const now = Date.now();
     const existing = readStoredSession();
-    const remote = hasRemoteGameApi()
-      ? await createRemoteGuestAccount({
-          ageSelection,
-          guestTokenHash: getOrCreateGuestToken(),
-        })
-      : null;
+    // When remote is configured, REQUIRE a server-issued accountId — never
+    // persist a local UUID fallback because every subsequent Convex call
+    // will then fail v.id("accounts") validation, bricking the session.
+    // If the remote call returns null (network blip, mid-restart, etc.),
+    // surface an error and let the user retry rather than silently writing
+    // a doomed accountId to localStorage.
+    if (hasRemoteGameApi()) {
+      const remote = await createRemoteGuestAccount({
+        ageSelection,
+        guestTokenHash: getOrCreateGuestToken(),
+      });
+      if (!remote) {
+        setState({
+          status: "ready",
+          session: null,
+          blocked: false,
+          error: "Could not reach the server. Try again in a moment.",
+        });
+        return null;
+      }
+      const session: GuestSession = {
+        accountId: remote.account.accountId,
+        kind: "guest",
+        ageBand: remote.account.ageBand,
+        createdAt: existing?.createdAt ?? now,
+        lastActiveAt: now,
+      };
+      writeStoredSession(session);
+      setState({ status: "ready", session, blocked: false, error: null });
+      return session;
+    }
+
+    // Pure local-only mode (no Convex configured). Local UUID is fine here
+    // because nothing will be sent to the server.
     const session: GuestSession = {
-      accountId: remote?.account.accountId ?? existing?.accountId ?? createId("guest"),
+      accountId: existing?.accountId ?? createId("guest"),
       kind: "guest",
-      ageBand: remote?.account.ageBand ?? ageSelection,
+      ageBand: ageSelection,
       createdAt: existing?.createdAt ?? now,
       lastActiveAt: now,
     };
-
     writeStoredSession(session);
     setState({ status: "ready", session, blocked: false, error: null });
     return session;

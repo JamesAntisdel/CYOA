@@ -11,11 +11,16 @@ import { getStoryCoverSource } from "../../lib/designAssets";
 import { creatorSeedSaveId, listLocalCreatorSeeds, type LocalCreatorSeed } from "../../lib/localCreatorSeeds";
 import { guestAuthArgs, useGuestSession, type AgeSelection } from "../../hooks/useGuestSession";
 import { useLibrary, type LibrarySave } from "../../hooks/useLibrary";
+import { useNarratorVoice } from "../../hooks/useNarratorVoice";
 
 export default function LibraryRoute() {
   const router = useRouter();
   const guest = useGuestSession();
   const library = useLibrary(guest.session);
+  // Library is the other start-a-tale surface (starters + creator seeds).
+  // No active save here, so we read the last-used voice and forward it on
+  // the createRemoteSave call. Matches the cover-screen flow at app/index.tsx.
+  const narrator = useNarratorVoice(null);
   const [creatorSeeds, setCreatorSeeds] = useState<LocalCreatorSeed[]>([]);
   const [remoteCreatorSeeds, setRemoteCreatorSeeds] = useState<RemoteCreatorSeedItem[]>([]);
 
@@ -47,7 +52,7 @@ export default function LibraryRoute() {
   };
 
   const openRemoteCreatorSeed = async (seed: RemoteCreatorSeedItem) => {
-    const save = await library.createSave(seed.storyId, "story", seed.title);
+    const save = await library.createSave(seed.storyId, "story", seed.title, narrator.voiceId);
     openSave(save.saveId);
   };
 
@@ -94,7 +99,12 @@ export default function LibraryRoute() {
               accessibilityRole="button"
               key={story.id}
               onPress={async () => {
-                const save: LibrarySave = await library.createSave(story.id);
+                const save: LibrarySave = await library.createSave(
+                  story.id,
+                  "story",
+                  undefined,
+                  narrator.voiceId,
+                );
                 openSave(save.saveId);
               }}
               style={styles.storyCard}

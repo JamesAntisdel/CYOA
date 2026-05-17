@@ -122,6 +122,16 @@ export default function SettingsRoute() {
                 onSelect={(reduceMotion) => updateSettings({ reduceMotion })}
               />
 
+              <SettingGroup
+                label="Audio"
+                options={[
+                  { label: "Sound on", value: false },
+                  { label: "Mute", value: true },
+                ]}
+                selected={settings.muted}
+                onSelect={(muted) => updateSettings({ muted })}
+              />
+
               <Divider />
 
               <View style={{ gap: tokens.spacing.sm }}>

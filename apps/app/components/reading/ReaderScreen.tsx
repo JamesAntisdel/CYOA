@@ -3,9 +3,13 @@ import { ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { AppNav } from "../navigation";
+import { useAccountProfile } from "../../hooks/useAccountProfile";
 import { useReaderSettings } from "../../hooks/useReaderSettings";
+import { guestAuthArgs, useGuestSession } from "../../hooks/useGuestSession";
+import { useSceneMedia } from "../../hooks/useSceneMedia";
 import { useStreamingScene } from "../../hooks/useStreamingScene";
 import { useTurn } from "../../hooks/useTurn";
+import { PATRON_TIERS_BY_ID, resolvePatronTier } from "../../lib/billingConfig";
 import { useAppTheme } from "../../theme";
 import { ChapterEnd } from "./ChapterEnd";
 import { READER_LAYOUTS } from "./layouts";
@@ -34,6 +38,43 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
   const { isStreaming, streamedProse } = useStreamingScene(projection.scene, {
     reducedMotion: reduceMotion || settings.reduceMotion,
   });
+
+  // Live Pro-media projection. Polls the Convex assets table for an Imagen
+  // job tied to the active scene. When ready, replaces the projection's
+  // media field so MediaPlate can advance from Skeleton → Image. Falls
+  // through to whatever the projection already carries when no remote
+  // backend is wired (in-memory tutorial).
+  const guest = useGuestSession();
+  const liveMedia = useSceneMedia(
+    saveId,
+    guest.session
+      ? { accountId: guest.session.accountId, ...guestAuthArgs() }
+      : undefined,
+  );
+  const projectionWithLiveMedia = liveMedia
+    ? { ...projection, scene: { ...projection.scene, media: liveMedia } }
+    : projection;
+
+  // Resolve the death-variant props the layouts forward to <EndingPanel>.
+  //  - tier: derived from useAccountProfile so the Cinematic gate matches
+  //    the live entitlement.
+  //  - cinematicUri: only set when useSceneMedia has a ready video asset —
+  //    Cinematic falls back to Brutal when the URI is absent.
+  //  - isFirstFind: TODO(Wave E) — real lookup against `endings_unlocked`.
+  //    Until then pass `true` so eligible tier+asset reads can still fire
+  //    Cinematic in QA without re-playing on the wrong account.
+  const { profile } = useAccountProfile();
+  const endingTier = profile
+    ? resolvePatronTier({
+        entitlement: profile.entitlementTier,
+        isClaimed: profile.kind !== "guest",
+      })
+    : PATRON_TIERS_BY_ID.wanderer;
+  const cinematicUri =
+    liveMedia && liveMedia.kind === "video" && liveMedia.status === "ready" && liveMedia.uri
+      ? liveMedia.uri
+      : undefined;
+  const endingIsFirstFind = true;
 
   const Layout = READER_LAYOUTS[settings.layout] ?? READER_LAYOUTS.book;
 
@@ -68,9 +109,12 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
             onOpenLibrary={() => router.push("/library")}
             onReturnHome={() => router.push("/")}
             pendingChoiceId={pendingChoiceId}
-            projection={projection}
+            projection={projectionWithLiveMedia}
             reducedMotion={reduceMotion || settings.reduceMotion}
             streamedProse={streamedProse}
+            endingTier={endingTier}
+            {...(cinematicUri ? { cinematicUri } : {})}
+            endingIsFirstFind={endingIsFirstFind}
           />
         )}
       </ScrollView>

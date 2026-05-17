@@ -55,3 +55,49 @@ tweak in a layout-class section) or accidental (a regression).
 - Server-rendered surfaces. Everything here is client-rendered React or
   React Native Web.
 - Cross-browser. Chromium only for now — Firefox/WebKit are a follow-up.
+
+## End-to-end flow smoke (`playwright.flow.config.ts`)
+
+A separate spec — `end-to-end-flow.spec.ts` — drives the real user flow
+through a headless browser against the **live local Docker stack**:
+
+```
+landing -> 18+ age gate -> library -> tap cover -> reader -> first
+choice -> verify MediaPlate advances past the skeleton state
+```
+
+Unlike the visual specs, this one does NOT diff screenshots. It asserts
+behavior at each step and logs a `[flow]` line per step so CI failures
+are easy to triage. It catches issues HTTP-level smoke
+(`scripts/smoke/live-readiness.mjs`) misses — render hangs, age-gate
+regressions, choice handlers wired to dead endpoints, MediaPlate stuck
+on the skeleton, etc.
+
+### Run
+
+The stack must already be up (`docker compose up -d app provider-mocks convex`).
+
+```bash
+# Default target: http://localhost:8081
+pnpm test:e2e:flow
+
+# Different host (e.g. a tunnel / preview env):
+E2E_BASE_URL=http://127.0.0.1:8081 pnpm test:e2e:flow
+```
+
+This config has `webServer: undefined` on purpose — it never boots a
+dev server. If the stack is down the test fails fast on the first
+`page.goto`.
+
+### What it asserts
+
+| Step                  | Assertion                                                |
+|-----------------------|----------------------------------------------------------|
+| Landing               | `document.title` contains "The Unwritten"                |
+| Age gate visible      | A `radiogroup` is on screen                              |
+| Select 18+            | Continue button becomes enabled                          |
+| Library populated     | "Choose a starter adventure." header visible             |
+| Cover tap             | One of Bone Cathedral / Iron Court / Ashfall is clicked  |
+| Reader mounts         | URL matches `/read/<saveId>`                             |
+| Choice click          | First enabled choice button is clickable                 |
+| Media advance (≤20s)  | Scene `<img>` renders OR skeleton microcopy disappears   |

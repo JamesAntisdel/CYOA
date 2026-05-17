@@ -49,6 +49,10 @@ export type SceneRecord = {
   provider: "deterministic" | "anthropic" | "vertex" | "deepseek";
   createdAt: number;
   completedAt?: number | undefined;
+  // The structured LLM-driven proposal that produced this scene's prose
+  // and choice list. Authored-mode scenes leave this undefined.
+  proposal?: unknown;
+  terminal?: unknown;
 };
 
 export type TurnPersistencePlan = {
@@ -140,7 +144,32 @@ export function buildInitialSceneRecord(input: {
   saveId: string;
   story: Story;
   now: number;
+  storyMode?: "authored" | "llm-driven";
 }): SceneRecord {
+  if (input.storyMode === "llm-driven") {
+    // Opening scene for an llm-driven story: no prose, no choices yet. The
+    // client opens an SSE stream against `/llm/scene-stream` immediately
+    // after createSave to populate prose + proposal + choices.
+    return {
+      saveId: input.saveId,
+      nodeId: input.save.currentNodeId,
+      turnNumber: input.save.turnNumber,
+      stateFingerprint: [
+        input.save.storyId,
+        input.save.storyVersion,
+        input.save.engineVersion,
+        input.save.currentNodeId,
+        input.save.turnNumber,
+      ].join(":"),
+      prose: "",
+      streamStatus: "pending",
+      choiceViews: [],
+      engineEvents: [],
+      safety: { risk: "normal", reasons: [] },
+      provider: "deterministic",
+      createdAt: input.now,
+    };
+  }
   return sceneRecordFromProjection({
     projection: projectCurrentScene({ ...input.save, _id: input.saveId }, input.story),
     save: { ...input.save, _id: input.saveId },

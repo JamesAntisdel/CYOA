@@ -75,6 +75,11 @@ export default defineSchema({
     currentSceneId: v.optional(sceneId),
     turnNumber: v.number(),
     activeTurnRequestId: v.optional(v.string()),
+    // Narrator voice id pinned to this save when the reader first picks one
+    // (see apps/app/hooks/useNarratorVoice.ts). Server-side TTS uses it to
+    // map to a Google Cloud TTS voice via convex/llm/ttsVoices.ts. Optional
+    // for backwards compatibility with saves that pre-date narration.
+    voiceId: v.optional(v.string()),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
@@ -102,6 +107,12 @@ export default defineSchema({
     provider: v.optional(v.union(v.literal("anthropic"), v.literal("vertex"), v.literal("deepseek"), v.literal("deterministic"))),
     createdAt: v.number(),
     completedAt: v.optional(v.number()),
+    // The LLM-driven contract: the structured proposal returned by the
+    // model for this scene (prose + choices + effects + terminal). The
+    // engine validates this before persisting; the next turn looks the
+    // proposal up to apply the chosen choice's effects.
+    proposal: v.optional(jsonValue),
+    terminal: v.optional(jsonValue),
   })
     .index("by_save_turn", ["saveId", "turnNumber"])
     .index("by_save_node_fingerprint", ["saveId", "nodeId", "stateFingerprint"]),
@@ -260,11 +271,14 @@ export default defineSchema({
     accountId,
     saveId: v.optional(saveId),
     taleId: v.optional(taleId),
+    sceneId: v.optional(v.id("scenes")),
+    nodeId: v.optional(v.string()),
     kind: v.union(v.literal("image"), v.literal("video"), v.literal("audio")),
     provider: v.union(
       v.literal("vertex-imagen"),
       v.literal("vertex-veo"),
       v.literal("gemini-veo"),
+      v.literal("google-tts"),
       v.literal("uploaded"),
     ),
     url: v.string(),
@@ -273,12 +287,18 @@ export default defineSchema({
     promptHash: v.string(),
     provenance: jsonValue,
     safety: jsonValue,
+    alt: v.optional(v.string()),
+    tags: v.optional(v.array(v.string())),
+    durationMs: v.optional(v.number()),
     createdAt: v.number(),
+    updatedAt: v.optional(v.number()),
+    readyAt: v.optional(v.number()),
   })
     .index("by_accountId", ["accountId"])
     .index("by_saveId", ["saveId"])
     .index("by_taleId", ["taleId"])
-    .index("by_status", ["status"]),
+    .index("by_status", ["status"])
+    .index("by_scene", ["sceneId"]),
 
   migrations: defineTable({
     saveId,

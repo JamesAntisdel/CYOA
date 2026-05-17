@@ -33,18 +33,29 @@ export function SceneMedia({
   const resolvedMuted = (muted ?? preferences.muted) || preferences.nativeBackground;
   const resolvedAppActive = appActive ?? preferences.appActive;
 
-  if (!media || media.status === "idle") return null;
+  // Audio-only scenes with a ready narrator clip should still render the
+  // audio layers even if `media.status === "idle"` for the visual plate.
+  // We only short-circuit on idle when there is no narrator to play, since
+  // the narrator slot is what makes the page audibly "alive" once TTS is
+  // ready (visual media may still be queued).
+  if (!media) return null;
+  if (media.status === "idle" && !media.narrator) return null;
 
   const ambient = (
     <AmbientSoundscape
       appActive={resolvedAppActive}
       loop={media.ambient}
+      // Narrator is forwarded straight through to AudioMix's priority-1 slot.
+      // Backend sets this only when Google Cloud TTS has finished generating
+      // the clip for the save's pinned voiceId — until then narrator is
+      // undefined and AudioMix simply doesn't mount the narrator layer.
+      narrator={media.narrator}
       muted={resolvedMuted}
       reducedMotion={resolvedReducedMotion}
     />
   );
 
-  // Audio-only scenes don't render a visual plate — just the ambient loop.
+  // Audio-only scenes don't render a visual plate — just the audio mix.
   if (media.kind === "audio") return ambient;
 
   return (

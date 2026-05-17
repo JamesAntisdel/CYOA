@@ -57,6 +57,7 @@ const gameApi = {
   listLibrary: makeFunctionReference<"query">("game:listLibrary"),
   createSave: makeFunctionReference<"mutation">("game:createSave"),
   getCurrentScene: makeFunctionReference<"query">("game:getCurrentScene"),
+  getSceneMedia: makeFunctionReference<"query">("media/sceneMedia:getSceneMedia"),
   submitChoice: makeFunctionReference<"mutation">("game:submitChoice"),
   beginStreamingChoice: makeFunctionReference<"mutation">("game:beginStreamingChoice"),
   getProfile: makeFunctionReference<"query">("accountFunctions:getProfile"),
@@ -80,7 +81,7 @@ export async function createRemoteGuestAccount(input: {
   guestTokenHash: string;
 }): Promise<{ account: RemoteAccount; created: boolean } | null> {
   if (!convexClient) return null;
-  return remoteOrNull(convexClient.mutation(gameApi.createGuestAccount, input));
+  return callConvexHttp<any>("mutation", "game:createGuestAccount", input as unknown as Record<string, unknown>) as any;
 }
 
 export async function listRemoteLibrary(input: {
@@ -88,7 +89,7 @@ export async function listRemoteLibrary(input: {
   guestTokenHash?: string;
 }): Promise<RemoteLibraryItem[] | null> {
   if (!convexClient) return null;
-  return remoteOrNull(convexClient.query(gameApi.listLibrary, input));
+  return callConvexHttp<any>("query", "game:listLibrary", input as unknown as Record<string, unknown>) as any;
 }
 
 export async function createRemoteSave(input: {
@@ -96,9 +97,16 @@ export async function createRemoteSave(input: {
   guestTokenHash?: string;
   storyId: string;
   mode: Mode;
+  /**
+   * Narrator voice id chosen by the reader on the cover screen. Sent at save
+   * creation only — the backend persists it on the save record so subsequent
+   * `completeSceneStream` calls can read it server-side without resending per
+   * turn. Format: `"voice.ash" | "voice.lark" | ...` (see useNarratorVoice).
+   */
+  voiceId?: string;
 }): Promise<{ saveId: string; sceneId: string; scene: RemoteScene } | null> {
   if (!convexClient) return null;
-  return remoteOrNull(convexClient.mutation(gameApi.createSave, input));
+  return callConvexHttp<any>("mutation", "game:createSave", input as unknown as Record<string, unknown>) as any;
 }
 
 export async function getRemoteCurrentScene(input: {
@@ -107,7 +115,47 @@ export async function getRemoteCurrentScene(input: {
   saveId: string;
 }): Promise<RemoteScene | null> {
   if (!convexClient) return null;
-  return remoteOrNull(convexClient.query(gameApi.getCurrentScene, input));
+  return callConvexHttp<any>("query", "game:getCurrentScene", input as unknown as Record<string, unknown>) as any;
+}
+
+export type RemoteSceneMedia = {
+  status: "idle" | "queued" | "generating" | "ready" | "blocked" | "failed";
+  kind: "image" | "video" | "audio";
+  uri?: string;
+  alt: string;
+  durationMs?: number;
+  /**
+   * Library ambient loop attached to this scene (priority-4 audio layer).
+   * Surfaced by the Convex projection when the save's chapter/room has a
+   * ride-along ambient track.
+   */
+  ambient?: {
+    id: string;
+    uri: string;
+    label: string;
+    tags: string[];
+    volume: number;
+  };
+  /**
+   * Narrator TTS clip for this scene's prose (priority-1 audio layer).
+   * Populated server-side once Google Cloud TTS finishes for the save's
+   * pinned voiceId; absent until the asset is ready or when TTS is disabled.
+   */
+  narrator?: {
+    id: string;
+    uri: string;
+    voiceId: string;
+  };
+};
+
+export async function getRemoteSceneMedia(input: {
+  accountId: string;
+  saveId: string;
+  guestTokenHash?: string;
+  sceneId?: string;
+}): Promise<RemoteSceneMedia | null> {
+  if (!convexClient) return null;
+  return callConvexHttp<any>("query", "media/sceneMedia:getSceneMedia", input as unknown as Record<string, unknown>) as any;
 }
 
 export async function submitRemoteChoice(input: {
@@ -118,7 +166,7 @@ export async function submitRemoteChoice(input: {
   requestId: string;
 }): Promise<{ saveId: string; sceneId: string; scene: RemoteScene; prose: string } | null> {
   if (!convexClient) return null;
-  return remoteOrNull(convexClient.mutation(gameApi.submitChoice, input));
+  return callConvexHttp<any>("mutation", "game:submitChoice", input as unknown as Record<string, unknown>) as any;
 }
 
 export async function beginRemoteStreamingChoice(input: {
@@ -129,7 +177,7 @@ export async function beginRemoteStreamingChoice(input: {
   requestId: string;
 }): Promise<{ saveId: string; sceneId: string; scene: RemoteScene; stream: boolean } | null> {
   if (!convexClient) return null;
-  return remoteOrNull(convexClient.mutation(gameApi.beginStreamingChoice, input));
+  return callConvexHttp<any>("mutation", "game:beginStreamingChoice", input as unknown as Record<string, unknown>) as any;
 }
 
 export async function streamRemoteScene(input: {
@@ -182,7 +230,7 @@ export async function getRemoteProfile(input: {
   entitlementStatus: "active" | "grace" | "expired" | "revoked";
 } | null> {
   if (!convexClient) return null;
-  return remoteOrNull(convexClient.query(gameApi.getProfile, input));
+  return callConvexHttp<any>("query", "accountFunctions:getProfile", input as unknown as Record<string, unknown>) as any;
 }
 
 export async function claimRemoteGuest(input: {
@@ -191,7 +239,7 @@ export async function claimRemoteGuest(input: {
   userId: string;
 }): Promise<{ accountId: string; userId: string } | null> {
   if (!convexClient) return null;
-  return remoteOrNull(convexClient.mutation(gameApi.claimGuest, input));
+  return callConvexHttp<any>("mutation", "accountFunctions:claimGuest", input as unknown as Record<string, unknown>) as any;
 }
 
 export async function setRemoteMatureContent(input: {
@@ -200,7 +248,7 @@ export async function setRemoteMatureContent(input: {
   enabled: boolean;
 }): Promise<{ accountId: string; matureContentEnabled: boolean } | null> {
   if (!convexClient) return null;
-  return remoteOrNull(convexClient.mutation(gameApi.setMatureContent, input));
+  return callConvexHttp<any>("mutation", "accountFunctions:setMatureContent", input as unknown as Record<string, unknown>) as any;
 }
 
 export async function exportRemoteAccount(input: {
@@ -208,7 +256,7 @@ export async function exportRemoteAccount(input: {
   guestTokenHash?: string;
 }): Promise<Record<string, unknown> | null> {
   if (!convexClient) return null;
-  return remoteOrNull(convexClient.query(gameApi.exportAccount, input), 5000);
+  return remoteOrNull(callConvexHttp<any>("query", "accountFunctions:exportAccount", input as unknown as Record<string, unknown>), 5000);
 }
 
 export async function deleteRemoteAccount(input: {
@@ -232,7 +280,7 @@ export async function deleteRemoteAccount(input: {
   publishedTalesRevoked: number;
 } | null> {
   if (!convexClient) return null;
-  return remoteOrNull(convexClient.mutation(gameApi.deleteAccount, input), 5000);
+  return remoteOrNull(callConvexHttp<any>("mutation", "accountFunctions:deleteAccount", input as unknown as Record<string, unknown>), 5000);
 }
 
 export async function previewRemotePlan(input: {
@@ -241,7 +289,7 @@ export async function previewRemotePlan(input: {
   unusedCreditCents?: number;
 }): Promise<{ immediateChargeCents: number; creditAppliedCents: number } | null> {
   if (!convexClient) return null;
-  return remoteOrNull(convexClient.query(gameApi.previewPlan, input));
+  return callConvexHttp<any>("query", "billingFunctions:previewPlan", input as unknown as Record<string, unknown>) as any;
 }
 
 export async function createRemoteCheckoutSession(input: {
@@ -252,7 +300,7 @@ export async function createRemoteCheckoutSession(input: {
   cancelUrl: string;
 }): Promise<{ url: string; clientReferenceId: string } | null> {
   if (!convexClient) return null;
-  return remoteOrNull(convexClient.action(gameApi.createCheckoutSession, input), 5000);
+  return remoteOrNull(callConvexHttp<any>("action", "billingFunctions:createCheckoutSession", input as unknown as Record<string, unknown>), 5000);
 }
 
 export async function createRemoteCreatorDraft(input: {
@@ -262,7 +310,7 @@ export async function createRemoteCreatorDraft(input: {
   story: Story;
 }): Promise<{ seedId: string; seed: { status: "draft" | "published" | "archived" } } | null> {
   if (!convexClient) return null;
-  return remoteOrNull(convexClient.mutation(gameApi.createCreatorDraft, input));
+  return callConvexHttp<any>("mutation", "creatorFunctions:createDraft", input as unknown as Record<string, unknown>) as any;
 }
 
 export async function publishRemoteCreatorSeed(input: {
@@ -271,7 +319,7 @@ export async function publishRemoteCreatorSeed(input: {
   seedId: string;
 }): Promise<{ seedId: string; seed: { status: "draft" | "published" | "archived" } } | null> {
   if (!convexClient) return null;
-  return remoteOrNull(convexClient.mutation(gameApi.publishCreatorSeed, input));
+  return callConvexHttp<any>("mutation", "creatorFunctions:publish", input as unknown as Record<string, unknown>) as any;
 }
 
 export async function listRemotePublishedCreatorSeeds(input: {
@@ -279,19 +327,86 @@ export async function listRemotePublishedCreatorSeeds(input: {
   guestTokenHash?: string;
 }): Promise<RemoteCreatorSeedItem[] | null> {
   if (!convexClient) return null;
-  return remoteOrNull(convexClient.query(gameApi.listPublishedCreatorSeeds, input));
+  return callConvexHttp<any>("query", "creatorFunctions:listPublishedMine", input as unknown as Record<string, unknown>) as any;
 }
 
-async function remoteOrNull<T>(operation: Promise<T>, timeoutMs = 1500): Promise<T | null> {
+async function remoteOrNull<T>(operation: Promise<T>, timeoutMs = 8000): Promise<T | null> {
   try {
-    return await Promise.race([
+    const result = await Promise.race([
       operation,
       new Promise<null>((resolve) => {
-        setTimeout(() => resolve(null), timeoutMs);
+        setTimeout(() => {
+          console.warn(`[gameApi] remote call timed out after ${timeoutMs}ms`);
+          resolve(null);
+        }, timeoutMs);
       }),
     ]);
-  } catch {
+    return result;
+  } catch (err) {
+    // Surface the rejection so devs can see WHY Convex bailed instead of
+    // silently rendering the local engine fallback. Prod can swap this
+    // back to a silent return when telemetry is wired.
+    console.error("[gameApi] remote call rejected:", err);
     return null;
+  }
+}
+
+// Convex anonymous local backends don't handshake the WS-based
+// ConvexReactClient cleanly (the client expects a cloud-style deployment
+// selector that the anonymous backend doesn't provide), so mutations
+// hang until timeout. The HTTP API at `/api/mutation` / `/api/query` /
+// `/api/action` works for the same call surface. Use this helper for
+// every remote call so the WS path is bypassed entirely.
+async function callConvexHttp<T = unknown>(
+  kind: "mutation" | "query" | "action",
+  path: string,
+  args: Record<string, unknown>,
+  timeoutMs = 5000,
+): Promise<T | null> {
+  const baseUrl = process.env.EXPO_PUBLIC_CONVEX_URL;
+  if (!baseUrl) {
+    console.warn("[gameApi] baseUrl is empty — process.env.EXPO_PUBLIC_CONVEX_URL not inlined");
+    return null;
+  }
+  // Tight abort so a single slow request doesn't pin a browser HTTP slot
+  // forever. The browser only gives us ~6 keep-alive sockets per origin
+  // and the WS subscription already takes one — pile-up of pending GETs
+  // would lock the pool.
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    console.warn(`[gameApi] aborting ${kind} ${path} after ${timeoutMs}ms`);
+    controller.abort();
+  }, timeoutMs);
+  const t0 = Date.now();
+  try {
+    const res = await fetch(`${baseUrl.replace(/\/+$/, "")}/api/${kind}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path, args: args ?? {}, format: "json" }),
+      signal: controller.signal,
+      // Always open a fresh connection so a stalled prior request can't
+      // hold up the next poll behind keep-alive.
+      cache: "no-store",
+      keepalive: false,
+    });
+    console.log(`[gameApi] ${kind} ${path} -> ${res.status} in ${Date.now() - t0}ms`);
+    if (!res.ok) {
+      console.warn(`[gameApi] ${kind} ${path} HTTP ${res.status}`);
+      return null;
+    }
+    const data = (await res.json()) as { status?: string; value?: T; errorMessage?: string; errorData?: unknown };
+    if (data.status === "success") return (data.value ?? null) as T | null;
+    console.warn(`[gameApi] ${kind} ${path} server error:`, data.errorMessage ?? data);
+    return null;
+  } catch (err) {
+    if ((err as { name?: string })?.name === "AbortError") {
+      // Aborted by our own timer — already logged above. Nothing else to do.
+    } else {
+      console.error(`[gameApi] ${kind} ${path} threw:`, err);
+    }
+    return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 

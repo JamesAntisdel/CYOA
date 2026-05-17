@@ -6,7 +6,7 @@ import { SceneMedia } from "../../media/SceneMedia";
 import { Divider, Stamp, Surface, Text } from "../../primitives";
 import { StatsHud } from "../../stats/StatsHud";
 import { useAppTheme } from "../../../theme";
-import { endingPanelHandlers, type ReaderLayoutProps } from "./types";
+import { endingPanelHandlers, endingVariantProps, type ReaderLayoutProps } from "./types";
 
 const RAIL_BREAKPOINT = 760;
 
@@ -26,6 +26,9 @@ export function ModernAppLayout({
   onOpenEndings,
   onOpenLibrary,
   onReturnHome,
+  endingTier,
+  cinematicUri,
+  endingIsFirstFind,
 }: ReaderLayoutProps) {
   const { tokens } = useAppTheme();
   const { width } = useWindowDimensions();
@@ -64,6 +67,12 @@ export function ModernAppLayout({
         {projection.ending ? (
           <EndingPanel
             ending={projection.ending}
+            {...endingVariantProps({
+              projection,
+              ...(endingTier !== undefined ? { tier: endingTier } : {}),
+              ...(cinematicUri !== undefined ? { cinematicUri } : {}),
+              ...(endingIsFirstFind !== undefined ? { isFirstFind: endingIsFirstFind } : {}),
+            })}
             {...endingPanelHandlers({ onOpenEndings, onOpenLibrary, onReturnHome })}
           />
         ) : (

@@ -66,7 +66,13 @@ function readDeepSeekConfig(): LlmHttpConfig {
 
 function defaultDeepSeekAvailable(): boolean {
   const config = readDeepSeekConfig();
-  return Boolean(config.apiKey || isLocalProviderUrl(config.baseUrl));
+  if (config.apiKey) return true;
+  // Same offline-only rule as anthropic.ts: don't let a mock route win when
+  // a real key exists for another provider.
+  if (!isLocalProviderUrl(config.baseUrl)) return false;
+  const hasRealVertex = Boolean(readEnv("GEMINI_API_KEY") || readEnv("VERTEX_ACCESS_TOKEN"));
+  const hasRealAnthropic = Boolean(readEnv("ANTHROPIC_API_KEY"));
+  return !hasRealVertex && !hasRealAnthropic;
 }
 
 function extractDeepSeekText(response: unknown): string {

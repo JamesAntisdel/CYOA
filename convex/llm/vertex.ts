@@ -26,20 +26,34 @@ export function createVertexProvider(available = defaultVertexAvailable(), confi
     generate: async (request: SceneGenerationRequest): Promise<ProviderGeneration> => {
       if (!available) throw new Error("vertex_not_configured");
       const prompt = buildProviderPrompt(request);
+      // Gemini supports JSON mode via responseMimeType. For llm-driven scenes
+      // we require strict JSON because the engine rejects anything else; for
+      // authored scenes we leave the response unconstrained (prose works).
+      // Gemini's generateContent endpoint rejects a top-level `seed`. The
+      // seed (and JSON mode) belong inside generationConfig.
+      // Gemini 3 Flash defaults thinking to "high", which spends the
+      // maxOutputTokens budget on hidden reasoning and returns an empty
+      // text part. We don't need reasoning for prose/JSON scene output —
+      // force thinking minimal and give a generous token cap.
+      const generationConfig: Record<string, unknown> = {
+        temperature: 0.75,
+        maxOutputTokens: request.mode === "llm-driven" ? 4096 : 2048,
+        seed: hashSeedToInt32(request.seed),
+        thinkingConfig: { thinkingLevel: "minimal" },
+      };
+      if (request.mode === "llm-driven") {
+        generationConfig.responseMimeType = "application/json";
+      }
       const response = await postJson({
         url: vertexGenerateUrl(config),
         timeoutMs: config.timeoutMs,
         headers: {
           ...(config.accessToken ? { authorization: `Bearer ${config.accessToken}` } : {}),
+          ...(config.apiKey && !config.accessToken ? { "x-goog-api-key": config.apiKey } : {}),
         },
         body: {
-          model: config.model,
-          seed: request.seed,
           contents: [{ role: "user", parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.75,
-            maxOutputTokens: 900,
-          },
+          generationConfig,
         },
       });
       const text = extractVertexText(response);
@@ -59,14 +73,24 @@ function readVertexConfig(): VertexConfig {
   const projectId = readEnv("VERTEX_PROJECT_ID");
   const location = readEnv("VERTEX_LOCATION") ?? "us-central1";
   const accessToken = readEnv("VERTEX_ACCESS_TOKEN");
-  const model = readEnv("GEMINI_TEXT_MODEL") ?? readEnv("VERTEX_TEXT_MODEL") ?? "gemini-2.5-flash";
-  const baseUrl =
-    readEnv("VERTEX_BASE_URL") ??
-    (projectId && accessToken
+  const apiKey = readEnv("GEMINI_API_KEY");
+  const model = readEnv("GEMINI_TEXT_MODEL") ?? readEnv("VERTEX_TEXT_MODEL") ?? "gemini-3-flash-preview";
+  const envBaseUrl = readEnv("VERTEX_BASE_URL");
+  // Real-key takes precedence over VERTEX_BASE_URL=*provider-mocks*. The
+  // mock URL in .env is meant as the fallback for offline dev; once a
+  // real GEMINI_API_KEY or VERTEX_ACCESS_TOKEN is configured, route to
+  // the real Google endpoint regardless of the local mock override.
+  const envOverrideIsMock = envBaseUrl ? isLocalProviderUrl(envBaseUrl) : false;
+  const hasLiveCredential = Boolean(apiKey || (projectId && accessToken));
+  const liveBaseUrl =
+    projectId && accessToken
       ? `https://${location}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${location}/publishers/google/models/${model}:generateContent`
-      : "https://generativelanguage.googleapis.com/v1beta/models");
+      : "https://generativelanguage.googleapis.com/v1beta/models";
+  const baseUrl = hasLiveCredential && envOverrideIsMock
+    ? liveBaseUrl
+    : envBaseUrl ?? liveBaseUrl;
   return {
-    apiKey: readEnv("GEMINI_API_KEY"),
+    apiKey,
     accessToken,
     baseUrl,
     model,
@@ -82,8 +106,21 @@ function defaultVertexAvailable(): boolean {
 function vertexGenerateUrl(config: VertexConfig): string {
   const trimmed = config.baseUrl.replace(/\/+$/, "");
   if (trimmed.includes(":generateContent") || isLocalProviderUrl(trimmed)) return trimmed;
-  const query = config.apiKey ? `?key=${encodeURIComponent(config.apiKey)}` : "";
-  return `${trimmed}/${config.model}:generateContent${query}`;
+  return `${trimmed}/${config.model}:generateContent`;
+}
+
+// Gemini's generationConfig.seed is a 32-bit signed int. Our request
+// carries seed as a string (the per-scene seed value). FNV-1a hash to
+// a stable int32 so two calls with the same seed string deterministically
+// hit the same Gemini seed.
+function hashSeedToInt32(seed: string): number {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash ^= seed.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  // Math.imul already returns a signed int32; just normalize.
+  return hash | 0;
 }
 
 function extractVertexText(response: unknown): string {

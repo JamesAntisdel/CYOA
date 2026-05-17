@@ -5,7 +5,7 @@ import { EndingPanel } from "../../death/EndingPanel";
 import { Stamp, Surface, Text } from "../../primitives";
 import { StatsHud } from "../../stats/StatsHud";
 import { useAppTheme } from "../../../theme";
-import { endingPanelHandlers, type ReaderLayoutProps } from "./types";
+import { endingPanelHandlers, endingVariantProps, type ReaderLayoutProps } from "./types";
 
 /**
  * Journal — canvas § 19 D. Ruled-paper feel with a red margin rule, mono
@@ -23,6 +23,9 @@ export function JournalLayout({
   onOpenEndings,
   onOpenLibrary,
   onReturnHome,
+  endingTier,
+  cinematicUri,
+  endingIsFirstFind,
 }: ReaderLayoutProps) {
   const { tokens } = useAppTheme();
   const showHud = hudMode !== "hidden";
@@ -104,6 +107,12 @@ export function JournalLayout({
       {projection.ending ? (
         <EndingPanel
           ending={projection.ending}
+          {...endingVariantProps({
+            projection,
+            ...(endingTier !== undefined ? { tier: endingTier } : {}),
+            ...(cinematicUri !== undefined ? { cinematicUri } : {}),
+            ...(endingIsFirstFind !== undefined ? { isFirstFind: endingIsFirstFind } : {}),
+          })}
           {...endingPanelHandlers({ onOpenEndings, onOpenLibrary, onReturnHome })}
         />
       ) : (

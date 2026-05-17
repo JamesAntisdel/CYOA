@@ -52,17 +52,19 @@ export function MediaPlateImage({
       accessibilityLabel={alt}
       accessibilityRole="image"
       style={{
+        aspectRatio: 16 / 9,
         borderColor: tokens.colors.borderMuted,
         borderRadius: tokens.radii.sm,
         borderWidth: tokens.borderWidths.hairline,
-        minHeight: reducedMotion ? 180 : 220,
         opacity: fade,
         overflow: "hidden",
         position: "relative",
+        width: "100%",
       }}
     >
       <Image
         accessibilityIgnoresInvertColors
+        resizeMode="cover"
         source={{ uri }}
         style={{ height: "100%", width: "100%" }}
       />

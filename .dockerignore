@@ -1,0 +1,46 @@
+# Keep the Docker build context tiny. Everything below is either already
+# generated inside the image or shouldn't ship to a container.
+
+# Workspace dependency caches (the Dockerfile installs its own)
+**/node_modules
+.pnpm-store
+.corepack
+
+# Build outputs (regenerated inside the container)
+apps/app/dist
+apps/app/.expo
+apps/app/web-build
+packages/*/dist
+infra/dist
+**/*.tsbuildinfo
+
+# Test + report outputs
+apps/app/test-results
+playwright-report
+playwright-report-visual
+test-results
+tests/visual/__snapshots__
+
+# Git internals
+.git
+.gitignore
+.gitattributes
+
+# Claude harness worktrees / artifacts
+.claude
+
+# Editor / OS clutter
+.vscode
+.idea
+.DS_Store
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Local-only env files (Compose mounts .env via env_file)
+# Keep .env.example so docs work; .env itself is gitignored.

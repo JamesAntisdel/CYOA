@@ -6,7 +6,7 @@ import { AppError } from "./lib/errors";
 import type { EntitlementRecord } from "./billing/entitlements";
 
 export type AssetKind = "image" | "video" | "audio";
-export type AssetProvider = "vertex-imagen" | "vertex-veo" | "gemini-veo" | "uploaded";
+export type AssetProvider = "vertex-imagen" | "vertex-veo" | "gemini-veo" | "google-tts" | "uploaded";
 export type AssetStatus = "queued" | "generating" | "ready" | "failed" | "blocked";
 
 export type AssetProvenance = {
@@ -52,6 +52,18 @@ export type SceneMediaProjection = {
   alt: string;
   durationMs?: number | undefined;
   ambient?: AmbientLoopProjection | undefined;
+  // Optional narrator track for the scene. Generated via Google Cloud TTS
+  // by convex/media/sceneMedia.ts:runNarrationJob and stored as a parallel
+  // `kind: "audio"` asset. The visual (image/video) ranking ignores this
+  // field — the narrator rides alongside whatever still/video the plate is
+  // showing. Absent when no ready audio asset exists for the scene.
+  narrator?: NarratorTrackProjection | undefined;
+};
+
+export type NarratorTrackProjection = {
+  id: string;
+  uri: string;
+  voiceId: string;
 };
 
 export type AmbientLoopProjection = {
@@ -191,13 +203,17 @@ export function projectSceneMedia(input: {
     .filter((asset) => asset.kind === "image" || asset.kind === "video")
     .sort((a, b) => assetRank(a, input.preferredKind) - assetRank(b, input.preferredKind));
   const asset = visualAssets[0];
-  if (!asset && !input.ambient) return undefined;
+  // Narrator track: parallel concern, not part of the visual ranking. Pick
+  // the first ready google-tts audio asset (one per scene by construction).
+  const narrator = pickNarratorProjection(input.assets);
+  if (!asset && !input.ambient && !narrator) return undefined;
   if (!asset) {
     return {
       status: "idle",
       kind: "audio",
       alt: input.ambient?.label ?? "Ambient soundscape",
       ambient: input.ambient,
+      ...(narrator === undefined ? {} : { narrator }),
     };
   }
   return {
@@ -207,7 +223,23 @@ export function projectSceneMedia(input: {
     alt: asset.alt ?? defaultAlt(asset.kind),
     ...(asset.durationMs === undefined ? {} : { durationMs: asset.durationMs }),
     ...(input.ambient === undefined ? {} : { ambient: input.ambient }),
+    ...(narrator === undefined ? {} : { narrator }),
   };
+}
+
+function pickNarratorProjection(assets: AssetRecord[]): NarratorTrackProjection | undefined {
+  const ready = assets.find(
+    (a) => a.kind === "audio" && a.provider === "google-tts" && a.status === "ready" && a.url.length > 0,
+  );
+  if (!ready || !ready._id) return undefined;
+  // voiceId rides on provenance — set by queueSceneNarration. Fall back to
+  // the seed default if a legacy row is missing it.
+  const provenance = ready.provenance as AssetProvenance & { voiceId?: unknown };
+  const voiceId =
+    typeof provenance.voiceId === "string" && provenance.voiceId.length > 0
+      ? provenance.voiceId
+      : "voice.ash";
+  return { id: ready._id, uri: ready.url, voiceId };
 }
 
 export function readyAssetsForScene(assets: AssetRecord[], sceneId: string): AssetRecord[] {
@@ -226,9 +258,15 @@ export function hashPrompt(prompt: string): string {
   return `p_${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }
 
+// Asset ranking: status first (ready > generating > other), then kind.
+// Within the same status, video beats image so a ready Veo clip wins
+// over a ready Imagen still — that's the Pro media "cinematic upgrade"
+// behavior the spec promises. A preferredKind override (e.g. caller
+// explicitly requesting "image" for reduced-motion contexts) wins above
+// the default kind ordering.
 function assetRank(asset: AssetRecord, preferredKind: "image" | "video" | undefined): number {
   const statusScore = asset.status === "ready" ? 0 : asset.status === "generating" ? 1 : 2;
-  const kindScore = preferredKind && asset.kind === preferredKind ? 0 : asset.kind === "image" ? 1 : 2;
+  const kindScore = preferredKind && asset.kind === preferredKind ? 0 : asset.kind === "video" ? 1 : 2;
   return statusScore * 10 + kindScore;
 }
 

@@ -10,6 +10,12 @@ export type LlmHttpConfig = {
 };
 
 export function buildProviderPrompt(request: SceneGenerationRequest): string {
+  if (request.mode === "llm-driven") {
+    // The llm-driven prompt already prescribes the exact JSON shape. Don't
+    // double-spec a second, narrower shape — that confused providers in
+    // practice and produced authored-style payloads in llm-driven runs.
+    return buildScenePrompt(request);
+  }
   return [
     buildScenePrompt(request),
     "",

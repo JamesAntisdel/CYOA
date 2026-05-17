@@ -10,6 +10,7 @@ export const trainingRoom: StarterStory = {
     estimatedLength: "5-10 minutes",
     entitlementRequired: "free",
     safetyProfile: "general",
+    mode: "authored",
   },
   story: {
     id: "training-room",

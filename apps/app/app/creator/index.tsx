@@ -11,12 +11,16 @@ import { createRemoteCreatorDraft, publishRemoteCreatorSeed } from "../../lib/ga
 import { saveLocalCreatorSeed } from "../../lib/localCreatorSeeds";
 import { guestAuthArgs, useGuestSession } from "../../hooks/useGuestSession";
 import { useLibrary } from "../../hooks/useLibrary";
+import { useNarratorVoice } from "../../hooks/useNarratorVoice";
 import { useAppTheme } from "../../theme";
 
 export default function CreatorRoute() {
   const router = useRouter();
   const guest = useGuestSession();
   const library = useLibrary(guest.session);
+  // Creator route also launches starters via SeedStoryFlow → forward the
+  // reader's pinned voice so the save record gets a voiceId at create time.
+  const narrator = useNarratorVoice(null);
   const { tokens } = useAppTheme();
   const [title, setTitle] = useState("Lantern Market");
   const [opening, setOpening] = useState(
@@ -167,7 +171,7 @@ export default function CreatorRoute() {
 
           <SeedStoryFlow
             starters={library.starterStories}
-            onLaunchStarter={(starterId) => library.createSave(starterId)}
+            onLaunchStarter={(starterId) => library.createSave(starterId, "story", undefined, narrator.voiceId)}
             onSeedLaunched={(save) => router.push(`/read/${save.saveId}`)}
           />
 

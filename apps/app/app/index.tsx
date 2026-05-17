@@ -7,11 +7,17 @@ import { AppNav } from "../components/navigation";
 import { brandAssets, getStoryCoverSource } from "../lib/designAssets";
 import { getTutorialStory, useLibrary, type LibrarySave } from "../hooks/useLibrary";
 import { useGuestSession, type AgeSelection } from "../hooks/useGuestSession";
+import { useNarratorVoice } from "../hooks/useNarratorVoice";
 
 export default function IndexRoute() {
   const router = useRouter();
   const guest = useGuestSession();
   const library = useLibrary(guest.session);
+  // Cover screen has no active save yet — passing null gives us the
+  // reader's last-used voice (or DEFAULT_VOICE_ID on first launch). The
+  // resolved voiceId rides along with createRemoteSave so the backend
+  // can pin it to the new save record.
+  const narrator = useNarratorVoice(null);
   const tutorialStory = getTutorialStory(library.starterStories);
 
   const handleAgeSubmit = (selection: AgeSelection) => {
@@ -23,7 +29,7 @@ export default function IndexRoute() {
   };
 
   const launchTutorial = async () => {
-    const save = await library.launchTutorialSave();
+    const save = await library.launchTutorialSave(narrator.voiceId);
     openSave(save.saveId);
   };
 
@@ -100,7 +106,12 @@ export default function IndexRoute() {
               accessibilityRole="button"
               key={story.id}
               onPress={async () => {
-                const save: LibrarySave = await library.createSave(story.id);
+                const save: LibrarySave = await library.createSave(
+                  story.id,
+                  "story",
+                  undefined,
+                  narrator.voiceId,
+                );
                 openSave(save.saveId);
               }}
               style={styles.storyCard}

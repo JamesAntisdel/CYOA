@@ -63,7 +63,12 @@ export function useLibrary(session: GuestSession | null) {
   );
 
   const createSave = useCallback(
-    async (storyId: string, mode: "story" | "hardcore" = "story", titleOverride?: string) => {
+    async (
+      storyId: string,
+      mode: "story" | "hardcore" = "story",
+      titleOverride?: string,
+      voiceId?: string,
+    ) => {
       if (!session) {
         throw new Error("guest_session_required");
       }
@@ -101,6 +106,11 @@ export function useLibrary(session: GuestSession | null) {
             ...guestAuthArgs(),
             storyId,
             mode,
+            // Pass the reader's pinned narrator voice when present so the
+            // backend can persist it on the save and queue TTS for the right
+            // voice. Omitted when undefined so the backend can apply its
+            // own default (voice.ash).
+            ...(voiceId ? { voiceId } : {}),
           })
         : null;
       if (remote) {
@@ -114,9 +124,10 @@ export function useLibrary(session: GuestSession | null) {
     [persistSaves, session, starterStories],
   );
 
-  const launchTutorialSave = useCallback(async () => {
-    return createSave(TUTORIAL_STORY_ID, "story");
-  }, [createSave]);
+  const launchTutorialSave = useCallback(
+    async (voiceId?: string) => createSave(TUTORIAL_STORY_ID, "story", undefined, voiceId),
+    [createSave],
+  );
 
   const continueSave = useMemo(() => {
     return saves

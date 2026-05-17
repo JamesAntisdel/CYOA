@@ -9,6 +9,21 @@ export type AmbientLoop = {
   volume: number;
 };
 
+/**
+ * Narrator TTS asset attached to a scene's media projection. Backend
+ * generates this asynchronously from the save's pinned `voiceId` via
+ * Google Cloud TTS; until the asset is `ready` the field is absent and
+ * AudioMix simply does not play a narrator layer.
+ *
+ * Shape mirrors the convex SceneMediaProjection.narrator contract — keep
+ * keys in sync with `convex/assets.ts` (`{ id; uri; voiceId }`).
+ */
+export type NarratorClip = {
+  id: string;
+  uri: string;
+  voiceId: string;
+};
+
 export type StreamingScene = {
   id: string;
   title: string;
@@ -22,6 +37,12 @@ export type StreamingScene = {
     alt: string;
     durationMs?: number;
     ambient?: AmbientLoop;
+    /**
+     * Narrator TTS clip surfaced from the convex SceneMediaProjection.
+     * When present, SceneMedia routes it into AudioMix's narrator slot
+     * (priority-1 audio layer; never ducked).
+     */
+    narrator?: NarratorClip;
   };
 };
 

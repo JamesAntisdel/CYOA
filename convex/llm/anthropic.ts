@@ -51,7 +51,13 @@ export function createAnthropicProvider(available = defaultAnthropicAvailable(),
 }
 
 function readAnthropicConfig(): LlmHttpConfig {
-  const baseUrl = readEnv("ANTHROPIC_BASE_URL") ?? "https://api.anthropic.com";
+  // Real ANTHROPIC_API_KEY beats a mock ANTHROPIC_BASE_URL override —
+  // see the same logic in vertex.ts.
+  const apiKey = readEnv("ANTHROPIC_API_KEY");
+  const envBase = readEnv("ANTHROPIC_BASE_URL");
+  const baseUrl = apiKey && envBase && isLocalProviderUrl(envBase)
+    ? "https://api.anthropic.com"
+    : envBase ?? "https://api.anthropic.com";
   return {
     apiKey: readEnv("ANTHROPIC_API_KEY"),
     baseUrl,
@@ -62,7 +68,14 @@ function readAnthropicConfig(): LlmHttpConfig {
 
 function defaultAnthropicAvailable(): boolean {
   const config = readAnthropicConfig();
-  return Boolean(config.apiKey || isLocalProviderUrl(config.baseUrl));
+  if (config.apiKey) return true;
+  // Mock URL is the *offline-only* fallback. If a real key exists for any
+  // other provider (Gemini/Vertex), let that provider win instead of
+  // returning canned `[anthropic:mock]` prose.
+  if (!isLocalProviderUrl(config.baseUrl)) return false;
+  const hasRealVertex = Boolean(readEnv("GEMINI_API_KEY") || readEnv("VERTEX_ACCESS_TOKEN"));
+  const hasRealDeepseek = Boolean(readEnv("DEEPSEEK_API_KEY"));
+  return !hasRealVertex && !hasRealDeepseek;
 }
 
 function extractAnthropicText(response: unknown): string {

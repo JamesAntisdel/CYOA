@@ -1,11 +1,14 @@
 import {
   createInitialState,
   evaluateNodeChoices,
+  llmSceneOutputSchema,
   migrateEngineState,
   resolveTerminal,
   type ChoiceEvaluation,
+  type LlmSceneProposal,
   type PlayerState,
   type Story,
+  type TerminalResult,
 } from "@cyoa/engine";
 
 import { AppError } from "./lib/errors";
@@ -23,6 +26,10 @@ export type SaveRecord = {
   currentSceneId?: string;
   turnNumber: number;
   activeTurnRequestId?: string;
+  // Narrator voice id pinned to this save (see apps/app/hooks/useNarratorVoice.ts).
+  // Drives Google Cloud TTS voice selection in convex/media/sceneMedia.ts.
+  // Optional for backwards compatibility with saves created before narration.
+  voiceId?: string;
   createdAt: number;
   updatedAt: number;
 };
@@ -84,7 +91,24 @@ export function migrateSaveIfNeeded(save: SaveRecord): SaveMigrationPlan {
 export function projectCurrentScene(save: SaveRecord, story: Story): SceneProjection {
   assertStoryMatchesSave(save, story);
   const node = story.nodes[save.currentNodeId];
-  if (!node) throw new AppError("node_not_found", save.currentNodeId);
+  if (!node) {
+    // LLM-driven scenes have synthetic node ids (`<storyId>:llm:<turn>`) that
+    // do not exist in the authored graph. Return a stable shell projection so
+    // callers can still read save metadata; the actual prose/choices come
+    // from the persisted SceneRecord via projectSceneRecord.
+    return {
+      ...(save._id === undefined ? {} : { saveId: save._id }),
+      storyId: save.storyId,
+      nodeId: save.currentNodeId,
+      turnNumber: save.turnNumber,
+      prose: "",
+      streamStatus: "pending",
+      choices: [],
+      visibleStats: visibleStatsFromState(save.state),
+      inventoryCount: save.state.inventory.length,
+      terminal: null,
+    };
+  }
   return {
     ...(save._id === undefined ? {} : { saveId: save._id }),
     storyId: save.storyId,
@@ -95,12 +119,68 @@ export function projectCurrentScene(save: SaveRecord, story: Story): SceneProjec
     choices: evaluateNodeChoices(save.state, node.choices).filter(
       (choice) => choice.visibility !== "hidden",
     ),
-    visibleStats: Object.values(save.state.attributes)
-      .filter((stat) => stat.visibility === "visible")
-      .map((stat) => ({ statId: stat.id, label: stat.label, value: stat.value })),
+    visibleStats: visibleStatsFromState(save.state),
     inventoryCount: save.state.inventory.length,
     terminal: resolveTerminal(save.state, story),
   };
+}
+
+function visibleStatsFromState(state: PlayerState): SceneProjection["visibleStats"] {
+  return Object.values(state.attributes)
+    .filter((stat) => stat.visibility === "visible")
+    .map((stat) => ({ statId: stat.id, label: stat.label, value: stat.value }));
+}
+
+/**
+ * Project an LLM-driven scene record (with its persisted proposal) onto the
+ * SceneProjection shape that the reader and HTTP layer consume. The engine
+ * has already validated the proposal — we only translate it into the
+ * authored-shape `ChoiceEvaluation[]` so the client doesn't need a parallel
+ * render path for llm-driven choices.
+ */
+export function projectLlmDrivenScene(input: {
+  save: SaveRecord;
+  proposal: LlmSceneProposal | null;
+  prose: string;
+  streamStatus: SceneProjection["streamStatus"];
+  terminal?: TerminalResult | null;
+}): SceneProjection {
+  // The reader doesn't render effects on choices — they exist only for the
+  // engine's per-turn validation. Strip them from the projection so the
+  // ChoiceEvaluation shape matches the authored contract cleanly.
+  const choices: ChoiceEvaluation[] = (input.proposal?.choices ?? []).map((choice) => ({
+    choice: {
+      id: choice.id,
+      label: choice.label,
+      // synthetic — there is no authored target node for an llm-driven choice;
+      // the engine fabricates `<storyId>:llm:<turn>` on the next turn instead.
+      targetNodeId: `${input.save.storyId}:llm:next`,
+    },
+    visibility: "visible" as const,
+  }));
+
+  return {
+    ...(input.save._id === undefined ? {} : { saveId: input.save._id }),
+    storyId: input.save.storyId,
+    nodeId: input.save.currentNodeId,
+    turnNumber: input.save.turnNumber,
+    prose: input.prose,
+    streamStatus: input.streamStatus,
+    choices,
+    visibleStats: visibleStatsFromState(input.save.state),
+    inventoryCount: input.save.state.inventory.length,
+    terminal: input.terminal ?? null,
+  };
+}
+
+/**
+ * Coerce a persisted proposal payload back into a typed proposal. Returns
+ * null when the persisted value is missing or no longer schema-valid.
+ */
+export function readPersistedProposal(value: unknown): LlmSceneProposal | null {
+  if (!value || typeof value !== "object") return null;
+  const parsed = llmSceneOutputSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
 }
 
 export function applySaveState(save: SaveRecord, state: PlayerState, now: number): SaveRecord {

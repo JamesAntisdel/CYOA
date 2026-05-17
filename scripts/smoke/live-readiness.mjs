@@ -69,12 +69,18 @@ async function checkForbiddenStream(url, timeout) {
 }
 
 async function checkAuthRoute(url, timeout) {
-  const response = await fetchWithTimeout(`${url}/api/auth/session`, {
+  // BetterAuth's documented health endpoint. Returns 200 {"ok":true}
+  // when the auth router is mounted. /api/auth/session also "works"
+  // when the router is up, but it correctly returns 404 for an
+  // unauthenticated probe (no session cookie), which is
+  // indistinguishable from "route not mounted" without inspecting
+  // headers — /api/auth/ok is the clearer signal.
+  const response = await fetchWithTimeout(`${url}/api/auth/ok`, {
     headers: { accept: "application/json" },
   }, timeout);
   return {
-    name: "betterauth-session-route",
-    ok: response.status !== 404,
+    name: "betterauth-route-mounted",
+    ok: response.ok,
     detail: `${response.status} ${response.statusText}`,
   };
 }

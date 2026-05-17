@@ -6,7 +6,7 @@ import { SceneMedia } from "../../media/SceneMedia";
 import { Stamp, Surface, Text } from "../../primitives";
 import { StatsHud } from "../../stats/StatsHud";
 import { useAppTheme } from "../../../theme";
-import { endingPanelHandlers, type ReaderLayoutProps } from "./types";
+import { endingPanelHandlers, endingVariantProps, type ReaderLayoutProps } from "./types";
 
 /**
  * GraphicNovel — canvas § 19 B. Pro variant. Full-bleed illustration plate
@@ -25,6 +25,9 @@ export function GraphicNovelLayout({
   onOpenEndings,
   onOpenLibrary,
   onReturnHome,
+  endingTier,
+  cinematicUri,
+  endingIsFirstFind,
 }: ReaderLayoutProps) {
   const { tokens } = useAppTheme();
   const showHud = hudMode !== "hidden";
@@ -88,6 +91,12 @@ export function GraphicNovelLayout({
       {projection.ending ? (
         <EndingPanel
           ending={projection.ending}
+          {...endingVariantProps({
+            projection,
+            ...(endingTier !== undefined ? { tier: endingTier } : {}),
+            ...(cinematicUri !== undefined ? { cinematicUri } : {}),
+            ...(endingIsFirstFind !== undefined ? { isFirstFind: endingIsFirstFind } : {}),
+          })}
           {...endingPanelHandlers({ onOpenEndings, onOpenLibrary, onReturnHome })}
         />
       ) : (
