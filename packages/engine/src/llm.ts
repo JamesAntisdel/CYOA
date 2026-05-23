@@ -281,6 +281,7 @@ function applyEffects(state: PlayerState, effects: LlmEffect[], diffs: EngineDif
 function applyEffect(state: PlayerState, effect: LlmEffect, diffs: EngineDiff[]): void {
   switch (effect.kind) {
     case "stat":
+      ensureLlmStatAttribute(state, effect.statId);
       applyStatDelta(state, effect.statId, effect.delta, diffs);
       return;
     case "currency": {
@@ -330,4 +331,43 @@ function clampDelta(value: number, bound: number): number {
   if (integer > bound) return bound;
   if (integer < -bound) return -bound;
   return integer;
+}
+
+/**
+ * The LLM is allowed to introduce brand-new stats (nerve, insight, etc.) on
+ * the fly. The first time we see such a stat, register it as a visible
+ * attribute with the engine-spec bounds (0–5 for non-vitality stats) and a
+ * humanised label so the HUD picks it up and the projection clamps deltas
+ * correctly on every subsequent turn.
+ *
+ * Vitality lives on `state.vitality` (top-level, bounds 0–10) and is handled
+ * directly by `applyStatDelta`; we skip it here so we don't shadow it with a
+ * spurious entry in `state.attributes`.
+ *
+ * Stats that were authored on the story (the seeded `resolve` on llm-driven
+ * stubs, for example) keep whatever visibility / bounds the story author
+ * declared — we only fill in the gap when the LLM names a stat that hasn't
+ * been seen before. This preserves the "hidden authored stats stay hidden"
+ * invariant while keeping LLM-proposed stats actually visible in the HUD.
+ */
+function ensureLlmStatAttribute(state: PlayerState, statId: string): void {
+  if (statId === "vitality") return;
+  if (state.attributes[statId]) return;
+  state.attributes[statId] = {
+    id: statId,
+    label: humanizeStatLabel(statId),
+    value: 0,
+    visibility: "visible",
+    min: 0,
+    max: 5,
+  };
+}
+
+function humanizeStatLabel(statId: string): string {
+  const normalized = statId.replace(/[_-]+/g, " ").trim();
+  if (normalized.length === 0) return statId;
+  return normalized
+    .split(/\s+/u)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(" ");
 }

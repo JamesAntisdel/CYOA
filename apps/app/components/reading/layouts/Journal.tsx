@@ -2,6 +2,7 @@ import { View } from "react-native";
 
 import { ChoiceList } from "../../choices/ChoiceList";
 import { EndingPanel } from "../../death/EndingPanel";
+import { SceneCinematic } from "../../media/SceneCinematic";
 import { Stamp, Surface, Text } from "../../primitives";
 import { StatsHud } from "../../stats/StatsHud";
 import { useAppTheme } from "../../../theme";
@@ -20,12 +21,17 @@ export function JournalLayout({
   pendingChoiceId,
   onChoose,
   hudMode,
+  reducedMotion,
   onOpenEndings,
   onOpenLibrary,
   onReturnHome,
   endingTier,
   cinematicUri,
   endingIsFirstFind,
+  // Journal intentionally renders no SceneMedia plate (canvas § 19 D —
+  // media is de-emphasized in this layout), so imagesEnabled / audioEnabled
+  // are accepted but ignored. videoEnabled still gates the lower slot.
+  videoEnabled = true,
 }: ReaderLayoutProps) {
   const { tokens } = useAppTheme();
   const showHud = hudMode !== "hidden";
@@ -92,6 +98,12 @@ export function JournalLayout({
           {streamedProse}
         </Text>
       </Surface>
+
+      <SceneCinematic
+        media={projection.scene.media}
+        reducedMotion={reducedMotion}
+        videoEnabled={videoEnabled}
+      />
 
       {showHud ? (
         <View style={{ gap: tokens.spacing.xs }}>

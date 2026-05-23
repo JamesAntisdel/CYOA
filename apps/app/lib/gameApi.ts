@@ -48,7 +48,23 @@ export type RemoteScene = {
   streamStatus: "pending" | "streaming" | "complete" | "failed" | "blocked";
   choices: RemoteChoice[];
   visibleStats: Array<{ statId: string; label: string; value: number }>;
+  /**
+   * Top-level vitality value from save.state.vitality (0–10). The HUD now
+   * reads this directly so vitality doesn't get clamped to the 5-pip attribute
+   * ceiling and works even when `visibleStats` is empty (the LLM hasn't
+   * introduced any visible attribute stats yet).
+   *
+   * Optional for backwards compatibility with older server projections that
+   * don't yet include the field.
+   */
+  vitality?: number;
   inventoryCount: number;
+  /**
+   * Full inventory items pulled from save.state.inventory. Replaces the
+   * fabricated dummy-label list the client used to build off `inventoryCount`.
+   * Optional for the same backwards-compat reason as `vitality`.
+   */
+  inventory?: Array<{ id: string; label: string }>;
   terminal?: { endingId: string; kind: "success" | "death" | "safe" | "other" } | null;
 };
 
@@ -146,6 +162,20 @@ export type RemoteSceneMedia = {
     uri: string;
     voiceId: string;
   };
+  /**
+   * True when a Veo job is queued/generating in parallel with the image
+   * plate. The image is already showing; the UI uses this to display a
+   * "video on the way" pip during Veo's 30-90s tail.
+   */
+  videoPending?: boolean;
+  /**
+   * Ready image URI for the scene. Surfaced independently of the legacy
+   * `uri` so the split UI can anchor the top plate even when video is
+   * the ranked primary asset.
+   */
+  imageUri?: string;
+  /** Ready video URI for the scene. */
+  videoUri?: string;
 };
 
 export async function getRemoteSceneMedia(input: {
@@ -192,6 +222,9 @@ export async function streamRemoteScene(input: {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(input),
+      // Send Cloudflare Access session cookie on cross-origin requests
+      // when the tunnel is gated by Access. No-op when running locally.
+      credentials: "include",
     });
     if (!response.ok || !response.body) return false;
     const reader = response.body.getReader();
@@ -388,6 +421,9 @@ async function callConvexHttp<T = unknown>(
       // hold up the next poll behind keep-alive.
       cache: "no-store",
       keepalive: false,
+      // Send Cloudflare Access session cookie on cross-origin requests
+      // when the tunnel is gated by Access. No-op when running locally.
+      credentials: "include",
     });
     console.log(`[gameApi] ${kind} ${path} -> ${res.status} in ${Date.now() - t0}ms`);
     if (!res.ok) {

@@ -172,23 +172,40 @@ export const createSave = mutationGeneric({
     const sceneId = await ctx.db.insert("scenes", cleanDoc(initialSceneRecord));
     await ctx.db.patch(newSaveId, { currentSceneId: sceneId });
 
-    // Queue Pro media for the opening scene. Use the node seed or title
-    // as the prompt — no prose has streamed yet. Fire-and-forget via the
-    // shared helper; image/video failures must never block the save.
-    const openingNode = story.nodes[save.currentNodeId];
+    // Queue Pro media for the opening scene — AUTHORED MODE ONLY.
+    //
+    // For LLM-driven stories, completeSceneStream fires moments after this
+    // mutation returns (SSE stream → completion mutation) and queues image
+    // + video + narration with the REAL streamed prose. If we ALSO queue
+    // here with the static seed/title prompt, every asset is queued twice:
+    //
+    //   1. createSave queue   → runs immediately. For Veo this burns one
+    //                            of the 2 RPM quota slots and usually 429s.
+    //                            Asset row left at status="failed".
+    //   2. completeSceneStream → re-queues video; the "skip if non-failed
+    //                            exists" guard misses because the only
+    //                            existing row IS failed → 2nd 429 burns
+    //                            the OTHER quota slot.
+    //
+    // Result: 2x the API spend per llm-driven scene and zero Veo videos
+    // ever lands. Skip the createSave queue entirely for llm-driven; the
+    // stream's completion mutation has the better prose anyway.
+    const openingNode = story.nodes[story.startNodeId] ?? story.nodes[save.currentNodeId];
     const openingProse = openingNode?.seed ?? openingNode?.title ?? story.title ?? "";
     const openingPrompt = (openingProse || "scene").slice(0, 480);
     try {
-      await queueSceneMediaForSave(ctx, {
-        accountId: args.accountId,
-        saveId: newSaveId,
-        sceneId,
-        nodeId: save.currentNodeId,
-        prompt: openingPrompt,
-        prose: openingProse,
-        voiceId,
-        alt: `Opening illustration for ${save.currentNodeId}`,
-      });
+      if (storyMode !== "llm-driven") {
+        await queueSceneMediaForSave(ctx, {
+          accountId: args.accountId,
+          saveId: newSaveId,
+          sceneId,
+          nodeId: save.currentNodeId,
+          prompt: openingPrompt,
+          prose: openingProse,
+          voiceId,
+          alt: `Opening illustration for ${save.currentNodeId}`,
+        });
+      }
     } catch {
       // non-fatal — Pro media is a tier, the save itself is the contract
     }
@@ -591,13 +608,27 @@ export const completeSceneStream = mutationGeneric({
     // against the same saveId in parallel. Both end up calling this mutation,
     // and without this guard each one queues a fresh Imagen + Veo job —
     // doubling spend and burning through Veo's tight 2-RPM preview quota.
-    // If the scene is already terminal (complete/blocked/dead), no-op.
+    //
+    // Two-phase guard:
+    //   (a) Already terminal (complete/blocked) → no-op.
+    //   (b) Another concurrent caller has claimed this scene (streaming) →
+    //       no-op. We mark `streamStatus: "streaming"` at the top of this
+    //       function so the FIRST caller wins atomically (Convex mutations
+    //       are transactional per document), and the SECOND sees the lock.
     {
       const existingScene = await ctx.db.get(save.currentSceneId as any);
       const existingStatus = (existingScene as { streamStatus?: string } | null)?.streamStatus;
-      if (existingStatus === "complete" || existingStatus === "blocked") {
+      if (
+        existingStatus === "complete" ||
+        existingStatus === "blocked" ||
+        existingStatus === "streaming"
+      ) {
         return { ok: true, deduped: true } as const;
       }
+      // Claim the lock for this caller. Subsequent concurrent calls will
+      // see "streaming" and bail above. The completion code below then
+      // patches status to "complete" / "blocked" / "failed" as appropriate.
+      await ctx.db.patch(save.currentSceneId as any, { streamStatus: "streaming" });
     }
 
     // Safety gates run before persistence. Spec §10: prose and LLM-proposed

@@ -43,7 +43,23 @@ export type SceneProjection = {
   streamStatus: "pending" | "streaming" | "complete" | "failed" | "blocked";
   choices: ChoiceEvaluation[];
   visibleStats: Array<{ statId: string; label: string; value: number }>;
+  /**
+   * Top-level vitality value pulled off `state.vitality`. The HUD reads this
+   * directly rather than searching `visibleStats` so vitality survives the
+   * "no attributes were declared visible" case (every llm-driven stub) and
+   * keeps its 0–10 bound — vitality is not clamped to the 5-pip ceiling that
+   * the visible attribute stats use.
+   */
+  vitality: number;
   inventoryCount: number;
+  /**
+   * Full inventory items (id + label). Bug fix: previously only
+   * `inventoryCount` was sent, so the client fabricated dummy labels and
+   * the LLM-proposed item names (e.g. "Black ledger") never reached the HUD.
+   * The description is intentionally omitted from the projection — it's only
+   * useful inside the LLM prompt's player-state summary.
+   */
+  inventory: Array<{ id: string; label: string }>;
   terminal: ReturnType<typeof resolveTerminal>;
 };
 
@@ -105,7 +121,9 @@ export function projectCurrentScene(save: SaveRecord, story: Story): SceneProjec
       streamStatus: "pending",
       choices: [],
       visibleStats: visibleStatsFromState(save.state),
+      vitality: save.state.vitality,
       inventoryCount: save.state.inventory.length,
+      inventory: inventoryFromState(save.state),
       terminal: null,
     };
   }
@@ -120,7 +138,9 @@ export function projectCurrentScene(save: SaveRecord, story: Story): SceneProjec
       (choice) => choice.visibility !== "hidden",
     ),
     visibleStats: visibleStatsFromState(save.state),
+    vitality: save.state.vitality,
     inventoryCount: save.state.inventory.length,
+    inventory: inventoryFromState(save.state),
     terminal: resolveTerminal(save.state, story),
   };
 }
@@ -129,6 +149,10 @@ function visibleStatsFromState(state: PlayerState): SceneProjection["visibleStat
   return Object.values(state.attributes)
     .filter((stat) => stat.visibility === "visible")
     .map((stat) => ({ statId: stat.id, label: stat.label, value: stat.value }));
+}
+
+function inventoryFromState(state: PlayerState): SceneProjection["inventory"] {
+  return state.inventory.map((item) => ({ id: item.id, label: item.label }));
 }
 
 /**
@@ -168,7 +192,9 @@ export function projectLlmDrivenScene(input: {
     streamStatus: input.streamStatus,
     choices,
     visibleStats: visibleStatsFromState(input.save.state),
+    vitality: input.save.state.vitality,
     inventoryCount: input.save.state.inventory.length,
+    inventory: inventoryFromState(input.save.state),
     terminal: input.terminal ?? null,
   };
 }

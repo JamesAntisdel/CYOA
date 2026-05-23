@@ -441,7 +441,6 @@ function projectRemoteScene(
   const terminal = scene.terminal;
   const ending = terminal ? story.endings[terminal.endingId] : null;
   const coverSource = getStoryCoverSource(scene.storyId);
-  const inventoryCount = Math.max(0, scene.inventoryCount);
 
   const tone = storyToneForStoryId(scene.storyId);
   return {
@@ -471,14 +470,27 @@ function projectRemoteScene(
         ...(choice.lockedHint ? { hint: choice.lockedHint } : {}),
       })),
     stats: {
-      vitality: statValue(scene.visibleStats, ["vitality"], 5),
-      nerve: statValue(scene.visibleStats, ["nerve", "resolve"], 0),
-      insight: statValue(scene.visibleStats, ["insight"], 0),
+      // Vitality has bounds 0–10 in the engine; clamp here to the same window
+      // so a value of 10 doesn't get truncated to 5. Falls back to the legacy
+      // visibleStats lookup for older server projections that haven't shipped
+      // the dedicated `vitality` field yet.
+      vitality: clampStat(
+        scene.vitality ?? findVisibleStat(scene.visibleStats, ["vitality"]) ?? 10,
+        0,
+        10,
+      ),
+      // nerve/insight are LLM-introduced visible attributes — the engine now
+      // registers them as visible the first time the LLM mentions them, so
+      // they appear in `visibleStats`. We deliberately do NOT alias `resolve`
+      // here: aliasing made the initial local-engine projection show
+      // `nerve = resolve.value = 1` and then the remote projection showed
+      // `nerve = 0` (resolve is hidden), giving the "drops by 1" startup
+      // glitch. Sourcing from the actual `nerve` / `insight` stat keeps both
+      // projections aligned on a fresh save (both 0).
+      nerve: clampStat(findVisibleStat(scene.visibleStats, ["nerve"]) ?? 0, 0, 5),
+      insight: clampStat(findVisibleStat(scene.visibleStats, ["insight"]) ?? 0, 0, 5),
     },
-    inventory: Array.from({ length: inventoryCount }, (_, index) => ({
-      id: `item-${index + 1}`,
-      label: inventoryCount === 1 ? "1 item" : `Item ${index + 1}`,
-    })),
+    inventory: remoteInventoryItems(scene),
     ...(terminal && ending
       ? {
           ending: {
@@ -494,13 +506,31 @@ function projectRemoteScene(
   };
 }
 
-function statValue(
+function findVisibleStat(
   stats: RemoteScene["visibleStats"],
   ids: string[],
-  fallback: number,
-): number {
+): number | undefined {
   const match = stats.find((stat) => ids.includes(stat.statId) || ids.includes(stat.label.toLowerCase()));
-  return Math.min(5, match?.value ?? fallback);
+  return match?.value;
+}
+
+function clampStat(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function remoteInventoryItems(scene: RemoteScene): ReaderInventoryItem[] {
+  // Prefer the new `inventory` field — it carries the LLM-proposed labels
+  // ("Black ledger", etc.) verbatim. Fall back to the legacy `inventoryCount`
+  // dummy list for old projections so the HUD doesn't go blank during a
+  // mixed-version rollout.
+  if (Array.isArray(scene.inventory) && scene.inventory.length > 0) {
+    return scene.inventory.map((item) => ({ id: item.id, label: item.label }));
+  }
+  const count = Math.max(0, scene.inventoryCount);
+  return Array.from({ length: count }, (_, index) => ({
+    id: `item-${index + 1}`,
+    label: count === 1 ? "1 item" : `Item ${index + 1}`,
+  }));
 }
 
 function projectEngineState(
@@ -548,10 +578,18 @@ function projectEngineState(
       },
     },
     choices,
+    // Source stats the same way `projectRemoteScene` does so the very first
+    // paint (driven by createInitialState) and the first remote refresh
+    // agree. Previously vitality was clamped to 5 (now uses the engine's
+    // 0–10 window) and nerve aliased the hidden `resolve` attribute, which
+    // started life at 1 in the llm-driven stubs — the next render dropped it
+    // to 0 once the empty remote `visibleStats` came in. Reading
+    // `state.attributes.nerve` / `.insight` instead keeps both renders at 0
+    // until the LLM actually proposes a delta.
     stats: {
-      vitality: Math.min(5, state.vitality),
-      nerve: Math.min(5, state.attributes.resolve?.value ?? 0),
-      insight: Math.min(5, state.currency),
+      vitality: clampStat(state.vitality, 0, 10),
+      nerve: clampStat(state.attributes.nerve?.value ?? 0, 0, 5),
+      insight: clampStat(state.attributes.insight?.value ?? 0, 0, 5),
     },
     inventory: state.inventory.map((item) => ({ id: item.id, label: item.label })),
     ...(terminal && ending

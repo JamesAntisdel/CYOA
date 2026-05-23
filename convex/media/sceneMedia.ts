@@ -497,8 +497,17 @@ export const queueSceneNarration = internalMutationGeneric({
     // No TTS key configured? Skip the queue cleanly so we don't pollute the
     // assets table with rows we know cannot resolve. Image asset (queued
     // separately) remains the visual contract.
-    if (!process.env.GEMINI_API_KEY) {
-      console.log("[sceneMedia] queueSceneNarration skipped: no GEMINI_API_KEY");
+    //
+    // Cloud TTS lives at texttospeech.googleapis.com and AI Studio's
+    // Gemini API keys are scoped only to generativelanguage.googleapis.com —
+    // they CANNOT call Cloud TTS even with API restrictions opened. A
+    // separate Cloud Console key (with Cloud Text-to-Speech API enabled)
+    // is required. GOOGLE_CLOUD_TTS_API_KEY takes precedence; falls back to
+    // GEMINI_API_KEY for back-compat (it will 403 with AI Studio keys but
+    // works if you generated the GEMINI key from Cloud Console).
+    const ttsKey = process.env.GOOGLE_CLOUD_TTS_API_KEY ?? process.env.GEMINI_API_KEY;
+    if (!ttsKey) {
+      console.log("[sceneMedia] queueSceneNarration skipped: no TTS api key");
       return { queued: false, reason: "tts_no_api_key" } as const;
     }
 
@@ -559,7 +568,7 @@ export const runNarrationJob = actionGeneric({
       { assetId: args.assetId, jobId: `tts_${startedAt}`, at: startedAt },
     );
 
-    const apiKey = process.env.GEMINI_API_KEY;
+    const apiKey = process.env.GOOGLE_CLOUD_TTS_API_KEY ?? process.env.GEMINI_API_KEY;
     if (!apiKey) {
       console.warn(`[sceneMedia] TTS failed asset=${args.assetId} error=tts_no_api_key`);
       await ctx.runMutation(
@@ -735,22 +744,28 @@ export async function queueSceneMediaForSave(
   } catch {
     // non-fatal — Veo failure leaves MediaPlate at Image-ready (reduced-motion fallback)
   }
-  try {
-    const prose = args.prose ?? args.prompt;
-    await ctx.runMutation(
-      ("media/sceneMedia:queueSceneNarration" as unknown) as any,
-      {
-        accountId: args.accountId,
-        saveId: args.saveId,
-        sceneId: args.sceneId,
-        ...(args.nodeId ? { nodeId: args.nodeId } : {}),
-        prose,
-        ...(args.voiceId ? { voiceId: args.voiceId } : {}),
-        alt: args.alt ?? `Scene narration for ${args.nodeId ?? "scene"}`,
-      },
-    );
-  } catch {
-    // non-fatal — narration is a Pro layer; silence still leaves the read intact
+  // Only queue narration when the caller explicitly provided prose. We
+  // refuse to fall back to the (truncated, visual-shaped) `prompt` here
+  // because TTS would read prompt-truncation garbage. LLM-driven openings
+  // pass undefined on purpose — their narration is queued later in
+  // completeSceneStream once the stream finishes.
+  if (typeof args.prose === "string" && args.prose.trim().length > 0) {
+    try {
+      await ctx.runMutation(
+        ("media/sceneMedia:queueSceneNarration" as unknown) as any,
+        {
+          accountId: args.accountId,
+          saveId: args.saveId,
+          sceneId: args.sceneId,
+          ...(args.nodeId ? { nodeId: args.nodeId } : {}),
+          prose: args.prose,
+          ...(args.voiceId ? { voiceId: args.voiceId } : {}),
+          alt: args.alt ?? `Scene narration for ${args.nodeId ?? "scene"}`,
+        },
+      );
+    } catch {
+      // non-fatal — narration is a Pro layer; silence still leaves the read intact
+    }
   }
 }
 

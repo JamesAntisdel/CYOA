@@ -2,6 +2,7 @@ import { View } from "react-native";
 
 import { ChoiceList } from "../../choices/ChoiceList";
 import { EndingPanel } from "../../death/EndingPanel";
+import { SceneCinematic } from "../../media/SceneCinematic";
 import { SceneMedia } from "../../media/SceneMedia";
 import { Divider, Stamp, Surface, Text } from "../../primitives";
 import { StatsHud } from "../../stats/StatsHud";
@@ -28,6 +29,9 @@ export function BookLayout({
   endingTier,
   cinematicUri,
   endingIsFirstFind,
+  imagesEnabled = true,
+  audioEnabled = true,
+  videoEnabled = true,
 }: ReaderLayoutProps) {
   const { tokens } = useAppTheme();
   const showHud = hudMode !== "hidden";
@@ -40,7 +44,13 @@ export function BookLayout({
         <Text muted>{projection.scene.title}</Text>
       </View>
 
-      <SceneMedia media={projection.scene.media} reducedMotion={reducedMotion} />
+      <SceneMedia
+        media={projection.scene.media}
+        reducedMotion={reducedMotion}
+        sceneId={projection.scene.id}
+        imagesEnabled={imagesEnabled}
+        audioEnabled={audioEnabled}
+      />
 
       <Surface padded style={{ gap: tokens.spacing.lg }}>
         <Text variant="body" accessibilityLiveRegion={isStreaming ? "polite" : "none"}>
@@ -57,6 +67,12 @@ export function BookLayout({
           </>
         ) : null}
       </Surface>
+
+      <SceneCinematic
+        media={projection.scene.media}
+        reducedMotion={reducedMotion}
+        videoEnabled={videoEnabled}
+      />
 
       {projection.ending ? (
         <EndingPanel

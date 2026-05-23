@@ -2,6 +2,7 @@ import { View } from "react-native";
 
 import { ChoiceList } from "../../choices/ChoiceList";
 import { EndingPanel } from "../../death/EndingPanel";
+import { SceneCinematic } from "../../media/SceneCinematic";
 import { SceneMedia } from "../../media/SceneMedia";
 import { Surface, Text } from "../../primitives";
 import { StatsHud } from "../../stats/StatsHud";
@@ -27,6 +28,9 @@ export function MobileLayout({
   endingTier,
   cinematicUri,
   endingIsFirstFind,
+  imagesEnabled = true,
+  audioEnabled = true,
+  videoEnabled = true,
 }: ReaderLayoutProps) {
   const { tokens } = useAppTheme();
   const showHud = hudMode !== "hidden";
@@ -67,7 +71,13 @@ export function MobileLayout({
         </View>
       </View>
 
-      <SceneMedia media={projection.scene.media} reducedMotion={reducedMotion} />
+      <SceneMedia
+        media={projection.scene.media}
+        reducedMotion={reducedMotion}
+        sceneId={projection.scene.id}
+        imagesEnabled={imagesEnabled}
+        audioEnabled={audioEnabled}
+      />
 
       <Surface padded style={{ gap: tokens.spacing.sm }}>
         <Text
@@ -80,6 +90,12 @@ export function MobileLayout({
           {streamedProse}
         </Text>
       </Surface>
+
+      <SceneCinematic
+        media={projection.scene.media}
+        reducedMotion={reducedMotion}
+        videoEnabled={videoEnabled}
+      />
 
       {projection.ending ? (
         <EndingPanel

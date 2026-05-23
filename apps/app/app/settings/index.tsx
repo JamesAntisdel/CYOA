@@ -132,6 +132,39 @@ export default function SettingsRoute() {
                 onSelect={(muted) => updateSettings({ muted })}
               />
 
+              <SettingGroup
+                label="Show illustrations"
+                helpText="Turn off if data is limited."
+                options={[
+                  { label: "On", value: true },
+                  { label: "Off", value: false },
+                ]}
+                selected={settings.imagesEnabled}
+                onSelect={(imagesEnabled) => updateSettings({ imagesEnabled })}
+              />
+
+              <SettingGroup
+                label="Play narration & ambient audio"
+                helpText="Mutes the narrator voice and any ambient soundscape."
+                options={[
+                  { label: "On", value: true },
+                  { label: "Off", value: false },
+                ]}
+                selected={settings.audioEnabled}
+                onSelect={(audioEnabled) => updateSettings({ audioEnabled })}
+              />
+
+              <SettingGroup
+                label="Play scene cinematics"
+                helpText="Skip Veo videos. Image still shows."
+                options={[
+                  { label: "On", value: true },
+                  { label: "Off", value: false },
+                ]}
+                selected={settings.videoEnabled}
+                onSelect={(videoEnabled) => updateSettings({ videoEnabled })}
+              />
+
               <Divider />
 
               <View style={{ gap: tokens.spacing.sm }}>
@@ -225,11 +258,18 @@ export default function SettingsRoute() {
 
 function SettingGroup<T extends string | boolean>({
   label,
+  helpText,
   options,
   selected,
   onSelect,
 }: {
   label: string;
+  /**
+   * Optional one-line help text rendered below the row of choice buttons.
+   * Used by the media-gate toggles (illustrations / audio / video) to
+   * explain what each switch does without growing a separate primitive.
+   */
+  helpText?: string;
   options: Array<Option<T>>;
   selected: T;
   onSelect: (value: T) => void;
@@ -254,6 +294,11 @@ function SettingGroup<T extends string | boolean>({
           );
         })}
       </View>
+      {helpText ? (
+        <Text muted variant="bodySmall">
+          {helpText}
+        </Text>
+      ) : null}
     </View>
   );
 }

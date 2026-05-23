@@ -8,6 +8,13 @@
  * `AmbientSoundscape` (no new dependencies). On native platforms the
  * component is a no-op; SceneMedia continues to render the visual layers
  * regardless.
+ *
+ * Narrator is the one exception: its HTMLAudio element is owned by
+ * `useNarratorPlayback` (mounted in SceneMedia) so the visible chrome can
+ * render a scrub bar / current-time readout. AudioMix still receives the
+ * narrator source as input so the ducking schedule applied to the four
+ * lower layers (veo/music/ambient/sfx) reflects whether the narrator is
+ * speaking — only the actual element creation lives elsewhere.
  */
 import { useEffect, useRef } from "react";
 import { Platform } from "react-native";
@@ -26,15 +33,11 @@ type AudioMixProps = AudioMixInput;
 export function AudioMix(props: AudioMixProps): null {
   const mix = useAudioMix(props);
 
-  // Narrator (priority 1). Narrator audio typically doesn't loop —
-  // it's per-paragraph TTS.
-  useLayerPlayback({
-    uri: props.narrator?.uri,
-    id: props.narrator?.id,
-    loop: props.narrator?.loop ?? false,
-    volume: mix.narrator.volume,
-    active: mix.narrator.active,
-  });
+  // Narrator (priority 1) playback is intentionally NOT mounted here —
+  // see `useNarratorPlayback` (called from SceneMedia). The mix result
+  // for `mix.narrator` still drives the ducking schedule for the lower
+  // layers below; it's just not bound to an HTMLAudio element in this
+  // component anymore.
 
   // Veo diegetic audio (priority 2). Tied to the cinematic clip — no loop.
   useLayerPlayback({
@@ -137,6 +140,11 @@ function useLayerPlayback({ active, id, loop, uri, volume }: LayerPlaybackArgs):
   }, [uri, id]);
 
   // Apply volume / active changes without recreating the element.
+  // `uri` must be in the deps so this effect re-fires after Effect 1
+  // creates a fresh Audio element on scene transitions — otherwise the
+  // new element sits paused (HTMLAudio default) because active/volume/loop
+  // are unchanged from the previous scene's playing state, and the user
+  // has to manually pause+resume to nudge it.
   useEffect(() => {
     if (Platform.OS !== "web") return;
     const audio = audioRef.current;
@@ -150,7 +158,7 @@ function useLayerPlayback({ active, id, loop, uri, volume }: LayerPlaybackArgs):
     } else {
       if (!audio.paused) audio.pause();
     }
-  }, [active, loop, volume]);
+  }, [active, loop, volume, uri]);
 }
 
 function clamp01(v: number): number {

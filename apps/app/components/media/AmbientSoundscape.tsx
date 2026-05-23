@@ -36,6 +36,13 @@ type AmbientSoundscapeProps = {
    * priority 1 (never ducked). Absent → the narrator layer stays inactive.
    */
   narrator?: NarratorClip | undefined;
+  /**
+   * User-driven pause for the narrator layer. When true the narrator
+   * source is still mounted (so HTMLAudio retains `currentTime` for a
+   * smooth resume) but its `active` flag is forced false in the ducking
+   * schedule. Defaults to false.
+   */
+  narratorPaused?: boolean;
   muted: boolean;
   reducedMotion: boolean;
   appActive: boolean;
@@ -45,6 +52,7 @@ export function AmbientSoundscape({
   appActive,
   loop,
   narrator,
+  narratorPaused = false,
   muted,
   reducedMotion,
 }: AmbientSoundscapeProps) {
@@ -53,8 +61,19 @@ export function AmbientSoundscape({
   // half-populated source — useAudioMix.computeMix treats `undefined`
   // narrator as "no narrator layer", which is the desired fallback when
   // TTS is disabled or the asset is not yet ready.
+  //
+  // Pause gate: when the user has paused narration we drop the source
+  // volume to 0. computeMix derives `active = clamped > 0`, so volume 0
+  // yields `narrator.active = false`. `useLayerPlayback` then calls
+  // `audio.pause()` on the underlying HTMLAudio element while leaving
+  // the element mounted at the same URI — HTMLAudio preserves
+  // `currentTime` across pause, so toggling back to volume 1 (active
+  // again) resumes from the same offset. We also flip the
+  // `narratorActive` ducking flag to false so the lower layers
+  // (music/ambient) rise back to full volume while paused.
+  const narratorBaseVolume = narratorPaused ? 0 : NARRATOR_BASE_VOLUME;
   const narratorSource = narrator
-    ? { id: narrator.id, uri: narrator.uri, volume: NARRATOR_BASE_VOLUME, loop: false }
+    ? { id: narrator.id, uri: narrator.uri, volume: narratorBaseVolume, loop: false }
     : undefined;
 
   // Reduced motion silences the ambient layer (historical contract: see
@@ -64,10 +83,15 @@ export function AmbientSoundscape({
   // audio one. So we strip the ambient source instead of muting the mix.
   const ambientLoop = reducedMotion ? undefined : loop;
 
+  // narratorActive controls downstream ducking. When the user has paused
+  // narration we also want music/ambient to un-duck, so flip this false
+  // in lockstep with the volume drop.
+  const narratorActive = narratorSource ? !narratorPaused : false;
+
   return (
     <AudioMix
       ambient={ambientLoop}
-      {...(narratorSource ? { narrator: narratorSource, narratorActive: true } : {})}
+      {...(narratorSource ? { narrator: narratorSource, narratorActive } : {})}
       muted={muted}
       reducedMotion={reducedMotion}
       appActive={appActive}

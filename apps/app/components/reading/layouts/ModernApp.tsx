@@ -2,6 +2,7 @@ import { useWindowDimensions, View } from "react-native";
 
 import { ChoiceList } from "../../choices/ChoiceList";
 import { EndingPanel } from "../../death/EndingPanel";
+import { SceneCinematic } from "../../media/SceneCinematic";
 import { SceneMedia } from "../../media/SceneMedia";
 import { Divider, Stamp, Surface, Text } from "../../primitives";
 import { StatsHud } from "../../stats/StatsHud";
@@ -29,6 +30,9 @@ export function ModernAppLayout({
   endingTier,
   cinematicUri,
   endingIsFirstFind,
+  imagesEnabled = true,
+  audioEnabled = true,
+  videoEnabled = true,
 }: ReaderLayoutProps) {
   const { tokens } = useAppTheme();
   const { width } = useWindowDimensions();
@@ -58,12 +62,23 @@ export function ModernAppLayout({
       <View style={{ flex: 1, gap: tokens.spacing.md, minWidth: 0 }}>
         <RailLabel>{projection.storyTitle}</RailLabel>
         <Text variant="title">{projection.scene.title}</Text>
-        <SceneMedia media={projection.scene.media} reducedMotion={reducedMotion} />
+        <SceneMedia
+          media={projection.scene.media}
+          reducedMotion={reducedMotion}
+          sceneId={projection.scene.id}
+          imagesEnabled={imagesEnabled}
+          audioEnabled={audioEnabled}
+        />
         <Surface padded style={{ gap: tokens.spacing.md }}>
           <Text accessibilityLiveRegion={isStreaming ? "polite" : "none"} variant="body">
             {streamedProse}
           </Text>
         </Surface>
+        <SceneCinematic
+          media={projection.scene.media}
+          reducedMotion={reducedMotion}
+          videoEnabled={videoEnabled}
+        />
         {projection.ending ? (
           <EndingPanel
             ending={projection.ending}

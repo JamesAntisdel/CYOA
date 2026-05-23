@@ -26,6 +26,24 @@ export type ReaderSettings = {
   layout: ReaderLayoutVariant;
   muted: boolean;
   reduceMotion: boolean;
+  /**
+   * Show illustrations (image plate). Default true. Independent of the
+   * server-side asset queue — flipping false just suppresses the visual
+   * plate so toggling back on works without re-running the LLM.
+   */
+  imagesEnabled: boolean;
+  /**
+   * Play narrator TTS + ambient soundscape. Default true. When false,
+   * neither the narrator audio element nor the AmbientSoundscape are
+   * mounted, and the NarratorControl chrome is suppressed.
+   */
+  audioEnabled: boolean;
+  /**
+   * Play Veo cinematic in the lower slot. Default true. When false,
+   * SceneCinematic short-circuits to null regardless of asset readiness.
+   * Independent of the `reduceMotion` gate.
+   */
+  videoEnabled: boolean;
 };
 
 export const READER_SETTINGS_KEY = "cyoa.readerSettings.v1";
@@ -39,6 +57,9 @@ const defaultSettings: ReaderSettings = {
   layout: "book",
   muted: false,
   reduceMotion: false,
+  imagesEnabled: true,
+  audioEnabled: true,
+  videoEnabled: true,
 };
 
 export function useReaderSettings() {
@@ -87,6 +108,11 @@ function readSettings(): ReaderSettings {
       layout: isLayoutVariant(parsed.layout) ? parsed.layout : defaultSettings.layout,
       muted: parsed.muted === true,
       reduceMotion: parsed.reduceMotion === true,
+      // New media gates default to true, so a missing field reads as
+      // "enabled". Only an explicit `=== false` flips the gate off.
+      imagesEnabled: parsed.imagesEnabled !== false,
+      audioEnabled: parsed.audioEnabled !== false,
+      videoEnabled: parsed.videoEnabled !== false,
     };
   } catch {
     return defaultSettings;

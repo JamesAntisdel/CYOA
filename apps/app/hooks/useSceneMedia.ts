@@ -11,6 +11,11 @@ const MAX_QUICK_POLLS = 12;
 // First N polls stay at FAST_POLL_MS even on null; beyond that we
 // exponentially back off until reaching SLOW_POLL_MS.
 const QUICK_NULL_POLLS = 4;
+// Image is ready but narrator hasn't arrived — keep polling fast for up
+// to this many ticks (~60s at 1.5s/poll) before assuming TTS silently
+// failed and falling back to SLOW_POLL_MS. Chirp 3 HD typically takes
+// 10–15s on full scenes, so 40 polls gives a comfortable headroom.
+const MAX_NARRATOR_WAIT_POLLS = 40;
 
 // Local-only demo / seed saves never have remote media. Duplicates the
 // predicate from useTurn.ts to avoid an extra import surface.
@@ -44,6 +49,11 @@ function isLocalDemoSave(saveId: string): boolean {
 export function useSceneMedia(
   saveId: string | undefined,
   auth?: { accountId: string; guestTokenHash?: string | undefined },
+  // Current scene id. When this changes mid-save (user picked a choice and
+  // advanced), the polling state resets so the new scene's queued media
+  // is picked up within FAST_POLL_MS instead of waiting up to SLOW_POLL_MS
+  // for the previous scene's settled backoff to expire.
+  sceneId?: string,
 ): RemoteSceneMedia | null {
   const [media, setMedia] = useState<RemoteSceneMedia | null>(null);
 
@@ -75,6 +85,11 @@ export function useSceneMedia(
     let pollCount = 0;
     let sawStatus = false;
     let warnedExhausted = false;
+    // Tracks how many polls we've spent waiting on a narrator URL after
+    // the image was already ready. Caps the fast-poll loop so a silent
+    // TTS failure doesn't hammer Convex forever.
+    let narratorWaitPolls = 0;
+    let warnedNarratorWaitExhausted = false;
 
     const nextDelay = (next: RemoteSceneMedia | null): number => {
       if (next) sawStatus = true;
@@ -83,6 +98,31 @@ export function useSceneMedia(
         nullStreak = 0;
         return FAST_POLL_MS;
       }
+      // Narrator (TTS) generates AFTER the SSE stream completes, so its
+      // arrival often lags the image by 10-15s with premium voices. Keep
+      // polling fast while the visual is ready but the narrator hasn't
+      // landed yet — otherwise we'd fall back to SLOW_POLL_MS and the
+      // user waits up to a minute for audio to start. Cap at
+      // MAX_NARRATOR_WAIT_POLLS so a silent TTS failure (key revoked,
+      // API blocked, etc.) doesn't pin polling fast forever.
+      if (next && next.status === "ready" && !next.narrator) {
+        nullStreak = 0;
+        narratorWaitPolls += 1;
+        if (narratorWaitPolls > MAX_NARRATOR_WAIT_POLLS) {
+          if (!warnedNarratorWaitExhausted) {
+            warnedNarratorWaitExhausted = true;
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[useSceneMedia] narrator wait exhausted after ${MAX_NARRATOR_WAIT_POLLS} fast polls for save ${saveId}; backing off`,
+            );
+          }
+          return SLOW_POLL_MS;
+        }
+        return FAST_POLL_MS;
+      }
+      // Reset narrator-wait counter whenever narrator arrives or status
+      // transitions away from ready (e.g. a new scene starts queued).
+      narratorWaitPolls = 0;
       if (!next) {
         nullStreak += 1;
         if (pollCount >= MAX_QUICK_POLLS && !sawStatus) {
@@ -99,7 +139,8 @@ export function useSceneMedia(
         const backoff = FAST_POLL_MS * 2 ** (nullStreak - QUICK_NULL_POLLS);
         return Math.min(backoff, SLOW_POLL_MS);
       }
-      // Terminal state (ready / blocked / failed): keep subscribed but slow.
+      // Terminal state (ready / blocked / failed) AND narrator settled:
+      // keep subscribed but slow.
       nullStreak = 0;
       return SLOW_POLL_MS;
     };
@@ -126,7 +167,7 @@ export function useSceneMedia(
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [saveId, auth?.accountId, auth?.guestTokenHash]);
+  }, [saveId, auth?.accountId, auth?.guestTokenHash, sceneId]);
 
   return media;
 }

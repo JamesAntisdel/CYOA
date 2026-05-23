@@ -43,6 +43,10 @@ services:
     ports:
       - "3210:3210"
       - "3211:3211"
+      # Dashboard reached via the convex-dashboard sidecar
+      # (host 6790/6791 → bridge 16790/16791 → loopback 6790/6791)
+      - "6790:16790"
+      - "6791:16791"
     environment:
       PROVIDER_MOCKS_URL: http://provider-mocks:4010
       # Opt out of Convex's self-hosted telemetry beacon.
@@ -106,6 +110,31 @@ services:
   #      EXPO_PUBLIC_CONVEX_SITE_URL in .env to the public hostnames.
   #   4. docker compose --profile convex --profile tunnel \
   #        up -d --force-recreate app convex cloudflared
+  # Bridges the Convex local dashboard from the container's loopback
+  # interface to published ports. Convex binds 127.0.0.1:6790 (admin API
+  # the dashboard SPA calls) and 127.0.0.1:6791 (dashboard static SPA)
+  # by design, so Docker can't publish them directly — these sidecars
+  # share the convex netns and re-expose on 0.0.0.0.
+  convex-dashboard:
+    image: alpine/socat:1.8.0.0
+    profiles:
+      - convex
+    network_mode: "service:convex"
+    depends_on:
+      - convex
+    restart: unless-stopped
+    command: TCP-LISTEN:16791,fork,reuseaddr TCP:127.0.0.1:6791
+
+  convex-dashboard-api:
+    image: alpine/socat:1.8.0.0
+    profiles:
+      - convex
+    network_mode: "service:convex"
+    depends_on:
+      - convex
+    restart: unless-stopped
+    command: TCP-LISTEN:16790,fork,reuseaddr TCP:127.0.0.1:6790
+
   cloudflared:
     image: cloudflare/cloudflared:2025.9.0
     profiles:

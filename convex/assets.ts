@@ -52,12 +52,28 @@ export type SceneMediaProjection = {
   alt: string;
   durationMs?: number | undefined;
   ambient?: AmbientLoopProjection | undefined;
+  /**
+   * Ready image URI for the scene, surfaced independently of the
+   * (legacy) primary `uri` so the split UI can anchor the top plate
+   * even when video has been picked as the ranked primary asset.
+   */
+  imageUri?: string | undefined;
+  /**
+   * Ready video URI for the scene. Same independence rationale as
+   * `imageUri` — the lower SceneCinematic slot reads this directly.
+   */
+  videoUri?: string | undefined;
   // Optional narrator track for the scene. Generated via Google Cloud TTS
   // by convex/media/sceneMedia.ts:runNarrationJob and stored as a parallel
   // `kind: "audio"` asset. The visual (image/video) ranking ignores this
   // field — the narrator rides alongside whatever still/video the plate is
   // showing. Absent when no ready audio asset exists for the scene.
   narrator?: NarratorTrackProjection | undefined;
+  // True when a video asset for this scene is queued or generating — the
+  // image plate is already up, but Veo is still working. UI uses this to
+  // render the "video in progress" pip so users know a cinematic is on
+  // the way (Veo 3.1 lite can take 30-90s on the preview tier).
+  videoPending?: boolean | undefined;
 };
 
 export type NarratorTrackProjection = {
@@ -206,7 +222,23 @@ export function projectSceneMedia(input: {
   // Narrator track: parallel concern, not part of the visual ranking. Pick
   // the first ready google-tts audio asset (one per scene by construction).
   const narrator = pickNarratorProjection(input.assets);
+  // Surface a "video is generating" signal even when the projection's
+  // primary asset is the image (because it's ready first). The video
+  // could be queued or generating in parallel; the UI uses this to show
+  // the buffering pip during the long Veo wait.
+  const videoPending = input.assets.some(
+    (a) => a.kind === "video" && (a.status === "queued" || a.status === "generating"),
+  );
   if (!asset && !input.ambient && !narrator) return undefined;
+  // Always surface the ready image and video URIs as their own fields so
+  // the split UI (image-on-top + video-below-prose) can render each slot
+  // independently of the legacy video-over-image ranking. Without this,
+  // once Veo lands `asset.kind === "video"` and `asset.uri` becomes the
+  // video URL — leaving the image slot with no anchor on fresh mounts.
+  const readyImage = input.assets.find((a) => a.kind === "image" && a.status === "ready" && a.url.length > 0);
+  const readyVideo = input.assets.find((a) => a.kind === "video" && a.status === "ready" && a.url.length > 0);
+  const imageUri = readyImage?.url;
+  const videoUri = readyVideo?.url;
   if (!asset) {
     return {
       status: "idle",
@@ -214,6 +246,9 @@ export function projectSceneMedia(input: {
       alt: input.ambient?.label ?? "Ambient soundscape",
       ambient: input.ambient,
       ...(narrator === undefined ? {} : { narrator }),
+      ...(videoPending ? { videoPending: true } : {}),
+      ...(imageUri ? { imageUri } : {}),
+      ...(videoUri ? { videoUri } : {}),
     };
   }
   return {
@@ -224,6 +259,9 @@ export function projectSceneMedia(input: {
     ...(asset.durationMs === undefined ? {} : { durationMs: asset.durationMs }),
     ...(input.ambient === undefined ? {} : { ambient: input.ambient }),
     ...(narrator === undefined ? {} : { narrator }),
+    ...(imageUri ? { imageUri } : {}),
+    ...(videoUri ? { videoUri } : {}),
+    ...(videoPending ? { videoPending: true } : {}),
   };
 }
 

@@ -43,6 +43,12 @@ export type StreamingScene = {
      * (priority-1 audio layer; never ducked).
      */
     narrator?: NarratorClip;
+    /** True while a Veo job is queued/generating in parallel with the image. */
+    videoPending?: boolean;
+    /** Ready image URI — anchored independently of the primary `uri`. */
+    imageUri?: string;
+    /** Ready video URI — drives the cinematic slot below the prose. */
+    videoUri?: string;
   };
 };
 

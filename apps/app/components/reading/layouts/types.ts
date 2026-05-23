@@ -37,6 +37,15 @@ export type ReaderLayoutProps = {
    * lands in Wave E.
    */
   endingIsFirstFind?: boolean;
+  /**
+   * User-facing media-gate sliders (settings → "Show illustrations" etc.).
+   * Each defaults to true at the SceneMedia / SceneCinematic level, so
+   * omitting the prop preserves the previous always-on behavior. Layouts
+   * forward these straight through to the scene-media components.
+   */
+  imagesEnabled?: boolean;
+  audioEnabled?: boolean;
+  videoEnabled?: boolean;
 };
 
 type Nav = (() => void) | undefined;

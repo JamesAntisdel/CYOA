@@ -50,6 +50,10 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
     guest.session
       ? { accountId: guest.session.accountId, ...guestAuthArgs() }
       : undefined,
+    // Pass scene id so polling resets when the user advances to a new
+    // scene — otherwise we'd sit on the previous scene's settled backoff
+    // (up to 60s) and the new scene's queued media wouldn't surface.
+    projection.scene.id,
   );
   const projectionWithLiveMedia = liveMedia
     ? { ...projection, scene: { ...projection.scene, media: liveMedia } }
@@ -115,6 +119,13 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
             endingTier={endingTier}
             {...(cinematicUri ? { cinematicUri } : {})}
             endingIsFirstFind={endingIsFirstFind}
+            // Per-user media gates — see settings → "Reader preferences".
+            // Backend asset queueing is unaffected; these only suppress
+            // rendering on the client so toggling back on lights up the
+            // already-queued assets immediately.
+            imagesEnabled={settings.imagesEnabled}
+            audioEnabled={settings.audioEnabled}
+            videoEnabled={settings.videoEnabled}
           />
         )}
       </ScrollView>
