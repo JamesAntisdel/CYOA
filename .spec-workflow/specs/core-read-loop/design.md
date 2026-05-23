@@ -876,6 +876,8 @@ The "Pro media" components have a four-state upgrade pattern that production MUS
 
 Reduced-motion preference (Requirement 18.5) → stay on state 2 (image) permanently, never advance to video. Veo failure → stay on state 2 and log to operator dashboard (Requirement 27.5).
 
+**2026-05-21 refinement (commit 816437d):** the four-state pattern now spans two components rendered in two slots, not a single crossfading plate. States 1 and 2 live in `MediaPlate` above the prose. States 3 and 4 live in `SceneCinematic` below the prose. Each slot loads and animates independently per reading layout, so an Imagen ready event no longer blocks Veo buffering and a Veo failure leaves the image plate visible without a forced crossfade. Reduced-motion / Veo-failure semantics are preserved: `SceneCinematic` returns `null` and `MediaPlate` remains the only media. `useMediaPlate` state simplifies to `idle | skeleton | image`; video lifecycle is owned entirely by `SceneCinematic`.
+
 ### Source-of-Truth Hierarchy
 
 1. `design.md` (this file) — product + visual contract.

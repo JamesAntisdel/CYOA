@@ -111,10 +111,10 @@ services:
   #   4. docker compose --profile convex --profile tunnel \
   #        up -d --force-recreate app convex cloudflared
   # Bridges the Convex local dashboard from the container's loopback
-  # interface to published ports. Convex binds 127.0.0.1:6790 (admin API
-  # the dashboard SPA calls) and 127.0.0.1:6791 (dashboard static SPA)
-  # by design, so Docker can't publish them directly — these sidecars
-  # share the convex netns and re-expose on 0.0.0.0.
+  # interface to published ports. Convex binds 127.0.0.1:6790 (dashboard
+  # static SPA) and 127.0.0.1:6791 (admin API the SPA calls) by design,
+  # so Docker can't publish them directly — these sidecars share the
+  # convex netns and re-expose on 0.0.0.0.
   convex-dashboard:
     image: alpine/socat:1.8.0.0
     profiles:
@@ -123,7 +123,7 @@ services:
     depends_on:
       - convex
     restart: unless-stopped
-    command: TCP-LISTEN:16791,fork,reuseaddr TCP:127.0.0.1:6791
+    command: TCP-LISTEN:16790,fork,reuseaddr TCP:127.0.0.1:6790
 
   convex-dashboard-api:
     image: alpine/socat:1.8.0.0
@@ -133,7 +133,7 @@ services:
     depends_on:
       - convex
     restart: unless-stopped
-    command: TCP-LISTEN:16790,fork,reuseaddr TCP:127.0.0.1:6790
+    command: TCP-LISTEN:16791,fork,reuseaddr TCP:127.0.0.1:6791
 
   cloudflared:
     image: cloudflare/cloudflared:2025.9.0
