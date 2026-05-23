@@ -124,6 +124,16 @@ export default defineSchema({
     turnNumber: v.number(),
     fromNodeId: v.string(),
     choiceId: v.string(),
+    /**
+     * Reader-facing label for the chosen action. For LLM-proposed choices
+     * this is the proposal's `label` (a fixed string the engine chose
+     * from). For free-form ("Option D") turns this is the trimmed text
+     * the reader typed — surfaced through the memory window so the next
+     * scene's prompt can read "from <node> chose '<typed text>'" instead
+     * of an opaque synthetic choiceId. Optional for backwards compatibility
+     * with rows written before this field existed.
+     */
+    choiceLabel: v.optional(v.string()),
     engineDiffs: v.array(jsonValue),
     engineEvents: v.array(jsonValue),
     provider: v.union(v.literal("anthropic"), v.literal("vertex"), v.literal("deepseek"), v.literal("deterministic")),

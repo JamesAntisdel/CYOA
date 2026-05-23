@@ -210,6 +210,39 @@ export async function beginRemoteStreamingChoice(input: {
   return callConvexHttp<any>("mutation", "game:beginStreamingChoice", input as unknown as Record<string, unknown>) as any;
 }
 
+/**
+ * Sibling of `beginRemoteStreamingChoice` for the free-form ("Option D")
+ * path. Same Convex mutation under the hood, but it surfaces server error
+ * codes through a discriminated-union return so the UI can render the
+ * specific block reason (length / safety / unsupported story mode) instead
+ * of a generic "something went wrong" — the regular-choice path doesn't
+ * need that detail.
+ *
+ * Server error codes:
+ *   - `freeform_not_supported_for_story` — scripted/local-engine story
+ *   - `freeform_text_empty` / `freeform_text_too_long` — length gate
+ *   - `freeform_text_blocked` — safety classifier rejected the text
+ */
+export async function beginRemoteFreeformChoice(input: {
+  accountId: string;
+  guestTokenHash?: string;
+  saveId: string;
+  choiceId: string;
+  requestId: string;
+  userText: string;
+}): Promise<
+  | { ok: true; saveId: string; sceneId: string; scene: RemoteScene; stream: boolean }
+  | { ok: false; errorCode: string; errorMessage: string }
+  | null
+> {
+  if (!convexClient) return null;
+  return callConvexHttpWithError<{ saveId: string; sceneId: string; scene: RemoteScene; stream: boolean }>(
+    "mutation",
+    "game:beginStreamingChoice",
+    input as unknown as Record<string, unknown>,
+  );
+}
+
 export async function streamRemoteScene(input: {
   accountId: string;
   guestTokenHash?: string;
@@ -438,6 +471,73 @@ async function callConvexHttp<T = unknown>(
     if ((err as { name?: string })?.name === "AbortError") {
       // Aborted by our own timer — already logged above. Nothing else to do.
     } else {
+      console.error(`[gameApi] ${kind} ${path} threw:`, err);
+    }
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Variant of {@link callConvexHttp} that surfaces server-side error codes
+ * to the caller via a discriminated union instead of collapsing them to
+ * `null`. Used for the free-form choice path where the UI needs to render
+ * a specific reason for a block; regular calls don't need this detail.
+ *
+ * The error-message string from Convex is included so the UI can quote it
+ * directly when it carries reader-safe copy. Network / abort / non-2xx
+ * failures still return `null` — they aren't server "errors" in the
+ * mutation-handler sense, just transport problems with no useful code.
+ */
+async function callConvexHttpWithError<T = unknown>(
+  kind: "mutation" | "query" | "action",
+  path: string,
+  args: Record<string, unknown>,
+  timeoutMs = 5000,
+): Promise<
+  | ({ ok: true } & T)
+  | { ok: false; errorCode: string; errorMessage: string }
+  | null
+> {
+  const baseUrl = process.env.EXPO_PUBLIC_CONVEX_URL;
+  if (!baseUrl) {
+    console.warn("[gameApi] baseUrl is empty — process.env.EXPO_PUBLIC_CONVEX_URL not inlined");
+    return null;
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${baseUrl.replace(/\/+$/, "")}/api/${kind}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path, args: args ?? {}, format: "json" }),
+      signal: controller.signal,
+      cache: "no-store",
+      keepalive: false,
+      credentials: "include",
+    });
+    if (!res.ok) {
+      console.warn(`[gameApi] ${kind} ${path} HTTP ${res.status}`);
+      return null;
+    }
+    const data = (await res.json()) as {
+      status?: string;
+      value?: T;
+      errorMessage?: string;
+      errorData?: { code?: string };
+    };
+    if (data.status === "success") {
+      const value = (data.value ?? {}) as T;
+      return { ok: true, ...value };
+    }
+    // Convex packages AppError as `errorMessage` like "AppError: code". Strip
+    // the prefix so the UI gets the bare code (e.g. "freeform_text_blocked").
+    const raw = typeof data.errorMessage === "string" ? data.errorMessage : "unknown_error";
+    const errorCode = raw.replace(/^AppError:\s*/u, "");
+    return { ok: false, errorCode, errorMessage: raw };
+  } catch (err) {
+    if ((err as { name?: string })?.name !== "AbortError") {
       console.error(`[gameApi] ${kind} ${path} threw:`, err);
     }
     return null;

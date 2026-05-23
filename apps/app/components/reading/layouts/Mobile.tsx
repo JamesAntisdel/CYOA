@@ -31,6 +31,9 @@ export function MobileLayout({
   imagesEnabled = true,
   audioEnabled = true,
   videoEnabled = true,
+  onFreeformSubmit,
+  freeformPending = false,
+  freeformError = null,
 }: ReaderLayoutProps) {
   const { tokens } = useAppTheme();
   const showHud = hudMode !== "hidden";
@@ -114,6 +117,9 @@ export function MobileLayout({
           disabled={isStreaming}
           onChoose={onChoose}
           pendingChoiceId={pendingChoiceId}
+          {...(onFreeformSubmit ? { onFreeformSubmit } : {})}
+          freeformPending={freeformPending}
+          freeformError={freeformError}
         />
       )}
 

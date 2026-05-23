@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  advanceLlmTurnCursor,
   applyLlmSceneToState,
   createInitialState,
   llmSceneOutputSchema,
@@ -286,5 +287,56 @@ describe("applyLlmSceneToState", () => {
     expect(dying.state.vitality).toBe(0);
     expect(dying.terminal?.kind).toBe("death");
     expect(dying.events.map((event) => event.kind)).toContain("death_triggered");
+  });
+});
+
+describe("advanceLlmTurnCursor freeform branch", () => {
+  it("advances the turn and emits choice_applied without looking up the choiceId", () => {
+    const story = llmDrivenStory();
+    const initial = createInitialState(story, "story", ctx.now, ctx.rngSeed);
+    // Seed the state to turn 1 so we can observe the increment to 2 below.
+    const opening = advanceLlmTurnCursor({
+      state: initial,
+      story,
+      priorProposal: proposal(),
+      choiceId: "torch-down",
+      ctx,
+    });
+
+    // Free-form: the reader typed their own action, so we pass a synthetic id
+    // that does NOT exist in the proposal's choices and set freeform=true.
+    const freeform = advanceLlmTurnCursor({
+      state: opening.state,
+      story,
+      priorProposal: null,
+      choiceId: "freeform:rid_xyz",
+      ctx,
+      freeform: true,
+    });
+
+    expect(freeform.state.turnNumber).toBe(opening.state.turnNumber + 1);
+    expect(freeform.state.currentNodeId).toBe(`bone-cathedral:llm:${opening.state.turnNumber + 1}`);
+    expect(freeform.appliedChoiceId).toBe("freeform:rid_xyz");
+    expect(freeform.events.map((event) => event.kind)).toContain("choice_applied");
+    // No effects applied — the synthetic id has no LLM-proposed effects.
+    expect(freeform.state.vitality).toBe(opening.state.vitality);
+  });
+
+  it("does not throw when the synthetic choiceId is missing from a prior proposal", () => {
+    const story = llmDrivenStory();
+    const initial = createInitialState(story, "story", ctx.now, ctx.rngSeed);
+    // priorProposal IS present here (we pass it through), but freeform=true
+    // tells the engine to skip the prior-proposal lookup entirely. Without
+    // the freeform flag this would throw `llm_choice_not_found:freeform:xyz`.
+    expect(() =>
+      advanceLlmTurnCursor({
+        state: initial,
+        story,
+        priorProposal: proposal(),
+        choiceId: "freeform:rid_xyz",
+        ctx,
+        freeform: true,
+      }),
+    ).not.toThrow();
   });
 });

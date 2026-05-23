@@ -46,6 +46,16 @@ export type ReaderLayoutProps = {
   imagesEnabled?: boolean;
   audioEnabled?: boolean;
   videoEnabled?: boolean;
+  /**
+   * Free-form ("Option D") affordance. When `onFreeformSubmit` is provided
+   * the layout's ChoiceList renders a 4th row that expands into a typed-
+   * action input. Layouts forward these straight through; ReaderScreen
+   * supplies them only for remote LLM-driven saves (scripted saves omit
+   * the callback entirely so the affordance never appears).
+   */
+  onFreeformSubmit?: (text: string) => void;
+  freeformPending?: boolean;
+  freeformError?: string | null;
 };
 
 type Nav = (() => void) | undefined;

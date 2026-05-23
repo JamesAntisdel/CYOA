@@ -32,6 +32,9 @@ export function JournalLayout({
   // media is de-emphasized in this layout), so imagesEnabled / audioEnabled
   // are accepted but ignored. videoEnabled still gates the lower slot.
   videoEnabled = true,
+  onFreeformSubmit,
+  freeformPending = false,
+  freeformError = null,
 }: ReaderLayoutProps) {
   const { tokens } = useAppTheme();
   const showHud = hudMode !== "hidden";
@@ -141,6 +144,9 @@ export function JournalLayout({
             disabled={isStreaming}
             onChoose={onChoose}
             pendingChoiceId={pendingChoiceId}
+            {...(onFreeformSubmit ? { onFreeformSubmit } : {})}
+            freeformPending={freeformPending}
+            freeformError={freeformError}
           />
         </View>
       )}

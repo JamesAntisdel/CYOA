@@ -3,6 +3,7 @@ import { View } from "react-native";
 import { Choice, Text } from "../primitives";
 import { useAppTheme } from "../../theme";
 import type { ChoiceProjection } from "../../hooks/useTurn";
+import { FreeformChoice } from "./FreeformChoice";
 import { LockedChoiceCopy } from "./LockedChoiceCopy";
 
 type ChoiceListProps = {
@@ -10,6 +11,17 @@ type ChoiceListProps = {
   disabled?: boolean;
   pendingChoiceId?: string | null;
   onChoose: (choice: ChoiceProjection) => void;
+  /**
+   * Optional "Option D" free-form input. When provided, a FreeformChoice row
+   * renders after the regular choices so the reader can type their own action.
+   * Omitting this prop preserves the previous LLM-only-choices behavior — used
+   * for scripted/local-engine saves where free-form has no engine path.
+   */
+  onFreeformSubmit?: (text: string) => void;
+  /** True while the free-form turn is in flight (host-owned). */
+  freeformPending?: boolean;
+  /** Surfaced beneath the free-form input when a submission was rejected. */
+  freeformError?: string | null;
 };
 
 export function ChoiceList({
@@ -17,8 +29,12 @@ export function ChoiceList({
   disabled = false,
   pendingChoiceId = null,
   onChoose,
+  onFreeformSubmit,
+  freeformPending = false,
+  freeformError = null,
 }: ChoiceListProps) {
   const { tokens } = useAppTheme();
+  const showFreeform = typeof onFreeformSubmit === "function";
 
   return (
     <View accessibilityLabel="Available choices" style={{ gap: tokens.spacing.sm }}>
@@ -38,7 +54,15 @@ export function ChoiceList({
           </View>
         );
       })}
-      {choices.length === 0 ? (
+      {showFreeform ? (
+        <FreeformChoice
+          disabled={disabled || Boolean(pendingChoiceId && !freeformPending)}
+          error={freeformError}
+          onSubmit={onFreeformSubmit!}
+          pending={freeformPending}
+        />
+      ) : null}
+      {choices.length === 0 && !showFreeform ? (
         <Text muted variant="bodySmall">
           This scene has no available choices.
         </Text>

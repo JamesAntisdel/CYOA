@@ -125,6 +125,15 @@ sequenceDiagram
   end
 ```
 
+### Free-form Choice ("Option D") (clarification to Requirement 5)
+
+**2026-05-23 addition (commit pending):** the reader can type their own action instead of selecting one of the three LLM-proposed choices. The UI affordance is a 4th row in `ChoiceList` ("Write your own…") that expands inline into a text input. The mutation under the hood is the same `game.beginStreamingChoice`, but with two additions:
+
+- **Synthetic `choiceId`** — the client sends `choiceId: "freeform:<requestId>"`. The engine receives this id but does not look it up in the prior proposal's choice list (see the `freeform: true` branch in `engine.advanceLlmTurnCursor`). No engine effects are applied — the reader wrote their own action, so there are no proposed `effects[]` to honor.
+- **`userText` payload** — the trimmed text (1–200 chars) is sent alongside the choiceId. Convex runs `evaluateTextPolicy` on it in the `publishing` surface (matches the creator-seed flow's treatment of user-typed content, so a block is a hard block and not a `safe_end`), persists it to `turn_history.choiceLabel`, and the next-scene memory beat reads as `from <node> chose "<typed text>" → entered <next>` instead of an opaque synthetic id.
+
+The free-form path is **not** tier-gated — it's available to every reader on every LLM-driven save. It is rejected for scripted / local-engine stories (`AppError("freeform_not_supported_for_story")`) because the deterministic engine needs a known edge id to apply scripted effects. Length and safety errors surface as specific AppError codes (`freeform_text_empty | freeform_text_too_long | freeform_text_blocked`) that the client maps to copy in the in-book voice — never raw codes, never stack traces.
+
 ### Modular Design Principles
 
 - **Engine modules are pure:** all randomness, clocks, and provider output are passed in by Convex.

@@ -32,6 +32,10 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
     pendingChoiceId,
     projection,
     submitChoice,
+    submitFreeformChoice,
+    supportsFreeform,
+    freeformPending,
+    freeformError,
     chapterBoundary,
     acknowledgeChapter,
   } = useTurn(saveId);
@@ -126,6 +130,13 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
             imagesEnabled={settings.imagesEnabled}
             audioEnabled={settings.audioEnabled}
             videoEnabled={settings.videoEnabled}
+            // Free-form ("Option D") affordance. Only wired for remote
+            // LLM-driven saves — supportsFreeform is false for scripted /
+            // tutorial saves, where omitting the callback keeps ChoiceList
+            // on its previous 3-choices-only render.
+            {...(supportsFreeform ? { onFreeformSubmit: submitFreeformChoice } : {})}
+            freeformPending={freeformPending}
+            freeformError={freeformError}
           />
         )}
       </ScrollView>

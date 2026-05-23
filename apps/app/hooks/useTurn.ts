@@ -14,6 +14,7 @@ import { getStory } from "@cyoa/stories";
 import { getStoryCoverSource } from "../lib/designAssets";
 import { storyForCreatorSeedSave } from "../lib/localCreatorSeeds";
 import {
+  beginRemoteFreeformChoice,
   beginRemoteStreamingChoice,
   getRemoteCurrentScene,
   hasRemoteGameApi,
@@ -138,8 +139,17 @@ export function useTurn(saveId: string) {
       : initialProjection(saveId),
   );
   const [pendingChoiceId, setPendingChoiceId] = useState<string | null>(null);
+  const [freeformPending, setFreeformPending] = useState(false);
+  const [freeformError, setFreeformError] = useState<string | null>(null);
   const [choiceHistory, setChoiceHistory] = useState<ChoiceHistoryEntry[]>([]);
   const [acknowledgedChapter, setAcknowledgedChapter] = useState(0);
+
+  // Free-form ("Option D") is only meaningful for remote LLM-driven saves.
+  // Scripted/local-engine saves need a known edge id to apply effects, so we
+  // hide the affordance entirely there rather than show it and reject on tap.
+  // See `isLocalDemoSave` — same gate `submitChoice` uses to pick its path.
+  const supportsFreeform =
+    Boolean(guest.session) && hasRemoteGameApi() && !isLocalDemoSave(saveId);
 
   useEffect(() => {
     let cancelled = false;
@@ -153,6 +163,8 @@ export function useTurn(saveId: string) {
         : initialProjection(saveId),
     );
     setPendingChoiceId(null);
+    setFreeformPending(false);
+    setFreeformError(null);
     setChoiceHistory([]);
     setAcknowledgedChapter(0);
     if (guest.session && hasRemoteGameApi() && !isLocalDemoSave(saveId)) {
@@ -341,6 +353,105 @@ export function useTurn(saveId: string) {
     }, 360);
   }, [engineState, guest.session, pendingChoiceId, projection.scene.title, saveId, story]);
 
+  const submitFreeformChoice = useCallback(async (rawText: string) => {
+    if (!supportsFreeform) {
+      setFreeformError("This tale only follows the offered paths.");
+      return;
+    }
+    if (pendingChoiceId || freeformPending) return;
+    const trimmed = rawText.trim();
+    if (trimmed.length === 0) {
+      setFreeformError("Write a short action before submitting.");
+      return;
+    }
+    if (trimmed.length > 200) {
+      setFreeformError("Keep your action under 200 characters.");
+      return;
+    }
+    if (!guest.session) {
+      setFreeformError("Sign in or start a save before writing your own action.");
+      return;
+    }
+
+    setFreeformError(null);
+    setFreeformPending(true);
+    const fromSceneTitle = projection.scene.title;
+    const requestId = createRequestId();
+    const choiceId = `freeform:${requestId}`;
+    setPendingChoiceId(choiceId);
+
+    try {
+      const result = await beginRemoteFreeformChoice({
+        accountId: guest.session.accountId,
+        ...guestAuthArgs(),
+        saveId,
+        choiceId,
+        requestId,
+        userText: trimmed,
+      });
+
+      if (result === null) {
+        setFreeformError("The story couldn't reach the candle just now. Try again in a moment.");
+        return;
+      }
+      if (result.ok === false) {
+        setFreeformError(freeformBookCopyForError(result.errorCode));
+        return;
+      }
+
+      // Success — mirror submitChoice's streaming + refresh path so the
+      // reader sees the same prose-streaming UX they get for A/B/C choices.
+      let streamedProse = "";
+      setProjection(projectRemoteScene(saveId, result.scene, "The candle is being lit..."));
+      const streamed = await streamRemoteScene({
+        accountId: guest.session.accountId,
+        ...guestAuthArgs(),
+        saveId,
+        onToken: (text) => {
+          streamedProse += text;
+          setProjection(projectRemoteScene(saveId, result.scene, streamedProse, true));
+        },
+      });
+      const refreshed = await getRemoteCurrentScene({
+        accountId: guest.session.accountId,
+        ...guestAuthArgs(),
+        saveId,
+      });
+      if (!streamed && !refreshed) {
+        const finalStub = projectRemoteScene(saveId, result.scene, streamedProse || undefined);
+        setProjection(finalStub);
+        appendChoiceHistory(setChoiceHistory, {
+          choiceLabel: trimmed,
+          fromSceneTitle,
+          toSceneTitle: finalStub.scene.title,
+          tone: "neutral",
+          echo: deriveRemoteEcho(result.scene),
+        });
+        return;
+      }
+      const canonicalScene = refreshed ?? result.scene;
+      const finalProjection = projectRemoteScene(saveId, canonicalScene);
+      setProjection(finalProjection);
+      appendChoiceHistory(setChoiceHistory, {
+        choiceLabel: trimmed,
+        fromSceneTitle,
+        toSceneTitle: finalProjection.scene.title,
+        tone: "neutral",
+        echo: deriveRemoteEcho(canonicalScene),
+      });
+    } finally {
+      setFreeformPending(false);
+      setPendingChoiceId(null);
+    }
+  }, [
+    freeformPending,
+    guest.session,
+    pendingChoiceId,
+    projection.scene.title,
+    saveId,
+    supportsFreeform,
+  ]);
+
   const completedChapters = Math.floor(choiceHistory.length / CHAPTER_TURNS);
   const chapterBoundary =
     completedChapters > acknowledgedChapter && !projection.ending
@@ -362,6 +473,10 @@ export function useTurn(saveId: string) {
       projection,
       pendingChoiceId,
       submitChoice,
+      submitFreeformChoice,
+      supportsFreeform,
+      freeformPending,
+      freeformError,
       choiceHistory,
       chapterIndex: completedChapters,
       chapterBoundary,
@@ -372,11 +487,38 @@ export function useTurn(saveId: string) {
       chapterBoundary,
       choiceHistory,
       completedChapters,
+      freeformError,
+      freeformPending,
       pendingChoiceId,
       projection,
       submitChoice,
+      submitFreeformChoice,
+      supportsFreeform,
     ],
   );
+}
+
+/**
+ * Map a server-side AppError code from the free-form mutation to copy in
+ * the in-book voice. We intentionally avoid surfacing the raw code or any
+ * stack trace — the reader sees a short narrator-style note that explains
+ * what to try next.
+ */
+function freeformBookCopyForError(code: string): string {
+  switch (code) {
+    case "freeform_text_blocked":
+      return "The story refuses that action. Try a different approach.";
+    case "freeform_text_too_long":
+      return "Keep your action under 200 characters.";
+    case "freeform_text_empty":
+      return "Write a short action before submitting.";
+    case "freeform_not_supported_for_story":
+      return "This tale only follows the offered paths.";
+    case "turn_in_progress":
+      return "Another action is still resolving. Try again in a moment.";
+    default:
+      return "The story couldn't take that action. Try again in a moment.";
+  }
 }
 
 function storyForSave(saveId: string): Story | null {

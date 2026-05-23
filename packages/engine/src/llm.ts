@@ -158,18 +158,38 @@ export function advanceLlmTurnCursor(input: {
   priorProposal: LlmSceneProposal | null;
   choiceId: string | null;
   ctx: EngineContext;
+  /**
+   * Free-form path: when true, advance the turn cursor and emit a
+   * `choice_applied` event for the given `choiceId` without looking it up
+   * in `priorProposal.choices`. No effects are applied (the reader typed
+   * their own action — there were no LLM-proposed effects to honor). The
+   * caller is responsible for persisting the user-typed label to
+   * turn_history so the next-scene memory beat reads naturally.
+   *
+   * Requires `choiceId` to be non-null; ignored when false or when the
+   * regular prior-proposal branch fires.
+   */
+  freeform?: boolean;
 }): EngineResult & { appliedChoiceId: string | null; nodeId: string } {
-  const { state, story, priorProposal, choiceId, ctx } = input;
+  const { state, story, priorProposal, choiceId, ctx, freeform = false } = input;
   void ctx; // engine context is reserved for future-deterministic plumbing
   const next = cloneState(state);
   const diffs: EngineDiff[] = [];
   const events: EngineEvent[] = [];
   let appliedChoiceId: string | null = null;
 
-  if (priorProposal && choiceId) {
+  if (priorProposal && choiceId && !freeform) {
     const choice = priorProposal.choices.find((candidate) => candidate.id === choiceId);
     if (!choice) throw new Error(`llm_choice_not_found:${choiceId}`);
     applyEffects(next, choice.effects ?? [], diffs);
+    events.push({ kind: "choice_applied", choiceId });
+    appliedChoiceId = choiceId;
+    next.turnNumber += 1;
+  } else if (freeform && choiceId) {
+    // Free-form: caller bypasses the prior-proposal lookup. We still want a
+    // `choice_applied` event so the memory-window plumbing sees a turn was
+    // taken, and we still increment turnNumber so `llmNodeId` below advances
+    // to the next slot.
     events.push({ kind: "choice_applied", choiceId });
     appliedChoiceId = choiceId;
     next.turnNumber += 1;

@@ -356,6 +356,19 @@ export const beginStreamingChoice = mutationGeneric({
     saveId,
     choiceId: v.string(),
     requestId: v.string(),
+    /**
+     * Free-form ("Option D") path: when the reader typed their own action
+     * instead of picking an LLM-proposed choice, the client sends the
+     * trimmed text here. The server runs `evaluateTextPolicy` against it,
+     * persists it as `turn_history.choiceLabel` so the next memory beat
+     * reads naturally, and advances the cursor without looking up the
+     * choiceId in the prior proposal.
+     *
+     * Length and safety are validated server-side regardless of any
+     * client-side check. Free-form is only valid for llm-driven stories;
+     * any other mode throws `freeform_not_supported_for_story`.
+     */
+    userText: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const saveDoc = await ctx.db.get(args.saveId);
@@ -390,6 +403,31 @@ export const beginStreamingChoice = mutationGeneric({
     });
 
     const storyMode = resolveStoryMode(save.storyId);
+    // Free-form ("Option D") only flows through llm-driven mode — the
+    // deterministic engine path needs a known edge id to apply scripted
+    // effects, and a typed string has none. Reject early so the client can
+    // surface a clear "this tale only follows scripted paths" message.
+    if (args.userText !== undefined && storyMode !== "llm-driven") {
+      throw new AppError("freeform_not_supported_for_story");
+    }
+    if (args.userText !== undefined) {
+      const trimmed = args.userText.trim();
+      if (trimmed.length === 0) throw new AppError("freeform_text_empty");
+      if (trimmed.length > 200) throw new AppError("freeform_text_too_long");
+      // Surface "publishing" matches the creator-seed flow's treatment of
+      // user-typed content: a blocked classification becomes a hard block
+      // (the reader retypes) rather than a "safe_end" exit that would close
+      // the tale on what's really just a UI-level retry case.
+      const { context: freeformContext } = await resolveContentContext(
+        ctx,
+        args.accountId,
+        "publishing",
+      );
+      const policy = evaluateTextPolicy({ text: trimmed, context: freeformContext });
+      if (policy.action === "block" || policy.action === "rewrite") {
+        throw new AppError("freeform_text_blocked");
+      }
+    }
     if (storyMode === "llm-driven") {
       return await runLlmDrivenBeginStreaming(ctx, {
         save,
@@ -401,6 +439,9 @@ export const beginStreamingChoice = mutationGeneric({
         now,
         dailyCounter,
         dailyCounterDoc,
+        // exactOptionalPropertyTypes: spread instead of passing
+        // `userText: undefined` when the reader didn't type anything.
+        ...(args.userText !== undefined ? { userText: args.userText.trim() } : {}),
       });
     }
 
@@ -962,7 +1003,14 @@ function memoryBeatFromHistory(row: Record<string, unknown>): MemoryBeat | null 
     (e) => e && typeof e === "object" && (e as { kind?: string }).kind === "node_entered",
   ) as { nodeId?: string } | undefined;
   const target = targetEvent?.nodeId ?? "unknown";
-  const text = `Turn ${turnNumber}: from ${fromNodeId ?? "?"} chose "${choiceId}" → entered ${target}.`;
+  // Prefer the human-readable choiceLabel when present (free-form turns
+  // carry the reader's typed text; LLM-proposed turns now carry the
+  // proposal's label). Fall back to the raw choiceId for rows written
+  // before the choiceLabel field existed.
+  const label = typeof row.choiceLabel === "string" && row.choiceLabel.length > 0
+    ? row.choiceLabel
+    : choiceId;
+  const text = `Turn ${turnNumber}: from ${fromNodeId ?? "?"} chose "${label}" → entered ${target}.`;
   return {
     id: String(row._id ?? `${turnNumber}:${choiceId}`),
     text,
@@ -1114,26 +1162,44 @@ type RunLlmDrivenBeginStreamingInput = {
   now: number;
   dailyCounter: DailyTurnCounter;
   dailyCounterDoc: Record<string, unknown> | null;
+  /**
+   * Reader-typed text for the free-form ("Option D") path. When present the
+   * prior-proposal lookup is bypassed (the reader picked NONE of the
+   * proposed choices), the cursor advances in `freeform` mode (no engine
+   * effects to apply), and the trimmed text is persisted to
+   * `turn_history.choiceLabel` so the next memory beat reads naturally.
+   */
+  userText?: string;
 };
 
 async function runLlmDrivenBeginStreaming(
   ctx: { db: any },
   input: RunLlmDrivenBeginStreamingInput,
 ) {
+  const isFreeform = typeof input.userText === "string";
   const prior = await readPriorProposalFromCurrentScene(ctx, input.save);
   // Validate the choice exists in the prior proposal. The opening scene has
   // no prior proposal — but the opening flow happens via createSave's stream
   // setup, not via beginStreamingChoice, so a missing prior here is a bug.
+  //
+  // Free-form turns intentionally bypass this lookup: the reader typed their
+  // own action instead of selecting one of the proposed choices, so there's
+  // nothing to find. The prior is still read (we need it for nothing here,
+  // but keeping the read keeps the failure surface — missing-scene bugs —
+  // consistent across both paths).
   if (!prior) throw new AppError("llm_prior_proposal_missing");
-  const choice = prior.choices.find((candidate) => candidate.id === input.choiceId);
-  if (!choice) throw new AppError("llm_choice_not_found");
+  if (!isFreeform) {
+    const choice = prior.choices.find((candidate) => candidate.id === input.choiceId);
+    if (!choice) throw new AppError("llm_choice_not_found");
+  }
 
   const advanced = advanceLlmTurnCursor({
     state: input.save.state,
     story: input.story,
-    priorProposal: prior,
+    priorProposal: isFreeform ? null : prior,
     choiceId: input.choiceId,
     ctx: { now: input.now, rngSeed: input.requestId },
+    freeform: isFreeform,
   });
 
   const nextSave: SaveRecord = applySaveState(input.save, advanced.state, input.now);
@@ -1172,6 +1238,12 @@ async function runLlmDrivenBeginStreaming(
     turnNumber: nextSave.turnNumber,
     fromNodeId: input.save.currentNodeId,
     choiceId: input.choiceId,
+    // Persist the typed text for free-form turns; for LLM-proposed turns we
+    // fall back to the prior proposal's label so memoryBeatFromHistory can
+    // surface a human-readable beat for both paths.
+    choiceLabel: isFreeform
+      ? input.userText
+      : prior?.choices.find((candidate) => candidate.id === input.choiceId)?.label,
     engineDiffs: advanced.diffs,
     engineEvents: advanced.events,
     provider: "deterministic",
