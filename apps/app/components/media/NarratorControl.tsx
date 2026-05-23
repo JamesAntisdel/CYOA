@@ -55,16 +55,39 @@ type NarratorControlProps = {
   duration?: number;
   /** Seek to the given time (seconds). Optional; scrub bar omitted if absent. */
   onSeek?: (time: number) => void;
+  /**
+   * Current narrator playback speed (e.g. 1, 1.25). When `onPlaybackRateChange`
+   * is also provided, the control renders the four-pill speed picker below
+   * the scrub bar. Defaults to 1 if omitted; if the change handler is
+   * missing the picker is suppressed entirely.
+   */
+  playbackRate?: number;
+  /** Speed-picker change handler. Pills are inert without it. */
+  onPlaybackRateChange?: (rate: number) => void;
 };
+
+/**
+ * The four discrete playback-speed options surfaced in the reader chrome.
+ * Centralised so the settings screen and the inline picker stay in sync
+ * if a future wave adds a fifth option.
+ */
+export const NARRATOR_PLAYBACK_RATE_OPTIONS: ReadonlyArray<{ label: string; value: number }> = [
+  { label: "0.75x", value: 0.75 },
+  { label: "1x", value: 1 },
+  { label: "1.25x", value: 1.25 },
+  { label: "1.5x", value: 1.5 },
+];
 
 export function NarratorControl({
   currentTime,
   duration,
   hasNarrator,
   loading,
+  onPlaybackRateChange,
   onSeek,
   onTogglePaused,
   paused,
+  playbackRate,
 }: NarratorControlProps) {
   const { tokens } = useAppTheme();
 
@@ -81,6 +104,13 @@ export function NarratorControl({
     typeof currentTime === "number" &&
     typeof onSeek === "function" &&
     duration > 0;
+
+  // Speed picker is gated on the same "ready clip" signal as the scrub
+  // bar so it doesn't appear while the TTS asset is still generating.
+  // Without a change handler the pills would be inert; suppress entirely
+  // in that case so legacy callers that haven't wired the prop yet still
+  // render cleanly.
+  const hasSpeedPicker = hasScrub && typeof onPlaybackRateChange === "function";
 
   return (
     <View style={{ gap: tokens.spacing.xs }}>
@@ -129,6 +159,78 @@ export function NarratorControl({
           onSeek={onSeek as (time: number) => void}
         />
       ) : null}
+      {hasSpeedPicker ? (
+        <NarratorSpeedPicker
+          playbackRate={typeof playbackRate === "number" ? playbackRate : 1}
+          onChange={onPlaybackRateChange as (rate: number) => void}
+        />
+      ) : null}
+    </View>
+  );
+}
+
+/**
+ * Four-pill playback-speed picker. Renders below the scrub bar so the
+ * pause + scrub row stays compact; the selected pill is filled with the
+ * accent color (matching the scrub bar's filled portion), unselected
+ * pills mirror the surface/hairline-border style used by the pause
+ * button. Tapping a pill calls `onChange` with the corresponding rate;
+ * the parent persists it and threads it back through useNarratorPlayback.
+ */
+function NarratorSpeedPicker({
+  onChange,
+  playbackRate,
+}: {
+  playbackRate: number;
+  onChange: (rate: number) => void;
+}) {
+  const { tokens } = useAppTheme();
+
+  return (
+    <View
+      accessibilityLabel="Narrator playback speed"
+      accessibilityRole="radiogroup"
+      style={{
+        alignItems: "center",
+        flexDirection: "row",
+        gap: tokens.spacing.xs,
+        justifyContent: "flex-end",
+      }}
+    >
+      {NARRATOR_PLAYBACK_RATE_OPTIONS.map((option) => {
+        const selected = playbackRate === option.value;
+        return (
+          <Pressable
+            accessibilityLabel={`Narrator speed ${option.label}`}
+            accessibilityRole="radio"
+            accessibilityState={{ selected }}
+            hitSlop={6}
+            key={option.value}
+            onPress={() => onChange(option.value)}
+            style={({ pressed }) => ({
+              backgroundColor: selected ? tokens.colors.accent : tokens.colors.surface,
+              borderColor: selected ? tokens.colors.accent : tokens.colors.border,
+              borderRadius: tokens.radii.pill,
+              borderWidth: tokens.borderWidths.hairline,
+              opacity: pressed ? 0.78 : 1,
+              paddingHorizontal: tokens.spacing.sm,
+              paddingVertical: tokens.spacing.xs,
+            })}
+          >
+            <Text
+              muted={!selected}
+              style={{
+                color: selected ? tokens.colors.background : undefined,
+                fontFamily: tokens.typography.families.mono,
+                fontWeight: selected ? "700" : "400",
+              }}
+              variant="bodySmall"
+            >
+              {option.label}
+            </Text>
+          </Pressable>
+        );
+      })}
     </View>
   );
 }

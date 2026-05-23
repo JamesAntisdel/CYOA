@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   applyChoiceAndEnterNode,
@@ -151,6 +151,14 @@ export function useTurn(saveId: string) {
   const supportsFreeform =
     Boolean(guest.session) && hasRemoteGameApi() && !isLocalDemoSave(saveId);
 
+  // Ref-based in-flight guard. The React-state guards (`pendingChoiceId`,
+  // `freeformPending`) have a one-frame window after `setState` is called
+  // but before the next render — within that window a second tap reads the
+  // stale `false` values from the previous closure and slips through. A
+  // ref reflects the new value synchronously, so a second tap inside the
+  // same frame is correctly suppressed.
+  const freeformInFlightRef = useRef(false);
+
   useEffect(() => {
     let cancelled = false;
     const nextState = story
@@ -165,6 +173,7 @@ export function useTurn(saveId: string) {
     setPendingChoiceId(null);
     setFreeformPending(false);
     setFreeformError(null);
+    freeformInFlightRef.current = false;
     setChoiceHistory([]);
     setAcknowledgedChapter(0);
     if (guest.session && hasRemoteGameApi() && !isLocalDemoSave(saveId)) {
@@ -358,7 +367,10 @@ export function useTurn(saveId: string) {
       setFreeformError("This tale only follows the offered paths.");
       return;
     }
-    if (pendingChoiceId || freeformPending) return;
+    // Ref guard catches sub-frame double-taps that slip past the state
+    // guards below; state guards still catch the more common case of a
+    // tap after a render has flushed.
+    if (freeformInFlightRef.current || pendingChoiceId || freeformPending) return;
     const trimmed = rawText.trim();
     if (trimmed.length === 0) {
       setFreeformError("Write a short action before submitting.");
@@ -373,6 +385,7 @@ export function useTurn(saveId: string) {
       return;
     }
 
+    freeformInFlightRef.current = true;
     setFreeformError(null);
     setFreeformPending(true);
     const fromSceneTitle = projection.scene.title;
@@ -440,6 +453,7 @@ export function useTurn(saveId: string) {
         echo: deriveRemoteEcho(canonicalScene),
       });
     } finally {
+      freeformInFlightRef.current = false;
       setFreeformPending(false);
       setPendingChoiceId(null);
     }

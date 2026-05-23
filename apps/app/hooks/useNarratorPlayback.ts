@@ -40,6 +40,14 @@ export type NarratorPlaybackInput = {
   muted: boolean;
   /** Base volume in [0, 1]. Multiplied by 0 when muted. */
   volume: number;
+  /**
+   * Playback speed multiplier (web HTMLAudioElement.playbackRate). Default
+   * 1. Clamped to [0.5, 2] inside the hook so out-of-range values from
+   * stored settings can't push the audio element into pitch-distorting
+   * extremes. Changing this does NOT recreate the element — Effect 2
+   * applies the change in place so currentTime is preserved.
+   */
+  playbackRate?: number;
 };
 
 export type NarratorPlaybackState = {
@@ -62,6 +70,7 @@ const NOOP_STATE: NarratorPlaybackState = {
 
 export function useNarratorPlayback(input: NarratorPlaybackInput): NarratorPlaybackState {
   const { muted, paused, uri, volume } = input;
+  const playbackRate = clampRate(input.playbackRate);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const currentUriRef = useRef<string | null>(null);
@@ -106,6 +115,10 @@ export function useNarratorPlayback(input: NarratorPlaybackInput): NarratorPlayb
     const audio = new Audio(uri);
     audio.loop = false;
     audio.volume = muted ? 0 : clamp01(volume);
+    // Apply the requested speed at element creation so the very first
+    // playthrough plays at the user's chosen rate, not at the browser
+    // default 1x followed by a step-change once Effect 2 fires.
+    audio.playbackRate = playbackRate;
     audioRef.current = audio;
     currentUriRef.current = uri;
 
@@ -175,6 +188,14 @@ export function useNarratorPlayback(input: NarratorPlaybackInput): NarratorPlayb
     const effective = muted ? 0 : clamp01(volume);
     audio.volume = effective;
 
+    // Apply playbackRate in place — changing speed must NOT recreate the
+    // audio element (would reset currentTime to 0 mid-paragraph). Setting
+    // it on the existing element is the standard HTMLMediaElement pattern;
+    // browsers preserve the current playback position.
+    if (audio.playbackRate !== playbackRate) {
+      audio.playbackRate = playbackRate;
+    }
+
     if (paused || muted) {
       if (!audio.paused) audio.pause();
     } else {
@@ -182,7 +203,7 @@ export function useNarratorPlayback(input: NarratorPlaybackInput): NarratorPlayb
         void audio.play().catch(() => undefined);
       }
     }
-  }, [paused, muted, volume]);
+  }, [paused, muted, volume, playbackRate]);
 
   const seek = useCallback((time: number) => {
     if (Platform.OS !== "web") return;
@@ -210,5 +231,19 @@ function clamp01(v: number): number {
   if (Number.isNaN(v)) return 0;
   if (v < 0) return 0;
   if (v > 1) return 1;
+  return v;
+}
+
+/**
+ * Clamp the caller-supplied playbackRate into a safe range. The picker
+ * only emits {0.75, 1, 1.25, 1.5}, but stored settings may have been
+ * tampered with — anything missing or non-finite snaps to 1, and out-of-
+ * range values clamp to [0.5, 2] (a comfortable range for TTS where pitch
+ * preservation still sounds natural in major browsers).
+ */
+function clampRate(v: number | undefined): number {
+  if (typeof v !== "number" || !Number.isFinite(v)) return 1;
+  if (v < 0.5) return 0.5;
+  if (v > 2) return 2;
   return v;
 }

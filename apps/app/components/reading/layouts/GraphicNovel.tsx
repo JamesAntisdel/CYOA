@@ -32,6 +32,8 @@ export function GraphicNovelLayout({
   imagesEnabled = true,
   audioEnabled = true,
   videoEnabled = true,
+  narratorPlaybackRate = 1,
+  onNarratorPlaybackRateChange,
   onFreeformSubmit,
   freeformPending = false,
   freeformError = null,
@@ -69,6 +71,8 @@ export function GraphicNovelLayout({
           sceneId={projection.scene.id}
           imagesEnabled={imagesEnabled}
           audioEnabled={audioEnabled}
+          narratorPlaybackRate={narratorPlaybackRate}
+          {...(onNarratorPlaybackRateChange ? { onNarratorPlaybackRateChange } : {})}
         />
       </View>
 

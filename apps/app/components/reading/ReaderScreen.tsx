@@ -1,4 +1,5 @@
 import { useRouter } from "expo-router";
+import { useCallback } from "react";
 import { ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -27,7 +28,14 @@ type ReaderScreenProps = {
 export function ReaderScreen({ saveId }: ReaderScreenProps) {
   const router = useRouter();
   const { reduceMotion, tokens } = useAppTheme();
-  const { settings } = useReaderSettings();
+  const { settings, updateSettings } = useReaderSettings();
+  // Stable callback so SceneMedia / NarratorControl receive a referentially
+  // equal handler across renders — keeps the pill picker's onPress identity
+  // stable and avoids any equality-driven re-renders downstream.
+  const setNarratorPlaybackRate = useCallback(
+    (narratorPlaybackRate: number) => updateSettings({ narratorPlaybackRate }),
+    [updateSettings],
+  );
   const {
     pendingChoiceId,
     projection,
@@ -130,6 +138,8 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
             imagesEnabled={settings.imagesEnabled}
             audioEnabled={settings.audioEnabled}
             videoEnabled={settings.videoEnabled}
+            narratorPlaybackRate={settings.narratorPlaybackRate}
+            onNarratorPlaybackRateChange={setNarratorPlaybackRate}
             // Free-form ("Option D") affordance. Only wired for remote
             // LLM-driven saves — supportsFreeform is false for scripted /
             // tutorial saves, where omitting the callback keeps ChoiceList

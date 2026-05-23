@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Pressable, TextInput, View } from "react-native";
 
 import { Text } from "../primitives";
@@ -58,9 +58,43 @@ export function FreeformChoice({
   const [mode, setMode] = useState<"collapsed" | "open">("collapsed");
   const [text, setText] = useState("");
   const inputRef = useRef<TextInput | null>(null);
+  // Last value we optimistically cleared on Submit. Held so we can restore the
+  // input verbatim if the host reports an error (safety block, network) —
+  // the reader should never have to retype a 150-character action.
+  const lastSubmittedRef = useRef<string | null>(null);
+
+  // Error-recovery: if the host surfaces an error AFTER we optimistically
+  // cleared, re-open the input and restore the original text so the reader
+  // can edit and retry. Without this the error renders under the collapsed
+  // button with no visible text to fix.
+  useEffect(() => {
+    if (error && lastSubmittedRef.current) {
+      setText(lastSubmittedRef.current);
+      setMode("open");
+      lastSubmittedRef.current = null;
+      // Focus restoration is best-effort; rAF lets the input mount first on web.
+      requestAnimationFrame(() => inputRef.current?.focus());
+    }
+  }, [error]);
 
   const trimmed = text.trim();
   const canSubmit = !disabled && !pending && trimmed.length > 0;
+
+  // Optimistic clear + collapse on Submit. We previously watched `pending`
+  // transition true → false in an effect, but in practice the input would
+  // stay populated after a successful submit (parent streaming re-renders
+  // and React 18 batching made the two-step ref tracking unreliable). Doing
+  // the visible reset synchronously in the tap handler guarantees the input
+  // is empty before the next render — and the error effect above restores
+  // the text if the host rejects the submission.
+  const handleSubmit = () => {
+    if (!canSubmit) return;
+    const value = trimmed;
+    lastSubmittedRef.current = value;
+    setText("");
+    setMode("collapsed");
+    onSubmit(value);
+  };
 
   if (mode === "collapsed") {
     return (
@@ -123,9 +157,7 @@ export function FreeformChoice({
           multiline
           numberOfLines={2}
           onChangeText={setText}
-          onSubmitEditing={() => {
-            if (canSubmit) onSubmit(trimmed);
-          }}
+          onSubmitEditing={handleSubmit}
           placeholder="What do you do?"
           placeholderTextColor={tokens.colors.textMuted}
           returnKeyType="send"
@@ -155,6 +187,9 @@ export function FreeformChoice({
             accessibilityRole="button"
             disabled={pending}
             onPress={() => {
+              // Clear the restore-on-error ref too — Cancel means "I'm done
+              // with this draft," not "save it for later if something fails."
+              lastSubmittedRef.current = null;
               setText("");
               setMode("collapsed");
             }}
@@ -173,7 +208,7 @@ export function FreeformChoice({
             accessibilityRole="button"
             accessibilityState={{ disabled: !canSubmit }}
             disabled={!canSubmit}
-            onPress={() => onSubmit(trimmed)}
+            onPress={handleSubmit}
             style={({ pressed }) => ({
               backgroundColor: canSubmit ? tokens.colors.accent : tokens.colors.surfaceMuted,
               borderRadius: tokens.radii.sm,

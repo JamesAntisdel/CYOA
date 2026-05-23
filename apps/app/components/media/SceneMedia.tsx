@@ -33,6 +33,19 @@ type SceneMediaProps = {
    * `muted` prop (which only affects volume). Defaults to true.
    */
   audioEnabled?: boolean;
+  /**
+   * Narrator TTS playback speed multiplier. Threaded into both the
+   * playback hook (so the audio element honors it) and the NarratorControl
+   * chrome (so the four-pill picker reflects the current selection).
+   * Defaults to 1; the hook clamps out-of-range values internally.
+   */
+  narratorPlaybackRate?: number;
+  /**
+   * Speed-picker change handler — typically wired to
+   * useReaderSettings().updateSettings so the new rate persists across
+   * scenes and sessions. Omit to suppress the picker entirely.
+   */
+  onNarratorPlaybackRateChange?: (rate: number) => void;
 };
 
 /**
@@ -49,6 +62,8 @@ export function SceneMedia({
   imagesEnabled = true,
   media,
   muted,
+  narratorPlaybackRate = 1,
+  onNarratorPlaybackRateChange,
   reducedMotion,
   sceneId,
 }: SceneMediaProps) {
@@ -102,6 +117,7 @@ export function SceneMedia({
     paused: narratorPaused,
     muted: resolvedMuted,
     volume: 1,
+    playbackRate: narratorPlaybackRate,
   });
 
   // Audio-only scenes with a ready narrator clip should still render the
@@ -149,6 +165,12 @@ export function SceneMedia({
         currentTime={narratorPlayback.currentTime}
         duration={narratorPlayback.duration}
         onSeek={narratorPlayback.seek}
+        playbackRate={narratorPlaybackRate}
+        // Only forward the handler when supplied. Under
+        // exactOptionalPropertyTypes:true passing `undefined` is not the
+        // same as omitting the key — the picker uses presence/absence of
+        // this prop as the suppression gate.
+        {...(onNarratorPlaybackRateChange ? { onPlaybackRateChange: onNarratorPlaybackRateChange } : {})}
       />
     </View>
   ) : null;

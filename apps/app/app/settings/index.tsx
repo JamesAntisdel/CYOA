@@ -17,7 +17,7 @@ import { useAppTheme } from "../../theme";
 // id so a reader can preview the picker from settings.
 const SETTINGS_PREVIEW_SAVE_ID = "training-room-demo";
 
-type Option<T extends string | boolean> = {
+type Option<T extends string | boolean | number> = {
   label: string;
   value: T;
 };
@@ -155,6 +155,19 @@ export default function SettingsRoute() {
               />
 
               <SettingGroup
+                label="Narrator speed"
+                helpText="Adjust how fast the narrator reads."
+                options={[
+                  { label: "0.75x", value: 0.75 },
+                  { label: "1x", value: 1 },
+                  { label: "1.25x", value: 1.25 },
+                  { label: "1.5x", value: 1.5 },
+                ]}
+                selected={settings.narratorPlaybackRate}
+                onSelect={(narratorPlaybackRate) => updateSettings({ narratorPlaybackRate })}
+              />
+
+              <SettingGroup
                 label="Play scene cinematics"
                 helpText="Skip Veo videos. Image still shows."
                 options={[
@@ -256,7 +269,7 @@ export default function SettingsRoute() {
   );
 }
 
-function SettingGroup<T extends string | boolean>({
+function SettingGroup<T extends string | boolean | number>({
   label,
   helpText,
   options,

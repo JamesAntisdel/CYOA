@@ -44,7 +44,17 @@ export type ReaderSettings = {
    * Independent of the `reduceMotion` gate.
    */
   videoEnabled: boolean;
+  /**
+   * Narrator TTS playback speed. Default 1. Persists across scenes and
+   * sessions. The reader UI exposes four discrete options (0.75, 1, 1.25,
+   * 1.5); the value is clamped at the hook boundary to a safe range so
+   * arbitrary localStorage tampering can't push the audio element into
+   * a pitch-distorting extreme.
+   */
+  narratorPlaybackRate: number;
 };
+
+export const NARRATOR_PLAYBACK_RATES: readonly number[] = [0.75, 1, 1.25, 1.5] as const;
 
 export const READER_SETTINGS_KEY = "cyoa.readerSettings.v1";
 export const READER_SETTINGS_CHANGED_EVENT = "cyoa.readerSettings.changed";
@@ -60,6 +70,7 @@ const defaultSettings: ReaderSettings = {
   imagesEnabled: true,
   audioEnabled: true,
   videoEnabled: true,
+  narratorPlaybackRate: 1,
 };
 
 export function useReaderSettings() {
@@ -113,6 +124,12 @@ function readSettings(): ReaderSettings {
       imagesEnabled: parsed.imagesEnabled !== false,
       audioEnabled: parsed.audioEnabled !== false,
       videoEnabled: parsed.videoEnabled !== false,
+      // Coerce a stored numeric rate to one of the four allowed steps.
+      // Anything missing or out-of-range falls back to the 1x default —
+      // we never trust localStorage to deliver a sane float.
+      narratorPlaybackRate: isAllowedRate(parsed.narratorPlaybackRate)
+        ? (parsed.narratorPlaybackRate as number)
+        : defaultSettings.narratorPlaybackRate,
     };
   } catch {
     return defaultSettings;
@@ -130,6 +147,10 @@ function isTheme(value: unknown): value is ReaderThemePreference {
 
 function isLayoutVariant(value: unknown): value is ReaderLayoutVariant {
   return (READER_LAYOUT_VARIANTS as readonly string[]).includes(value as string);
+}
+
+function isAllowedRate(value: unknown): value is number {
+  return typeof value === "number" && (NARRATOR_PLAYBACK_RATES as readonly number[]).includes(value);
 }
 
 function getStorage(): Pick<Storage, "getItem" | "setItem"> | null {

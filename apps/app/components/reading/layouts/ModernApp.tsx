@@ -33,6 +33,8 @@ export function ModernAppLayout({
   imagesEnabled = true,
   audioEnabled = true,
   videoEnabled = true,
+  narratorPlaybackRate = 1,
+  onNarratorPlaybackRateChange,
   onFreeformSubmit,
   freeformPending = false,
   freeformError = null,
@@ -71,6 +73,8 @@ export function ModernAppLayout({
           sceneId={projection.scene.id}
           imagesEnabled={imagesEnabled}
           audioEnabled={audioEnabled}
+          narratorPlaybackRate={narratorPlaybackRate}
+          {...(onNarratorPlaybackRateChange ? { onNarratorPlaybackRateChange } : {})}
         />
         <Surface padded style={{ gap: tokens.spacing.md }}>
           <Text accessibilityLiveRegion={isStreaming ? "polite" : "none"} variant="body">

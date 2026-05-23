@@ -47,6 +47,20 @@ export type ReaderLayoutProps = {
   audioEnabled?: boolean;
   videoEnabled?: boolean;
   /**
+   * Narrator TTS playback speed (e.g. 0.75, 1, 1.25, 1.5). Forwarded to
+   * SceneMedia → useNarratorPlayback so the audio element honors it, and
+   * to NarratorControl so the inline four-pill picker reflects the
+   * current value. Defaults to 1 at the layout boundary; ReaderScreen
+   * supplies it from useReaderSettings.
+   */
+  narratorPlaybackRate?: number;
+  /**
+   * Speed-picker change handler. Wired to useReaderSettings.updateSettings
+   * so picks persist across scenes and sessions. Omit on layouts that
+   * don't render SceneMedia (Journal).
+   */
+  onNarratorPlaybackRateChange?: (rate: number) => void;
+  /**
    * Free-form ("Option D") affordance. When `onFreeformSubmit` is provided
    * the layout's ChoiceList renders a 4th row that expands into a typed-
    * action input. Layouts forward these straight through; ReaderScreen
