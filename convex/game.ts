@@ -122,11 +122,61 @@ export const createSave = mutationGeneric({
     // defaults to voice.ash — the same default the client picker uses on
     // first launch (see apps/app/hooks/useNarratorVoice.ts).
     voiceId: v.optional(v.string()),
+    // Seed-flow inputs from creator's "Seed an adventure" UI. When the
+    // reader authored a custom premise (and optionally a title + tone),
+    // these are validated, persisted on the save, and used by the LLM
+    // scene pipeline so the opening reads from the reader's words —
+    // not the starter story's hardcoded seed.
+    seedPremise: v.optional(v.string()),
+    seedTitle: v.optional(v.string()),
+    seedTone: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const account = await ctx.db.get(args.accountId);
     if (!account) throw new AppError("account_not_found");
     await assertAccountSessionAccess(ctx, accountFromDoc(account), args.guestTokenHash);
+
+    // Reader-authored seed inputs. Trim and length-check upfront so the
+    // safety classifier never sees pathological payloads, and so empty
+    // strings collapse to undefined (the persistence path treats absent
+    // fields and undefined identically via cleanDoc).
+    let seedPremise: string | undefined;
+    let seedTitle: string | undefined;
+    let seedTone: string | undefined;
+    if (typeof args.seedPremise === "string") {
+      const trimmed = args.seedPremise.trim();
+      if (trimmed.length > 0) {
+        if (trimmed.length > 2000) throw new AppError("seed_premise_too_long");
+        // Surface "publishing" matches the free-form choice flow's treatment
+        // of user-typed narrative content: a blocked classification becomes
+        // a hard block (reader rewords the premise) rather than a safe_end
+        // that would close the tale on what's really a UI-level retry case.
+        const { context: seedContext } = await resolveContentContext(
+          ctx,
+          args.accountId,
+          "publishing",
+        );
+        const policy = evaluateTextPolicy({ text: trimmed, context: seedContext });
+        if (policy.action === "block" || policy.action === "rewrite") {
+          throw new AppError("seed_premise_blocked");
+        }
+        seedPremise = trimmed;
+      }
+    }
+    if (typeof args.seedTitle === "string") {
+      const trimmed = args.seedTitle.trim();
+      if (trimmed.length > 0) {
+        if (trimmed.length > 120) throw new AppError("seed_title_too_long");
+        seedTitle = trimmed;
+      }
+    }
+    if (typeof args.seedTone === "string") {
+      const trimmed = args.seedTone.trim();
+      if (trimmed.length > 0) {
+        if (trimmed.length > 40) throw new AppError("seed_tone_too_long");
+        seedTone = trimmed;
+      }
+    }
 
     const now = Date.now();
     const story = await loadStory(ctx, args.storyId, args.accountId);
@@ -141,8 +191,16 @@ export const createSave = mutationGeneric({
     });
     // Stamp the voice id onto the save before insertion so the very first
     // scene's narration job (queued from completeSceneStream later) picks
-    // it up via save.voiceId.
-    save = { ...save, voiceId };
+    // it up via save.voiceId. Seed fields are spread conditionally so
+    // cleanDoc doesn't have to filter them — schema's optional() handles
+    // the case where the reader launched a plain starter.
+    save = {
+      ...save,
+      voiceId,
+      ...(seedPremise ? { seedPremise } : {}),
+      ...(seedTitle ? { seedTitle } : {}),
+      ...(seedTone ? { seedTone } : {}),
+    };
     // For llm-driven stories, advance the cursor immediately to the synthetic
     // opening node so the first scene needs an LLM call (which the client
     // kicks off via the SSE stream after this mutation returns).
@@ -580,15 +638,20 @@ export const getAuthorizedSceneStreamRequest = queryGeneric({
     if (storyMode === "llm-driven") {
       const startNode = story.nodes[story.startNodeId];
       const summary = listStarterStories().find((item) => item.id === story.id);
-      const memory = await loadMemoryWindow(ctx, args.saveId, startNode?.seed ?? "");
+      // Reader-authored seed (createSave's "Seed an adventure" flow) overrides
+      // the starter story's hardcoded seed/title/tone when present. Falling
+      // back to the starter map keeps every existing save unaffected.
+      const seedPremiseValue = save.seedPremise ?? startNode?.seed;
+      const storyToneValue = save.seedTone ?? summary?.tone;
+      const memory = await loadMemoryWindow(ctx, args.saveId, seedPremiseValue ?? "");
       return {
         saveId: args.saveId,
         storyId: story.id,
-        storyTitle: story.title,
-        ...(summary?.tone ? { storyTone: summary.tone } : {}),
-        ...(startNode?.seed ? { premise: startNode.seed } : {}),
+        storyTitle: save.seedTitle ?? story.title,
+        ...(storyToneValue ? { storyTone: storyToneValue } : {}),
+        ...(seedPremiseValue ? { premise: seedPremiseValue } : {}),
         nodeId: save.currentNodeId,
-        seed: startNode?.seed ?? "",
+        seed: seedPremiseValue ?? "",
         memory,
         choices: [],
         sceneLength: story.defaultSceneLength ?? "standard",
@@ -857,25 +920,12 @@ export const completeSceneStream = mutationGeneric({
       } catch {
         // Pro media is non-fatal — text is the contract, images are a tier.
       }
-      // Pro media: queue a Veo 3.1 lite video alongside the still. MediaPlate
-      // advances Skeleton → Image ready → Video buffering → Video playing
-      // as each asset resolves. Failures here keep the read at Image-ready,
-      // which is the intended reduced-motion fallback.
-      try {
-        await ctx.runMutation(
-          ("media/sceneMedia:queueSceneVideo" as unknown) as any,
-          {
-            accountId: args.accountId,
-            saveId: args.saveId,
-            sceneId: save.currentSceneId,
-            nodeId: save.currentNodeId,
-            prompt: args.prose.slice(0, 480),
-            alt: `Scene cinematic for ${save.currentNodeId}`,
-          },
-        );
-      } catch {
-        // Video is best-effort. Image asset and text stream are unaffected.
-      }
+      // Video is queued by runImagenJob after the image is ready so Veo
+      // can use the still as its first-frame reference (i2v). Queueing it
+      // separately here would race Imagen, produce a text-only Veo whose
+      // first frame doesn't match the still, AND double Veo API spend
+      // per scene — the free-tier 10 RPD quota burns through twice as
+      // fast when both paths fire.
       // Pro narration: Google Cloud TTS reads the prose aloud. Parallel
       // concern to image/video — failures keep MediaPlate visuals unchanged
       // and simply leave the scene silent. Default voice is voice.ash when
@@ -1316,15 +1366,20 @@ async function runLlmDrivenSubmitChoice(
   const router = new LlmRouter();
   const startNode = input.story.nodes[input.story.startNodeId];
   const summary = listStarterStories().find((item) => item.id === input.story.id);
-  const memory = await loadMemoryWindow(ctx, input.saveIdValue, startNode?.seed ?? "");
+  // Same precedence as the streaming request builder: reader-authored seed
+  // (createSave's "Seed an adventure" flow) wins over the starter story's
+  // hardcoded seed/title/tone whenever the save carries one.
+  const seedPremiseValue = input.save.seedPremise ?? startNode?.seed;
+  const storyToneValue = input.save.seedTone ?? summary?.tone;
+  const memory = await loadMemoryWindow(ctx, input.saveIdValue, seedPremiseValue ?? "");
   const generated = await router.generateScene({
     saveId: input.saveIdValue,
     storyId: input.story.id,
-    storyTitle: input.story.title,
-    ...(summary?.tone ? { storyTone: summary.tone } : {}),
-    ...(startNode?.seed ? { premise: startNode.seed } : {}),
+    storyTitle: input.save.seedTitle ?? input.story.title,
+    ...(storyToneValue ? { storyTone: storyToneValue } : {}),
+    ...(seedPremiseValue ? { premise: seedPremiseValue } : {}),
     nodeId: advanced.nodeId,
-    seed: startNode?.seed ?? "",
+    seed: seedPremiseValue ?? "",
     memory,
     choices: [],
     sceneLength: input.story.defaultSceneLength ?? "standard",

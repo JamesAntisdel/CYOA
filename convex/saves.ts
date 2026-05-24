@@ -30,6 +30,12 @@ export type SaveRecord = {
   // Drives Google Cloud TTS voice selection in convex/media/sceneMedia.ts.
   // Optional for backwards compatibility with saves created before narration.
   voiceId?: string;
+  // Seed-flow inputs (creator: "Seed an adventure"). When the reader
+  // authored a custom premise/title/tone, these override the starter
+  // story's hardcoded seed text in the LLM scene pipeline.
+  seedPremise?: string;
+  seedTitle?: string;
+  seedTone?: string;
   createdAt: number;
   updatedAt: number;
 };

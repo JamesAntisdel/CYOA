@@ -70,8 +70,19 @@ export function classifySeedPremiseLocally(premise: string): LocalSafetyResult {
 export type SeedStoryFlowProps = {
   /** Starter stories shown in the "pick where" step. */
   starters: StorySummary[];
-  /** Create a real save through the existing useLibrary launch path. */
-  onLaunchStarter: (starterId: string) => LibrarySave | null | Promise<LibrarySave | null>;
+  /**
+   * Create a real save through the existing useLibrary launch path. The
+   * seed-flow now passes the reader-authored title/premise/tone alongside
+   * the starter id so the host route can persist them on the save record
+   * — the backend uses them to override the starter's hardcoded seed in
+   * the LLM prompt.
+   */
+  onLaunchStarter: (input: {
+    starterId: string;
+    title: string;
+    premise: string;
+    tone: SeedTone;
+  }) => LibrarySave | null | Promise<LibrarySave | null>;
   /** Called after a successful local validation + save creation. */
   onSeedLaunched: (save: LibrarySave, draft: SeedDraftMetadata) => void;
 };
@@ -135,12 +146,27 @@ export function SeedStoryFlow({
 
     let save;
     try {
-      save = await onLaunchStarter(starterId);
+      save = await onLaunchStarter({
+        starterId,
+        title: trimmedTitle,
+        premise: trimmedPremise,
+        tone,
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : "seed_launch_failed";
-      setError(message === "guest_session_required"
-        ? "Start a session before launching a seed."
-        : `Could not launch: ${message}`);
+      if (message === "guest_session_required") {
+        setError("Start a session before launching a seed.");
+      } else if (message === "seed_premise_blocked" || message.includes("seed_premise_blocked")) {
+        // Server-side publishing-surface classifier rejected the premise.
+        // Mirror the copy used by the local-advisory classifier above so
+        // the reader gets the same actionable message regardless of which
+        // gate fired.
+        setSafetyWarning(
+          "This premise crosses the safety policy. Please rework the opening before launching.",
+        );
+      } else {
+        setError(`Could not launch: ${message}`);
+      }
       return;
     }
     if (!save) {

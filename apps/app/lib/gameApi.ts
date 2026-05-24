@@ -120,6 +120,12 @@ export async function createRemoteSave(input: {
    * turn. Format: `"voice.ash" | "voice.lark" | ...` (see useNarratorVoice).
    */
   voiceId?: string;
+  // Seed-flow inputs from creator's "Seed an adventure" UI. The backend
+  // validates seedPremise via evaluateTextPolicy(publishing surface) and
+  // throws seed_premise_blocked on block.
+  seedPremise?: string;
+  seedTitle?: string;
+  seedTone?: string;
 }): Promise<{ saveId: string; sceneId: string; scene: RemoteScene } | null> {
   if (!convexClient) return null;
   return callConvexHttp<any>("mutation", "game:createSave", input as unknown as Record<string, unknown>) as any;

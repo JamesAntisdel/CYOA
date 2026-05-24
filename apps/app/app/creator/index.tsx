@@ -171,7 +171,12 @@ export default function CreatorRoute() {
 
           <SeedStoryFlow
             starters={library.starterStories}
-            onLaunchStarter={(starterId) => library.createSave(starterId, "story", undefined, narrator.voiceId)}
+            onLaunchStarter={({ starterId, title, premise, tone }) =>
+              // Pass title as both titleOverride (so the library row shows
+              // the reader-authored title) and inside the seed object (so
+              // the backend persists it as the LLM `storyTitle` field).
+              library.createSave(starterId, "story", title, narrator.voiceId, { premise, title, tone })
+            }
             onSeedLaunched={(save) => router.push(`/read/${save.saveId}`)}
           />
 

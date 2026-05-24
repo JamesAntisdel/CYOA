@@ -142,10 +142,18 @@ export const queueSceneImage = internalMutationGeneric({
       updatedAt: now,
     });
 
-    // Kick off the async job. runAfter(0) puts it on the next tick.
+    // Kick off the async job. runAfter(0) puts it on the next tick. We
+    // pass the full scene context so runImagenJob can chain into
+    // queueSceneVideo with the resulting image's storageId (i2v) once
+    // bytes are stored — that's the whole point of doing image first.
     await ctx.scheduler.runAfter(0, ("media/sceneMedia:runImagenJob" as unknown) as any, {
       assetId,
       prompt: args.prompt,
+      accountId: args.accountId,
+      saveId: args.saveId,
+      sceneId: args.sceneId,
+      ...(args.nodeId ? { nodeId: args.nodeId } : {}),
+      ...(args.alt ? { alt: args.alt } : {}),
     });
 
     return { queued: true, assetId } as const;
@@ -156,6 +164,16 @@ export const runImagenJob = actionGeneric({
   args: {
     assetId: v.id("assets"),
     prompt: v.string(),
+    // Context for the post-Imagen Veo chain. When present, this action
+    // queues the video itself (with imageStorageId when bytes were
+    // stored) instead of relying on queueSceneMediaForSave's old
+    // parallel scheduling. The fields are optional so older in-flight
+    // schedules from before this change still complete cleanly.
+    accountId: v.optional(accountId),
+    saveId: v.optional(saveId),
+    sceneId: v.optional(v.id("scenes")),
+    nodeId: v.optional(v.string()),
+    alt: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const now = Date.now();
@@ -172,6 +190,11 @@ export const runImagenJob = actionGeneric({
     // picture, and the failure is logged for operators.
     let liveUrl: string | null = null;
     let liveError: string | null = null;
+    // Lifted out of the try block so the post-Imagen Veo queue can pass
+    // it as the i2v first-frame reference when bytes were stored. Stays
+    // null when Imagen falls back to placeholder — Veo then runs
+    // text-only, preserving today's behavior for the no-key case.
+    let imageStorageId: string | null = null;
     try {
       const live = await maybeRunImagen(args.prompt);
       if (live) {
@@ -181,6 +204,7 @@ export const runImagenJob = actionGeneric({
         const binary = decodeBase64ToUint8Array(live.bytes);
         const blob = new Blob([binary as unknown as BlobPart], { type: live.mime });
         const storageId = await (ctx as any).storage.store(blob);
+        imageStorageId = storageId as string;
         const rawUrl = (await (ctx as any).storage.getUrl(storageId)) as string;
         // Self-hosted Convex's storage.getUrl() returns its INTERNAL
         // origin (e.g. http://127.0.0.1:3210), which the browser can't
@@ -199,6 +223,37 @@ export const runImagenJob = actionGeneric({
       ("media/sceneMedia:markReady" as unknown) as any,
       { assetId: args.assetId, url, at: Date.now() },
     );
+
+    // Chain into Veo i2v. We always attempt to queue video at the end of
+    // the image job — even when Imagen fell back to placeholder bytes —
+    // so the reduced-motion / placeholder case still produces a clip,
+    // matching the old parallel-scheduling behavior. Pass imageStorageId
+    // only when live bytes were stored; runVeoJob falls back to a
+    // text-only Veo call when the storageId is absent.
+    //
+    // Wrapped in try/catch because video is a Pro tier and a queue
+    // failure must never crash the image job; the contract is still
+    // "text is the contract; media is a tier."
+    if (args.accountId && args.saveId && args.sceneId) {
+      try {
+        await ctx.runMutation(
+          ("media/sceneMedia:queueSceneVideo" as unknown) as any,
+          {
+            accountId: args.accountId,
+            saveId: args.saveId,
+            sceneId: args.sceneId,
+            ...(args.nodeId ? { nodeId: args.nodeId } : {}),
+            ...(args.alt ? { alt: args.alt } : {}),
+            prompt: args.prompt,
+            ...(imageStorageId ? { imageStorageId } : {}),
+          },
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "queueSceneVideo_failed";
+        console.warn(`[sceneMedia] post-Imagen queueSceneVideo failed: ${message}`);
+      }
+    }
+
     return { ready: true, url, ...(liveError ? { liveError } : {}) };
   },
 });
@@ -211,6 +266,12 @@ export const queueSceneVideo = internalMutationGeneric({
     prompt: v.string(),
     nodeId: v.optional(v.string()),
     alt: v.optional(v.string()),
+    // i2v: storage id of the scene's Imagen still. When present,
+    // runVeoJob fetches the bytes and includes them as the first-frame
+    // `image` reference in the Veo predictLongRunning request — the
+    // video then opens on the exact still the reader saw above. Absent
+    // when Imagen fell back to a placeholder; Veo runs text-only then.
+    imageStorageId: v.optional(v.id("_storage")),
   },
   handler: async (ctx, args) => {
     const account = await ctx.db.get(args.accountId);
@@ -282,10 +343,15 @@ export const queueSceneVideo = internalMutationGeneric({
       updatedAt: now,
     });
 
-    console.log(`[sceneMedia] queueSceneVideo inserted asset=${assetId} model=${cfg.model}, scheduling runVeoJob`);
+    console.log(
+      `[sceneMedia] queueSceneVideo inserted asset=${assetId} model=${cfg.model} i2v=${
+        args.imageStorageId ? "yes" : "no"
+      }, scheduling runVeoJob`,
+    );
     await ctx.scheduler.runAfter(0, ("media/sceneMedia:runVeoJob" as unknown) as any, {
       assetId,
       prompt: args.prompt,
+      ...(args.imageStorageId ? { imageStorageId: args.imageStorageId } : {}),
     });
 
     return { queued: true, assetId } as const;
@@ -302,10 +368,18 @@ export const runVeoJob = actionGeneric({
   args: {
     assetId: v.id("assets"),
     prompt: v.string(),
+    // i2v: storage id of the scene's Imagen still. When present we
+    // fetch the bytes from Convex storage and pass them to Veo as the
+    // first-frame `image` reference so the generated clip opens on the
+    // exact still the reader sees above. Absent → text-only Veo path
+    // (placeholder image or Imagen failure case).
+    imageStorageId: v.optional(v.id("_storage")),
   },
   handler: async (ctx, args) => {
     const startedAt = Date.now();
-    console.log(`[sceneMedia] runVeoJob start asset=${args.assetId}`);
+    console.log(
+      `[sceneMedia] runVeoJob start asset=${args.assetId} i2v=${args.imageStorageId ? "yes" : "no"}`,
+    );
     await ctx.runMutation(
       ("media/sceneMedia:markGenerating" as unknown) as any,
       { assetId: args.assetId, jobId: `veo_${startedAt}`, at: startedAt },
@@ -320,8 +394,37 @@ export const runVeoJob = actionGeneric({
       return { ready: false, error: "veo_no_api_key" };
     }
 
+    // Load the i2v first-frame bytes, if available. A fetch / encoding
+    // failure is non-fatal: we drop back to text-only Veo rather than
+    // failing the whole job, so a transient storage hiccup doesn't kill
+    // the cinematic for the scene.
+    let imageInput: { bytesBase64Encoded: string; mimeType: string } | null = null;
+    if (args.imageStorageId) {
+      try {
+        const blob = (await (ctx as any).storage.get(args.imageStorageId)) as Blob | null;
+        if (blob) {
+          const buffer = await blob.arrayBuffer();
+          imageInput = {
+            bytesBase64Encoded: encodeUint8ArrayToBase64(new Uint8Array(buffer)),
+            // Blob.type round-trips from the original store({ type }) call
+            // (we always store Imagen output as image/png). Fall back to
+            // image/png if the type is empty for any reason.
+            mimeType: blob.type || "image/png",
+          };
+          console.log(
+            `[sceneMedia] runVeoJob i2v image loaded bytes=${buffer.byteLength} mime=${imageInput.mimeType}`,
+          );
+        } else {
+          console.warn(`[sceneMedia] runVeoJob i2v image storage.get returned null for ${args.imageStorageId}`);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "i2v_image_load_failed";
+        console.warn(`[sceneMedia] runVeoJob i2v image load failed: ${message}`);
+      }
+    }
+
     try {
-      const operationName = await submitVeoLongRunning(args.prompt, apiKey);
+      const operationName = await submitVeoLongRunning(args.prompt, apiKey, imageInput);
       console.log(`[sceneMedia] runVeoJob submitted asset=${args.assetId} operation=${operationName}`);
       if (!operationName) {
         await ctx.runMutation(
@@ -729,20 +832,21 @@ export async function queueSceneMediaForSave(
     prompt,
   };
   try {
+    // queueSceneImage is the single entry into the visual pipeline now:
+    // runImagenJob queues queueSceneVideo at the end with the image's
+    // storageId so Veo can use it as the first-frame reference (i2v).
+    // The old parallel queueSceneVideo call here would have raced
+    // Imagen and produced a video whose first frame doesn't match the
+    // still — that's the visible-mismatch bug the user reported. The
+    // post-Imagen chain still queues video when Imagen falls back to a
+    // placeholder (text-only Veo path), preserving the reduced-motion
+    // fallback behavior.
     await ctx.runMutation(
       ("media/sceneMedia:queueSceneImage" as unknown) as any,
       { ...baseArgs, alt: args.alt ?? `Scene illustration for ${args.nodeId ?? "scene"}` },
     );
   } catch {
     // non-fatal — Pro media is a tier, text is the contract
-  }
-  try {
-    await ctx.runMutation(
-      ("media/sceneMedia:queueSceneVideo" as unknown) as any,
-      { ...baseArgs, alt: args.alt ?? `Scene cinematic for ${args.nodeId ?? "scene"}` },
-    );
-  } catch {
-    // non-fatal — Veo failure leaves MediaPlate at Image-ready (reduced-motion fallback)
   }
   // Only queue narration when the caller explicitly provided prose. We
   // refuse to fall back to the (truncated, visual-shaped) `prompt` here
@@ -928,6 +1032,20 @@ function decodeBase64ToUint8Array(b64: string): Uint8Array {
   return out;
 }
 
+// Encode a Uint8Array as a base64 string. Used for the Veo i2v path,
+// which needs the Imagen still as `bytesBase64Encoded`. We chunk the
+// String.fromCharCode call because passing a 1–2 MiB Uint8Array in a
+// single call hits the V8 argument-count limit on the spread operator.
+function encodeUint8ArrayToBase64(bytes: Uint8Array): string {
+  const CHUNK = 0x8000;
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    const chunk = bytes.subarray(i, i + CHUNK);
+    binary += String.fromCharCode(...(chunk as unknown as number[]));
+  }
+  return btoa(binary);
+}
+
 async function runImagenViaGeminiApi(prompt: string, apiKey: string): Promise<ImagenBytes | null> {
   const model = process.env.GEMINI_IMAGE_MODEL ?? "imagen-4.0-fast-generate-001";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:predict`;
@@ -995,11 +1113,22 @@ function resolveVeoConfigFromEnv(): VeoEnvConfig {
 // Used by the runVeoJob action — the actual polling happens in
 // pollVeoJob via the scheduler so no single action call blocks on the
 // long-running operation.
-async function submitVeoLongRunning(prompt: string, apiKey: string): Promise<string | null> {
+//
+// When `image` is provided, the call is image-to-video (i2v): Veo opens
+// the generated clip on the supplied still and animates from there. The
+// `image` instance field is documented for `veo-3.x-*-generate-preview`
+// at https://ai.google.dev/gemini-api/docs/video (sibling of `prompt`).
+async function submitVeoLongRunning(
+  prompt: string,
+  apiKey: string,
+  image: { bytesBase64Encoded: string; mimeType: string } | null = null,
+): Promise<string | null> {
   const cfg = resolveVeoConfigFromEnv();
   const submitUrl = `https://generativelanguage.googleapis.com/v1beta/models/${cfg.model}:predictLongRunning`;
   const submitBody = {
-    instances: [{ prompt }],
+    instances: [
+      image ? { prompt, image } : { prompt },
+    ],
     parameters: {
       aspectRatio: cfg.aspectRatio,
       durationSeconds: Math.round(cfg.durationMs / 1000),

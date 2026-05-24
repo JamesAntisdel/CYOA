@@ -68,13 +68,17 @@ export function useLibrary(session: GuestSession | null) {
       mode: "story" | "hardcore" = "story",
       titleOverride?: string,
       voiceId?: string,
+      seed?: { premise?: string; title?: string; tone?: string },
     ) => {
       if (!session) {
         throw new Error("guest_session_required");
       }
 
       const story = starterStories.find((starter: StorySummary) => starter.id === storyId);
-      const title = titleOverride ?? story?.title;
+      // The local fallback path now also honors the seed-flow title so the
+      // library row shows the reader-authored title even when the remote
+      // save call is unavailable.
+      const title = titleOverride ?? seed?.title ?? story?.title;
       if (!title) {
         throw new Error(`story_not_found:${storyId}`);
       }
@@ -111,6 +115,14 @@ export function useLibrary(session: GuestSession | null) {
             // voice. Omitted when undefined so the backend can apply its
             // own default (voice.ash).
             ...(voiceId ? { voiceId } : {}),
+            // Seed-flow inputs — the backend runs the publishing-surface
+            // safety classifier on seedPremise and throws
+            // `seed_premise_blocked` if it's rejected. We forward each
+            // field only when truthy because `exactOptionalPropertyTypes`
+            // rejects passing `undefined` for missing optional keys.
+            ...(seed?.premise ? { seedPremise: seed.premise } : {}),
+            ...(seed?.title ? { seedTitle: seed.title } : {}),
+            ...(seed?.tone ? { seedTone: seed.tone } : {}),
           })
         : null;
       if (remote) {

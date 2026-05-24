@@ -80,6 +80,15 @@ export default defineSchema({
     // map to a Google Cloud TTS voice via convex/llm/ttsVoices.ts. Optional
     // for backwards compatibility with saves that pre-date narration.
     voiceId: v.optional(v.string()),
+    // Seed-flow inputs: when the reader authored a custom premise via the
+    // creator's "Seed an adventure" UI, the title/premise/tone they typed
+    // are persisted here. The LLM-driven scene pipeline prefers these
+    // over the starter story's hardcoded seed text so the opening reads
+    // from the reader's premise instead of the starter map. Optional for
+    // saves that came in via the legacy starter-only path.
+    seedPremise: v.optional(v.string()),
+    seedTitle: v.optional(v.string()),
+    seedTone: v.optional(v.string()),
     createdAt: v.number(),
     updatedAt: v.number(),
   })

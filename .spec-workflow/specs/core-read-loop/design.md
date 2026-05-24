@@ -125,6 +125,14 @@ sequenceDiagram
   end
 ```
 
+### Veo image-to-video (i2v) chain (clarification to Requirement 24)
+
+**2026-05-23 addition (commit pending):** the Imagen still and the Veo clip are no longer scheduled in parallel. `queueSceneMediaForSave` now queues only `queueSceneImage`; `runImagenJob`, after storing the live Imagen bytes via `ctx.storage.store`, chains into `queueSceneVideo` with the resulting `imageStorageId`. `runVeoJob` fetches the bytes from Convex storage, base64-encodes them, and includes them as the `image` field on the Veo `predictLongRunning` instance so the generated clip opens on the same still the reader sees in the image plate above the prose. When Imagen falls back to a placeholder (no key) or fails, video is still queued — without `imageStorageId` — so Veo runs text-only and the reduced-motion / placeholder fallback continues to produce a clip.
+
+**2026-05-23 dedup (commit pending):** `completeSceneStream` previously also called `queueSceneVideo` directly in parallel with `queueSceneImage` (no `imageStorageId`), so every scene incurred two Veo jobs — one text-only racing Imagen and the proper i2v chain — doubling Veo spend and burning through the free-tier 10-RPD `veo-3.1-lite-generate-preview` quota twice as fast. The duplicate call is removed; all Veo queueing flows exclusively through the post-Imagen chain in `runImagenJob` (or the text-only fallback inside that chain when Imagen is unavailable).
+
+This is per-scene first-frame conditioning only. Cross-scene visual continuity (character / lighting carry-over via `referenceImages`) requires the full or fast `veo-3.1-generate-preview` model — the current `veo-3.1-lite-generate-preview` does not accept `referenceImages`. That step-up is deferred for a separate cost / design pass.
+
 ### Free-form Choice ("Option D") (clarification to Requirement 5)
 
 **2026-05-23 addition (commit pending):** the reader can type their own action instead of selecting one of the three LLM-proposed choices. The UI affordance is a 4th row in `ChoiceList` ("Write your own…") that expands inline into a text input. The mutation under the hood is the same `game.beginStreamingChoice`, but with two additions:
@@ -133,6 +141,85 @@ sequenceDiagram
 - **`userText` payload** — the trimmed text (1–200 chars) is sent alongside the choiceId. Convex runs `evaluateTextPolicy` on it in the `publishing` surface (matches the creator-seed flow's treatment of user-typed content, so a block is a hard block and not a `safe_end`), persists it to `turn_history.choiceLabel`, and the next-scene memory beat reads as `from <node> chose "<typed text>" → entered <next>` instead of an opaque synthetic id.
 
 The free-form path is **not** tier-gated — it's available to every reader on every LLM-driven save. It is rejected for scripted / local-engine stories (`AppError("freeform_not_supported_for_story")`) because the deterministic engine needs a known edge id to apply scripted effects. Length and safety errors surface as specific AppError codes (`freeform_text_empty | freeform_text_too_long | freeform_text_blocked`) that the client maps to copy in the in-book voice — never raw codes, never stack traces.
+
+### Seed-an-Adventure end-to-end plumbing (clarification to Requirement 22)
+
+**2026-05-23 addition (commit pending):** before this fix, `SeedStoryFlow` collected starter + title + premise + tone from the reader but only the `starterId` reached the server — the typed premise was persisted to localStorage as a draft and never threaded to the LLM. Readers landed in the starter's content (typically `training-room`, the first entry in `starters[]`) regardless of what they typed. The end-to-end plumbing now flows:
+
+1. **UI** — `SeedStoryFlow.tsx` `onLaunchStarter` prop is now `({ starterId, title, premise, tone }) => Promise<void>` (was `(starterId) => Promise<void>`). `apps/app/app/creator/index.tsx` calls `library.createSave(starterId, "story", title, narrator.voiceId, { premise, title, tone })`.
+2. **Hook** — `useLibrary.createSave` accepts an optional `seed?: { premise?; title?; tone? }` arg, uses `seed.title` as the local save title when present, and threads the object to `createRemoteSave`.
+3. **API** — `apps/app/lib/gameApi.ts:createRemoteSave` gains optional `seedPremise`/`seedTitle`/`seedTone` string fields.
+4. **Server** — `convex/game.ts:createSave` accepts the three new args, runs `evaluateTextPolicy({ surface: "publishing" })` on the trimmed `seedPremise` (block → hard `seed_premise_blocked` AppError — same surface as the free-form choice flow, so a safety hit is a hard block rather than a `safe_end`), and persists the fields on the save record via `cleanDoc` + conditional spread.
+5. **Schema** — `convex/schema.ts` `saves` table and `convex/saves.ts:SaveRecord` both gain `seedPremise: v.optional(v.string())`, `seedTitle: v.optional(v.string())`, `seedTone: v.optional(v.string())`.
+6. **LLM** — `beginStreamingChoice`, `runLlmDrivenBeginStreaming`, and `runLlmDrivenSubmitChoice` prefer `save.seedPremise` over `startNode?.seed`, `save.seedTitle` over `story.title`, and `save.seedTone` over `summary?.tone` when present.
+
+The starter still provides the engine skeleton (initial state, nodes, endings, safety profile, media policy); only the *narrative* values — premise, title, tone — are overridden by the reader's typed input, so engine determinism is preserved.
+
+### NPCs and Companions (design for Requirement 31)
+
+**2026-05-24 addition (future feature, no code yet):** today's `PlayerState` (see `packages/engine/src/state.ts`) carries `vitality`, `currency`, `attributes`, `inventory`, and `flags` only — there is no concept of a named, persistent non-player character. Requirement 31 introduces NPCs and companions as a first-class engine concern. The design holds the existing invariants (engine owns mutation, LLM proposes prose + choices, prompt builder surfaces only what the next turn needs) and extends each layer rather than bolting on a parallel system.
+
+**Engine state extension.** `PlayerState` gains an optional `npcs: Record<string, NpcState>` field. `NpcState` is shaped as:
+
+```
+{
+  id: string;
+  name: string;
+  role: "companion" | "ally" | "rival" | "neutral" | "antagonist";
+  disposition: number;            // signed scalar, engine-clamped
+  location?: string;              // scene/node id the NPC is currently in
+  attributes: Record<string, Stat>;
+  inventory?: Item[];
+  knownFacts: string[];
+  relationships?: Record<string, number>; // other npcId → signed scalar
+  flags: Record<string, boolean | number>;
+}
+```
+
+The engine `schemaVersion` increments by one. `migrateEngineState` adds an empty `npcs: {}` to any legacy state on load so the field is always defined. The Convex `saves` table stores `state` as a JSON column, so its shape does not change and no Convex schema bump is required beyond the engine version bookkeeping that `runMigrations` already handles.
+
+**LLM contract (consistency with Requirement 9).** The same guard that prevents an LLM proposal from mutating `PlayerState` directly applies to `npcs`: the proposal carries prose, choices, and effect references but never a literal state patch. The proposal schema gains one optional field, `npcMentions: string[]`, which is purely presentational/anchor metadata — the engine reads it only to decide which NPC sheets to surface in the *next* prompt. All NPC mutations flow through engine-authored effects validated by `applyChoiceAndEnterNode`:
+
+- `npc_spawn` — registers a new `NpcState` in `state.npcs`.
+- `npc_despawn` — removes by id.
+- `npc_relocate` — sets `location`.
+- `npc_disposition_delta` — signed adjust, engine-clamped.
+- `npc_attribute_delta` — same `Stat` math the player uses.
+- `npc_inventory_add` / `npc_inventory_remove` — symmetric with player inventory effects.
+- `npc_flag_set` — boolean/number flag set.
+- `npc_learn_fact` — appends to `knownFacts` (deduped).
+
+**Prompt-builder changes.** When `convex/llm/prompts/scene.ts` builds the scene prompt, it includes a compact NPC sheet for each NPC whose `location` matches the current scene OR who appears in the last 3 turns of the memory window. The sheet is deliberately tight: `name`, `role`, `disposition` mapped to a one-word vibe (`friendly` / `wary` / `hostile`), top 3 `knownFacts`, and visible attributes only — hidden attributes are stripped the same way the existing "Player state summary" pattern hides them. At most 5 NPCs are surfaced per turn (priority order: currently-present, then most-recently-mentioned). A chatty cast otherwise bloats every prompt token, which directly hits LLM cost and latency on a per-turn surface.
+
+**Choice schema extensions.** Authored choice effects MAY declare `requiresNpc: <npcId>`; `evaluateNodeChoices` filters such choices out when the named NPC is not in the current scene, the same way it already hides choices that fail a flag or item gate. An optional `targetNpc: <npcId>` is passed to the LLM as a presentational hint so the proposal text can read as "this choice acts on Mira" rather than ambient. The existing `skill_check` effect gains an `includeCompanions: true` option: when set, the check aggregates attribute values from every NPC with `role: "companion"` into the roll alongside the player's own stat.
+
+**Conversation surface.**
+
+- **v0** reuses the free-form "Option D" path already shipped (see the section above). The reader types "ask Mira where the lantern came from", the prompt builder has already included Mira's sheet because she is in the current scene, and the LLM responds in character. No new UI, no new mutation, no engine change beyond the prompt-builder additions.
+- **Phase 2 (stretch)** is a dedicated "Talk to &lt;NPC&gt;" choice variant. Selecting it opens a focused turn loop where the next scene is constrained to dialogue with that NPC and at most one `npc_*` effect, with an always-present "End conversation" choice. Implementation-wise this is a prompt-mode flag on the proposal request — no schema change, no new mutation surface.
+
+Both surfaces consume the same daily-turn allowance and run `evaluateTextPolicy({ surface: "publishing" })` on any typed text, matching the free-form choice and seed-premise treatment.
+
+**Authored seed integration.** Starter story definitions (see `packages/stories/src/*/`) MAY include an `initialNpcs: Record<string, NpcState>` block. `createInitialState` merges it into the initial `PlayerState.npcs` when present. The "Seed an adventure" creator UI explicitly does NOT include an NPC roster builder in v0 — this is out of scope and documented as a future iteration. Readers writing free-form premises CAN describe characters in prose; the LLM will introduce them organically, and the engine's first `npc_spawn` effect (proposed by the LLM via the new presentational metadata and lifted by an engine adapter on first mention) is the v0 mechanism for getting authored-by-the-reader characters into `state.npcs`.
+
+**Co-op interaction.** `coop_rooms` is human-to-human; NPCs are state-driven AI actors. The two coexist cleanly — a save with two human readers can also have a companion NPC. Vote mode arbitrates only the human choices, and the participating-human-count check is not affected by NPC count.
+
+**Data flow (mirrors the Seed-an-Adventure step list).**
+
+1. **Seed** — authored `initialNpcs` (or none) land in `state.npcs` via `createInitialState`.
+2. **Surface** — `convex/llm/prompts/scene.ts` selects up to 5 relevant NPCs and emits their compact sheets into the scene prompt.
+3. **Propose** — the LLM returns prose, choices, and optional `npcMentions[]`. No direct state patch.
+4. **Resolve** — `applyChoiceAndEnterNode` walks the selected choice's authored effect list, executing any `npc_*` effects; an engine adapter also lifts first-mention `npcMentions` into a synthesized `npc_spawn` when no matching `npcs[id]` exists yet.
+5. **Persist** — the updated `state.npcs` is part of the next save patch alongside player state.
+6. **Remember** — the memory window includes recent NPC mentions so the LLM keeps continuity across turns.
+7. **Repeat** — subsequent prompts re-fetch the relevant subset; NPCs not in scene and not recently mentioned drop out of the prompt automatically.
+
+**Out of scope for v0.**
+
+- Persistent NPC backstory authoring tools (no creator UI for rosters).
+- NPC-vs-NPC interactions outside what the LLM proposes in prose.
+- Cross-save NPC roster persistence — each save owns its own `state.npcs`.
+- Cinematic and portrait media for NPCs — Pro media remains scene-level only in v0.
 
 ### Modular Design Principles
 
