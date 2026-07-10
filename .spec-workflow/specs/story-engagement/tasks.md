@@ -170,7 +170,7 @@ so the "something shifted…" echo fires (R5.2). All tasks below done.
 
 ---
 
-## WAVE 2 — TEETH & HEARTS
+## WAVE 2 — TEETH & HEARTS  ✅ SHIPPED 2026-07-10 (commits b1e02b3, eee10e7)
 
 ### Agent W2-ENGINE — owns engine skill-check/clock/npc/codex extensions + tests
 
