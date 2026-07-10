@@ -1,17 +1,25 @@
 import { useState } from "react";
-import { TextInput, View } from "react-native";
+import { View } from "react-native";
 
-import { Button, Divider, Stamp, Surface, Text } from "../primitives";
+import { SOCIAL_PROVIDER_LABELS, type SocialProvider } from "../../lib/authApi";
+import { useBreakpoint } from "../../lib/responsive";
+import { Button, Divider, Field, Note, Stamp, Surface, Text } from "../primitives";
 import { useAppTheme } from "../../theme";
 
-export type SignInProvider = "apple" | "google" | "email";
+export type { SocialProvider } from "../../lib/authApi";
+/** @deprecated use SocialProvider; kept for callers that also model the email path. */
+export type SignInProvider = SocialProvider | "email";
 
 type SignInFormProps = {
   defaultEmail?: string;
   disabled?: boolean;
   error?: string | null;
+  /** When false the email magic-link entry is hidden (server has no email delivery). */
+  magicLinkEnabled?: boolean;
+  /** Social providers to render — only configured/available providers should be passed. */
+  socialProviders?: SocialProvider[];
   onSendMagicLink: (email: string) => void;
-  onProviderSignIn?: (provider: Exclude<SignInProvider, "email">) => void;
+  onProviderSignIn?: (provider: SocialProvider) => void;
 };
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -20,10 +28,13 @@ export function SignInForm({
   defaultEmail = "",
   disabled = false,
   error = null,
+  magicLinkEnabled = true,
+  socialProviders = ["apple", "google"],
   onSendMagicLink,
   onProviderSignIn,
 }: SignInFormProps) {
   const { tokens } = useAppTheme();
+  const { isPhone } = useBreakpoint();
   const [email, setEmail] = useState(defaultEmail);
   const [touched, setTouched] = useState(false);
 
@@ -31,6 +42,9 @@ export function SignInForm({
   const emailValid = EMAIL_PATTERN.test(trimmed);
   const showError = touched && !emailValid;
   const submitDisabled = disabled || !emailValid;
+
+  const hasSocial = socialProviders.length > 0;
+  const nothingAvailable = !magicLinkEnabled && !hasSocial;
 
   const handleSubmit = () => {
     setTouched(true);
@@ -44,87 +58,87 @@ export function SignInForm({
         <Stamp>Sign in</Stamp>
         <Text variant="title">Keep the tale yours.</Text>
         <Text muted variant="bodySmall">
-          Saves stay portable across devices once you sign in. No password — we send a link to your inbox.
+          Saves stay portable across devices once you sign in.
+          {magicLinkEnabled ? " No password — we send a link to your inbox." : ""}
         </Text>
       </View>
 
-      <View style={{ gap: tokens.spacing.sm }}>
-        <Text variant="caption" muted>
-          Email address
-        </Text>
-        <TextInput
-          accessibilityLabel="Email address"
-          autoCapitalize="none"
-          autoComplete="email"
-          autoCorrect={false}
-          editable={!disabled}
-          inputMode="email"
-          keyboardType="email-address"
-          onBlur={() => setTouched(true)}
-          onChangeText={setEmail}
-          onSubmitEditing={handleSubmit}
-          placeholder="reader@yourdomain.com"
-          placeholderTextColor={tokens.colors.textFaint}
-          style={{
-            backgroundColor: tokens.colors.background,
-            borderColor: tokens.colors.border,
-            borderRadius: tokens.radii.sm,
-            borderWidth: tokens.borderWidths.regular,
-            color: tokens.colors.text,
-            fontSize: tokens.typography.body,
-            minHeight: 44,
-            paddingHorizontal: tokens.spacing.md,
-            paddingVertical: tokens.spacing.sm,
-          }}
-          value={email}
-        />
-        {showError ? (
-          <Text variant="caption" style={{ color: tokens.colors.danger }}>
-            Enter a valid email address.
+      {nothingAvailable ? (
+        <Note>
+          Sign-in is not configured for this environment yet. Add an auth provider or email delivery to enable it.
+        </Note>
+      ) : null}
+
+      {/*
+       * Magic-link field. Single primary action ("Send sign-in link") sits below.
+       * Validation copy routes through Field's `error` slot so the danger-color
+       * caption is rendered consistently with account / settings forms. Hidden
+       * entirely when the server has no email delivery configured.
+       */}
+      {magicLinkEnabled ? (
+        <>
+          <Field
+            accessibilityLabel="Email address"
+            autoCapitalize="none"
+            autoComplete="email"
+            autoCorrect={false}
+            editable={!disabled}
+            error={showError ? "Enter a valid email address." : error ?? null}
+            inputMode="email"
+            keyboardType="email-address"
+            label="Email address"
+            onBlur={() => setTouched(true)}
+            onChangeText={setEmail}
+            onSubmitEditing={handleSubmit}
+            placeholder="reader@yourdomain.com"
+            value={email}
+          />
+
+          <Button
+            accessibilityLabel="Send sign-in link"
+            disabled={submitDisabled}
+            onPress={handleSubmit}
+            variant="primary"
+          >
+            Send sign-in link
+          </Button>
+        </>
+      ) : null}
+
+      {!magicLinkEnabled && error ? <Note>{error}</Note> : null}
+
+      {magicLinkEnabled && hasSocial ? (
+        <View style={{ alignItems: "center", flexDirection: "row", gap: tokens.spacing.sm }}>
+          <Divider style={{ flex: 1 }} />
+          <Text muted variant="caption">
+            or continue with
           </Text>
-        ) : null}
-        {error ? (
-          <Text variant="caption" style={{ color: tokens.colors.danger }}>
-            {error}
-          </Text>
-        ) : null}
-      </View>
+          <Divider style={{ flex: 1 }} />
+        </View>
+      ) : null}
 
-      <Button
-        accessibilityLabel="Send sign-in link"
-        disabled={submitDisabled}
-        onPress={handleSubmit}
-        variant="primary"
-      >
-        Send sign-in link
-      </Button>
-
-      <View style={{ alignItems: "center", flexDirection: "row", gap: tokens.spacing.sm }}>
-        <Divider style={{ flex: 1 }} />
-        <Text muted variant="caption">
-          or continue with
-        </Text>
-        <Divider style={{ flex: 1 }} />
-      </View>
-
-      <View style={{ flexDirection: "row", gap: tokens.spacing.sm }}>
-        <Button
-          accessibilityLabel="Continue with Apple"
-          disabled={disabled}
-          onPress={() => onProviderSignIn?.("apple")}
-          style={{ flex: 1 }}
-        >
-          Apple
-        </Button>
-        <Button
-          accessibilityLabel="Continue with Google"
-          disabled={disabled}
-          onPress={() => onProviderSignIn?.("google")}
-          style={{ flex: 1 }}
-        >
-          Google
-        </Button>
-      </View>
+      {/*
+       * Provider row. On phone we stack vertically so each provider button keeps
+       * its full 44px+ touch height without flex-1 squeezing them into tiny
+       * half-width pills. Desktop+ keeps the canonical side-by-side row. Only
+       * providers the server has secrets for are passed in, so every button here
+       * initiates a real OAuth flow.
+       */}
+      {hasSocial ? (
+        <View style={{ flexDirection: isPhone ? "column" : "row", flexWrap: "wrap", gap: tokens.spacing.sm }}>
+          {socialProviders.map((provider) => (
+            <Button
+              key={provider}
+              accessibilityLabel={`Continue with ${SOCIAL_PROVIDER_LABELS[provider]}`}
+              disabled={disabled}
+              onPress={() => onProviderSignIn?.(provider)}
+              style={isPhone ? undefined : { flexBasis: "45%", flexGrow: 1 }}
+            >
+              {SOCIAL_PROVIDER_LABELS[provider]}
+            </Button>
+          ))}
+        </View>
+      ) : null}
     </Surface>
   );
 }

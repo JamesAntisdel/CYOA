@@ -31,6 +31,7 @@
     "smoke:live-llm": "node scripts/smoke/live-llm.mjs",
     "smoke:live-stripe": "node scripts/smoke/live-stripe.mjs",
     "smoke:launch-verify": "node scripts/smoke/launch-verify.mjs",
+    "smoke:llm-stream": "node scripts/smoke/llm-stream-smoke.mjs",
     "infra:preview": "pnpm --filter @cyoa/infra preview",
     "infra:deploy": "pnpm --filter @cyoa/infra deploy",
     "verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm build"

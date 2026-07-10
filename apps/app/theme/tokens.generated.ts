@@ -26,7 +26,7 @@ export const primitiveTokens = rawTokens as Readonly<{
     };
     ember: { "300": string; "400": string; "500": string; "600": string; "700": string };
     candle: { "300": string; "400": string; "500": string; "600": string; "700": string };
-    night: { "600": string; "700": string; "800": string; "900": string };
+    night: { "500": string; "600": string; "700": string; "800": string; "900": string };
   };
   font: {
     display: string;

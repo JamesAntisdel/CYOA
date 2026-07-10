@@ -13,12 +13,20 @@ export function createDeterministicProvider(): LlmProvider {
     name: "deterministic",
     role: "deterministic",
     health: () => ({ provider: "deterministic", available: true }),
-    generate: async (request: SceneGenerationRequest): Promise<ProviderGeneration> => {
+    generate: async (request: SceneGenerationRequest, _signal?: AbortSignal): Promise<ProviderGeneration> => {
       const text = request.mode === "llm-driven" ? llmDrivenJson(request) : authoredText(request);
+      // `isFallback: true` is the out-of-band sentinel that propagates through
+      // RouterResult → SSE → completeSceneStream → scene.isFallback so the
+      // reader UI can render a "this turn couldn't generate" panel instead of
+      // the deterministic placeholder prose. The deterministic provider only
+      // serves as a last-resort safety net (every real provider failed or was
+      // ineligible), and the reader should NEVER see this output as if it
+      // were a real scene.
       return {
         provider: "deterministic",
         text,
         tokenUsage: estimateTokenUsage(request.seed, text),
+        isFallback: true,
       };
     },
   };
@@ -31,8 +39,12 @@ function authoredText(request: SceneGenerationRequest): string {
 
 function llmDrivenJson(request: SceneGenerationRequest): string {
   const premise = (request.premise ?? request.seed ?? "The page steadies.").slice(0, 320);
-  // Two deterministic choices that exercise both stat and flag effects so the
-  // engine's validation surface is fully covered in local dev runs.
+  // Derive a visualDescription so the image pipeline never falls back to
+  // raw-prose truncation when the deterministic provider serves. Uses the
+  // premise as the world anchor since that's the only concrete signal we
+  // have in the deterministic path.
+  const visualDescription =
+    `Wide establishing shot anchored in the reader's premise: ${premise.slice(0, 240)}`.slice(0, 320);
   const payload = {
     prose: `${premise}\n\nThe candle holds; the page waits for the next word. Somewhere just beyond the margin, a sound that hasn't yet been a sound.`,
     choices: [
@@ -50,6 +62,7 @@ function llmDrivenJson(request: SceneGenerationRequest): string {
       },
     ],
     terminal: null,
+    visualDescription,
   };
   return JSON.stringify(payload);
 }

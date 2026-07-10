@@ -1,7 +1,10 @@
-import { makeFunctionReference } from "convex/server";
-import type { Story } from "@cyoa/engine";
+import type { NpcState, Story } from "@cyoa/engine";
 
 import { convexClient, convexSiteUrl } from "./convex";
+import {
+  convexHttp as callConvexHttp,
+  convexHttpWithError as callConvexHttpWithError,
+} from "./convexHttp";
 
 type AgeSelection = "13-17" | "18+" | "under_13";
 type Mode = "story" | "hardcore";
@@ -44,6 +47,14 @@ export type RemoteScene = {
   storyId: string;
   nodeId: string;
   turnNumber: number;
+  /**
+   * Reader-authored title from the Seed-an-Adventure flow when present
+   * (Requirement 22.7). The reader screen prefers this over the engine
+   * story.title so seeded saves display the user's title instead of
+   * the open-canvas shell's "Open Canvas" placeholder. Optional for
+   * legacy starters and saves predating the seed-flow.
+   */
+  seedTitle?: string;
   prose: string;
   streamStatus: "pending" | "streaming" | "complete" | "failed" | "blocked";
   choices: RemoteChoice[];
@@ -65,27 +76,28 @@ export type RemoteScene = {
    * Optional for the same backwards-compat reason as `vitality`.
    */
   inventory?: Array<{ id: string; label: string }>;
+  /**
+   * NPC roster mirrored from `PlayerState.npcs` (Requirement 31). Optional
+   * for backwards compatibility — servers that haven't yet plumbed
+   * `state.npcs` through `projectCurrentScene` / `projectLlmDrivenScene` omit
+   * the field, and the client renders no roster section.
+   *
+   * NOTE (cross-agent coordination): the prompt-builder agent is adding the
+   * server-side projection of this field; the duplicate declaration here is
+   * intentional and shape-compatible.
+   */
+  npcs?: Record<string, NpcState>;
+  /**
+   * Deterministic-fallback sentinel mirrored from `scene.isFallback`. The
+   * server only sets this when the LLM router fell through to the
+   * deterministic provider (every real provider failed / was ineligible).
+   * The reader UI renders the FallbackTurnPanel ("the page is blank for a
+   * moment — try again") in place of the deterministic placeholder prose
+   * + choices when this is true. Absent on every real-provider scene; the
+   * client treats absent as `false`.
+   */
+  isFallback?: boolean;
   terminal?: { endingId: string; kind: "success" | "death" | "safe" | "other" } | null;
-};
-
-const gameApi = {
-  createGuestAccount: makeFunctionReference<"mutation">("game:createGuestAccount"),
-  listLibrary: makeFunctionReference<"query">("game:listLibrary"),
-  createSave: makeFunctionReference<"mutation">("game:createSave"),
-  getCurrentScene: makeFunctionReference<"query">("game:getCurrentScene"),
-  getSceneMedia: makeFunctionReference<"query">("media/sceneMedia:getSceneMedia"),
-  submitChoice: makeFunctionReference<"mutation">("game:submitChoice"),
-  beginStreamingChoice: makeFunctionReference<"mutation">("game:beginStreamingChoice"),
-  getProfile: makeFunctionReference<"query">("accountFunctions:getProfile"),
-  exportAccount: makeFunctionReference<"query">("accountFunctions:exportAccount"),
-  deleteAccount: makeFunctionReference<"mutation">("accountFunctions:deleteAccount"),
-  previewPlan: makeFunctionReference<"query">("billingFunctions:previewPlan"),
-  createCheckoutSession: makeFunctionReference<"action">("billingFunctions:createCheckoutSession"),
-  createCreatorDraft: makeFunctionReference<"mutation">("creatorFunctions:createDraft"),
-  publishCreatorSeed: makeFunctionReference<"mutation">("creatorFunctions:publish"),
-  listPublishedCreatorSeeds: makeFunctionReference<"query">("creatorFunctions:listPublishedMine"),
-  claimGuest: makeFunctionReference<"mutation">("accountFunctions:claimGuest"),
-  setMatureContent: makeFunctionReference<"mutation">("accountFunctions:setMatureContent"),
 };
 
 export function hasRemoteGameApi() {
@@ -126,6 +138,20 @@ export async function createRemoteSave(input: {
   seedPremise?: string;
   seedTitle?: string;
   seedTone?: string;
+  /**
+   * Optional 0–4 NPC cast authored during the Seed flow. The backend
+   * runs the publishing-surface classifier on each `description` and
+   * throws `seed_npc_blocked` on rejection; otherwise it threads the
+   * entries into `Story.initialNpcs` for the new save so the roster +
+   * portrait pipeline have data from turn 0. Names must match the
+   * server allowlist regex `/^[\p{L}\p{N} '\-]{1,40}$/u`; descriptions
+   * are 8–200 chars.
+   */
+  seedNpcs?: Array<{
+    name: string;
+    role: "companion" | "ally" | "rival" | "neutral" | "antagonist";
+    description: string;
+  }>;
 }): Promise<{ saveId: string; sceneId: string; scene: RemoteScene } | null> {
   if (!convexClient) return null;
   return callConvexHttp<any>("mutation", "game:createSave", input as unknown as Record<string, unknown>) as any;
@@ -140,9 +166,116 @@ export async function getRemoteCurrentScene(input: {
   return callConvexHttp<any>("query", "game:getCurrentScene", input as unknown as Record<string, unknown>) as any;
 }
 
+/**
+ * One past turn surfaced by `getRunHistory`. The shape mirrors the server
+ * projection in `convex/game.ts:getRunHistory` — keep them in sync when
+ * either side changes a field.
+ *
+ * Fields:
+ * - `turnNumber`: the turn number the reader landed on (0 = opening).
+ * - `nodeId`: engine nodeId for that turn (authored stories surface a
+ *   meaningful id; llm-driven scenes carry a synthetic `…:llm:<n>` id
+ *   that the UI hides behind the "Turn N" fallback in `sceneTitle`).
+ * - `sceneTitle`: author-supplied `node.title` when present, otherwise a
+ *   "Turn N" fallback. Never the synthetic llm node id verbatim.
+ * - `prose`: the LLM-elaborated scene text persisted on `scenes.prose`.
+ * - `streamStatus`: lets the archive UI suppress empty / blocked cards.
+ * - `choice`: the choice the reader picked that LED INTO this scene. The
+ *   opening turn has no inbound choice and may omit this entirely (we
+ *   currently always include it because the cursor advance writes a
+ *   `turn_history` row even for the opening, but downstream UIs treat
+ *   the field as optional defensively).
+ * - `media`: ready-only Pro asset URIs. Any combination of the three
+ *   URIs (image/video/narrator) may be absent — past scenes that
+ *   were never queued for media, or whose Pro job failed, surface
+ *   without that slot.
+ */
+export type RemoteRunHistoryTurn = {
+  turnNumber: number;
+  sceneId: string | null;
+  nodeId: string;
+  sceneTitle: string;
+  prose: string;
+  streamStatus: "pending" | "streaming" | "complete" | "failed" | "blocked";
+  completedAt: number | null;
+  choice?: { choiceId: string; choiceLabel: string };
+  media?: {
+    imageUri?: string;
+    videoUri?: string;
+    narratorUri?: string;
+    narratorVoiceId?: string;
+  };
+};
+
+export type RemoteRunHistory = {
+  saveId: string;
+  storyId: string;
+  storyTitle: string;
+  currentTurnNumber: number;
+  turns: RemoteRunHistoryTurn[];
+  hasMore: boolean;
+};
+
+export async function getRemoteRunHistory(input: {
+  accountId: string;
+  saveId: string;
+  guestTokenHash?: string;
+}): Promise<RemoteRunHistory | null> {
+  if (!convexClient) return null;
+  return callConvexHttp<any>(
+    "query",
+    "game:getRunHistory",
+    input as unknown as Record<string, unknown>,
+  ) as any;
+}
+
+/**
+ * Drop the last `dropTurns` turns of a save and roll the cursor back to
+ * the most recent kept turn. Cascade-deletes scene records + their
+ * media assets and turn_history rows. Used by the "Rewind" affordance
+ * on /read/[saveId]/history so readers can recover from polluted runs
+ * (e.g. the deterministic-fallback premise echo) without starting a
+ * new save.
+ *
+ * Returns the server's audit summary on success; null when no remote
+ * backend is wired.
+ */
+export async function rewindRemoteSaveTurns(input: {
+  accountId: string;
+  saveId: string;
+  guestTokenHash?: string;
+  dropTurns: number;
+}): Promise<{
+  saveId: string;
+  droppedTurnCount: number;
+  droppedSceneCount: number;
+  newTopTurnNumber: number;
+  currentNodeId: string;
+  currentSceneId: string | null;
+} | null> {
+  if (!convexClient) return null;
+  return callConvexHttp<any>(
+    "mutation",
+    "game:rewindSaveTurns",
+    input as unknown as Record<string, unknown>,
+  ) as any;
+}
+
 export type RemoteSceneMedia = {
   status: "idle" | "queued" | "generating" | "ready" | "blocked" | "failed";
   kind: "image" | "video" | "audio";
+  /**
+   * Engine nodeId of the scene this media belongs to. Surfaced by the server
+   * so the client can detect when polling has advanced to a newer scene
+   * (the server's `save.currentSceneId` flips on `beginStreamingChoice`)
+   * while the local `projection.scene` hasn't caught up yet. Without this
+   * gate, the narrator clip for scene N+1 plays over scene N's on-screen
+   * prose for the brief window between the choice mutation landing and
+   * the SSE stream resolving the canonical projection.
+   *
+   * Optional for backwards compatibility with older server projections.
+   */
+  nodeId?: string;
   uri?: string;
   alt: string;
   durationMs?: number;
@@ -205,15 +338,58 @@ export async function submitRemoteChoice(input: {
   return callConvexHttp<any>("mutation", "game:submitChoice", input as unknown as Record<string, unknown>) as any;
 }
 
+/**
+ * Begin a streaming turn for a tapped A/B/C choice. Returns a
+ * discriminated-union result (same shape as {@link beginRemoteFreeformChoice})
+ * so the reader UI can tell a genuine server rejection (e.g.
+ * `daily_turns_exhausted`, `turn_in_progress`) apart from a transport failure
+ * (`null`) and render an accurate message instead of always blaming the daily
+ * allowance. `game:beginStreamingChoice` is the same mutation the freeform
+ * sibling calls.
+ */
 export async function beginRemoteStreamingChoice(input: {
   accountId: string;
   guestTokenHash?: string;
   saveId: string;
   choiceId: string;
   requestId: string;
-}): Promise<{ saveId: string; sceneId: string; scene: RemoteScene; stream: boolean } | null> {
+}): Promise<
+  | { ok: true; saveId: string; sceneId: string; scene: RemoteScene; stream: boolean }
+  | { ok: false; errorCode: string; errorMessage: string }
+  | null
+> {
   if (!convexClient) return null;
-  return callConvexHttp<any>("mutation", "game:beginStreamingChoice", input as unknown as Record<string, unknown>) as any;
+  return callConvexHttpWithError<{ saveId: string; sceneId: string; scene: RemoteScene; stream: boolean }>(
+    "mutation",
+    "game:beginStreamingChoice",
+    input as unknown as Record<string, unknown>,
+  );
+}
+
+/**
+ * Reset the save's current scene back to a `pending` stream state and clear
+ * any deterministic-fallback content. Called by the FallbackTurnPanel "Try
+ * again" button BEFORE opening a fresh SSE stream — otherwise the server
+ * rejects `/llm/scene-stream` with HTTP 403 because the prior fallback
+ * scene was persisted as `streamStatus: "complete"`.
+ *
+ * The mutation also stamps a fresh `requestId` onto `save.activeTurnRequestId`
+ * so the subsequent stream open passes `getAuthorizedSceneStreamRequest`'s
+ * dedup guard. Server-side terminal scenes (death / safe / success endings)
+ * are NOT retryable — the server refuses with `scene_terminal_not_retryable`.
+ */
+export async function retryRemoteCurrentScene(input: {
+  accountId: string;
+  guestTokenHash?: string;
+  saveId: string;
+  requestId: string;
+}): Promise<{ ok: true } | null> {
+  if (!convexClient) return null;
+  return callConvexHttp<any>(
+    "mutation",
+    "game:retryCurrentScene",
+    input as unknown as Record<string, unknown>,
+  ) as any;
 }
 
 /**
@@ -300,6 +476,18 @@ export async function getRemoteProfile(input: {
   dailyAllowance: number | "unlimited";
   entitlementTier: "free" | "unlimited" | "pro";
   entitlementStatus: "active" | "grace" | "expired" | "revoked";
+  /**
+   * Per-account media-generation gates surfaced from the `accounts` row's
+   * `mediaPrefs` field (server-side default: all true when absent). The
+   * client reconciles these with localStorage on hydrate so a reader who
+   * toggled "Play scene cinematics" off on one device sees the same gate
+   * after a fresh load on another.
+   */
+  mediaPrefs: {
+    imagesEnabled: boolean;
+    audioEnabled: boolean;
+    videoEnabled: boolean;
+  };
 } | null> {
   if (!convexClient) return null;
   return callConvexHttp<any>("query", "accountFunctions:getProfile", input as unknown as Record<string, unknown>) as any;
@@ -321,6 +509,35 @@ export async function setRemoteMatureContent(input: {
 }): Promise<{ accountId: string; matureContentEnabled: boolean } | null> {
   if (!convexClient) return null;
   return callConvexHttp<any>("mutation", "accountFunctions:setMatureContent", input as unknown as Record<string, unknown>) as any;
+}
+
+/**
+ * Push per-modality media gates to the server. Mirrors the auth shape of
+ * `setRemoteMatureContent`. The server validates ownership via the same
+ * `assertAccountSessionAccess` guard, writes `accounts.mediaPrefs`, and
+ * returns the fresh profile projection so the client can swap in the new
+ * values without re-fetching `getProfile`.
+ *
+ * Best-effort: localStorage is the authoritative client cache. Callers
+ * should not block the UI on this round-trip — wrap with a swallowed
+ * catch and let the cache carry the user's choice until next hydrate.
+ */
+export async function setRemoteMediaPrefs(input: {
+  accountId: string;
+  guestTokenHash?: string;
+  imagesEnabled: boolean;
+  audioEnabled: boolean;
+  videoEnabled: boolean;
+}): Promise<
+  | (NonNullable<Awaited<ReturnType<typeof getRemoteProfile>>>)
+  | null
+> {
+  if (!convexClient) return null;
+  return callConvexHttp<any>(
+    "mutation",
+    "accountFunctions:setMediaPrefs",
+    input as unknown as Record<string, unknown>,
+  ) as any;
 }
 
 export async function exportRemoteAccount(input: {
@@ -375,6 +592,30 @@ export async function createRemoteCheckoutSession(input: {
   return remoteOrNull(callConvexHttp<any>("action", "billingFunctions:createCheckoutSession", input as unknown as Record<string, unknown>), 5000);
 }
 
+/**
+ * Opens a Stripe Billing Portal session so an existing paid subscriber can
+ * cancel, change plans, or update their payment method. The portal URL is
+ * single-use; navigate to it immediately (e.g. `window.location.href = url`).
+ *
+ * Returns `null` when Convex is unavailable, when the account has no
+ * Stripe customer on file (no completed checkout yet), or when the returnUrl
+ * fails the https guard server-side.
+ */
+export async function createRemoteCustomerPortalSession(input: {
+  accountId: string;
+  returnUrl: string;
+}): Promise<{ url: string } | null> {
+  if (!convexClient) return null;
+  return remoteOrNull(
+    callConvexHttp<any>(
+      "action",
+      "billingFunctions:createCustomerPortalSession",
+      input as unknown as Record<string, unknown>,
+    ),
+    5000,
+  );
+}
+
 export async function createRemoteCreatorDraft(input: {
   accountId: string;
   guestTokenHash?: string;
@@ -403,11 +644,12 @@ export async function listRemotePublishedCreatorSeeds(input: {
 }
 
 async function remoteOrNull<T>(operation: Promise<T>, timeoutMs = 8000): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const result = await Promise.race([
       operation,
       new Promise<null>((resolve) => {
-        setTimeout(() => {
+        timer = setTimeout(() => {
           console.warn(`[gameApi] remote call timed out after ${timeoutMs}ms`);
           resolve(null);
         }, timeoutMs);
@@ -420,135 +662,11 @@ async function remoteOrNull<T>(operation: Promise<T>, timeoutMs = 8000): Promise
     // back to a silent return when telemetry is wired.
     console.error("[gameApi] remote call rejected:", err);
     return null;
-  }
-}
-
-// Convex anonymous local backends don't handshake the WS-based
-// ConvexReactClient cleanly (the client expects a cloud-style deployment
-// selector that the anonymous backend doesn't provide), so mutations
-// hang until timeout. The HTTP API at `/api/mutation` / `/api/query` /
-// `/api/action` works for the same call surface. Use this helper for
-// every remote call so the WS path is bypassed entirely.
-async function callConvexHttp<T = unknown>(
-  kind: "mutation" | "query" | "action",
-  path: string,
-  args: Record<string, unknown>,
-  timeoutMs = 5000,
-): Promise<T | null> {
-  const baseUrl = process.env.EXPO_PUBLIC_CONVEX_URL;
-  if (!baseUrl) {
-    console.warn("[gameApi] baseUrl is empty — process.env.EXPO_PUBLIC_CONVEX_URL not inlined");
-    return null;
-  }
-  // Tight abort so a single slow request doesn't pin a browser HTTP slot
-  // forever. The browser only gives us ~6 keep-alive sockets per origin
-  // and the WS subscription already takes one — pile-up of pending GETs
-  // would lock the pool.
-  const controller = new AbortController();
-  const timer = setTimeout(() => {
-    console.warn(`[gameApi] aborting ${kind} ${path} after ${timeoutMs}ms`);
-    controller.abort();
-  }, timeoutMs);
-  const t0 = Date.now();
-  try {
-    const res = await fetch(`${baseUrl.replace(/\/+$/, "")}/api/${kind}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ path, args: args ?? {}, format: "json" }),
-      signal: controller.signal,
-      // Always open a fresh connection so a stalled prior request can't
-      // hold up the next poll behind keep-alive.
-      cache: "no-store",
-      keepalive: false,
-      // Send Cloudflare Access session cookie on cross-origin requests
-      // when the tunnel is gated by Access. No-op when running locally.
-      credentials: "include",
-    });
-    console.log(`[gameApi] ${kind} ${path} -> ${res.status} in ${Date.now() - t0}ms`);
-    if (!res.ok) {
-      console.warn(`[gameApi] ${kind} ${path} HTTP ${res.status}`);
-      return null;
-    }
-    const data = (await res.json()) as { status?: string; value?: T; errorMessage?: string; errorData?: unknown };
-    if (data.status === "success") return (data.value ?? null) as T | null;
-    console.warn(`[gameApi] ${kind} ${path} server error:`, data.errorMessage ?? data);
-    return null;
-  } catch (err) {
-    if ((err as { name?: string })?.name === "AbortError") {
-      // Aborted by our own timer — already logged above. Nothing else to do.
-    } else {
-      console.error(`[gameApi] ${kind} ${path} threw:`, err);
-    }
-    return null;
   } finally {
-    clearTimeout(timer);
-  }
-}
-
-/**
- * Variant of {@link callConvexHttp} that surfaces server-side error codes
- * to the caller via a discriminated union instead of collapsing them to
- * `null`. Used for the free-form choice path where the UI needs to render
- * a specific reason for a block; regular calls don't need this detail.
- *
- * The error-message string from Convex is included so the UI can quote it
- * directly when it carries reader-safe copy. Network / abort / non-2xx
- * failures still return `null` — they aren't server "errors" in the
- * mutation-handler sense, just transport problems with no useful code.
- */
-async function callConvexHttpWithError<T = unknown>(
-  kind: "mutation" | "query" | "action",
-  path: string,
-  args: Record<string, unknown>,
-  timeoutMs = 5000,
-): Promise<
-  | ({ ok: true } & T)
-  | { ok: false; errorCode: string; errorMessage: string }
-  | null
-> {
-  const baseUrl = process.env.EXPO_PUBLIC_CONVEX_URL;
-  if (!baseUrl) {
-    console.warn("[gameApi] baseUrl is empty — process.env.EXPO_PUBLIC_CONVEX_URL not inlined");
-    return null;
-  }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(`${baseUrl.replace(/\/+$/, "")}/api/${kind}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ path, args: args ?? {}, format: "json" }),
-      signal: controller.signal,
-      cache: "no-store",
-      keepalive: false,
-      credentials: "include",
-    });
-    if (!res.ok) {
-      console.warn(`[gameApi] ${kind} ${path} HTTP ${res.status}`);
-      return null;
-    }
-    const data = (await res.json()) as {
-      status?: string;
-      value?: T;
-      errorMessage?: string;
-      errorData?: { code?: string };
-    };
-    if (data.status === "success") {
-      const value = (data.value ?? {}) as T;
-      return { ok: true, ...value };
-    }
-    // Convex packages AppError as `errorMessage` like "AppError: code". Strip
-    // the prefix so the UI gets the bare code (e.g. "freeform_text_blocked").
-    const raw = typeof data.errorMessage === "string" ? data.errorMessage : "unknown_error";
-    const errorCode = raw.replace(/^AppError:\s*/u, "");
-    return { ok: false, errorCode, errorMessage: raw };
-  } catch (err) {
-    if ((err as { name?: string })?.name !== "AbortError") {
-      console.error(`[gameApi] ${kind} ${path} threw:`, err);
-    }
-    return null;
-  } finally {
-    clearTimeout(timer);
+    // Clear the race timer so a call that already resolved doesn't later log
+    // a bogus "timed out" warning (the timer fired ~timeoutMs after every
+    // successful call before this).
+    if (timer) clearTimeout(timer);
   }
 }
 

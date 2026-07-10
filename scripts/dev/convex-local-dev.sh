@@ -72,7 +72,12 @@ push_env GEMINI_API_KEY
 push_env GOOGLE_CLOUD_TTS_API_KEY
 push_env GEMINI_TEXT_MODEL
 push_env GEMINI_IMAGE_MODEL
+push_env GEMINI_FLASH_IMAGE_MODEL
 push_env GEMINI_VEO_MODEL
+# omni-cinematics: master switch + optional model override (see mediaStrategy.ts /
+# omniClient.ts). OMNI_ENABLED must be "1"/"true" to enable endpoint cinematics.
+push_env OMNI_ENABLED
+push_env GEMINI_OMNI_MODEL
 push_env GEMINI_VEO_DURATION_MS
 push_env GEMINI_VEO_RESOLUTION
 push_env GEMINI_VEO_ASPECT_RATIO
@@ -85,6 +90,11 @@ push_env LLM_TIMEOUT_MS
 # check so local testing of MediaPlate doesn't require billing config.
 # UNSET this before any tunnel test exposed to other accounts.
 push_env CYOA_DEV_FORCE_PRO_MEDIA "1"
+
+# Dev override: bypass the 10-turn-per-day free-tier cap so iterating on
+# prompt/UI changes doesn't get blocked mid-session. Same sentinel pattern
+# as the Pro media override above — UNSET before any tunnel exposure.
+push_env CYOA_DEV_UNLIMITED_TURNS "1"
 
 # Stripe — push the secret so the webhook handler can reach signature
 # validation (and return 400 instead of crashing) even when no real

@@ -1,4 +1,4 @@
-import { Platform, View } from "react-native";
+import { Platform, View, type DimensionValue } from "react-native";
 
 import { Text } from "../primitives";
 import { useAppTheme } from "../../theme";
@@ -7,6 +7,7 @@ import {
   type PatronTier,
   type PatronTierId,
 } from "../../lib/billingConfig";
+import { useBreakpoint } from "../../lib/responsive";
 import { TierCard } from "./TierCard";
 
 type TierCompareProps = {
@@ -35,7 +36,23 @@ export function TierCompare({
   onSubscribeTier,
 }: TierCompareProps) {
   const { tokens } = useAppTheme();
+  const { isPhone, isTablet } = useBreakpoint();
   const isNative = nativePlatform ?? Platform.OS !== "web";
+
+  // Responsive column count. The intrinsic minWidth on TierCard (220) already
+  // forces a single-column layout below ~480px under flex-wrap, but we set
+  // explicit flexBasis values per breakpoint to lock the column count and
+  // avoid one-card-in-row-two reflow at borderline widths.
+  //   phone    (<520):  1 column   — full width per card.
+  //   tablet   (520-768): 2 columns — calc(50% - gap) split.
+  //   desktop  (≥768):   4 columns — original ladder layout.
+  // The TierCard surface already grows to fill via `flex: 1`; we only need
+  // to pin flexBasis to control wrap points.
+  const cardBasis: DimensionValue = isPhone
+    ? "100%"
+    : isTablet
+      ? "48%"
+      : 220;
 
   return (
     <View
@@ -59,13 +76,14 @@ export function TierCompare({
 
       <View
         style={{
-          flexDirection: "row",
+          flexDirection: isPhone ? "column" : "row",
           flexWrap: "wrap",
           gap: tokens.spacing.md,
         }}
       >
         {PATRON_TIERS.map((tier) => (
           <TierCard
+            cardBasis={cardBasis}
             isCurrent={tier.id === currentTier.id}
             key={tier.id}
             nativePlatform={isNative}

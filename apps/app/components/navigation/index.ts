@@ -1,1 +1,2 @@
-export { AppNav } from "./AppNav";
+export { AppNav, type AppNavTab } from "./AppNav";
+export { BackToSceneButton } from "./BackToSceneButton";

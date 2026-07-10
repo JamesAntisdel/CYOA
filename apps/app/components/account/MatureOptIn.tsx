@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Pressable, View } from "react-native";
 
+import { useBreakpoint } from "../../lib/responsive";
 import { Button, Stamp, Surface, Text } from "../primitives";
 import { useAppTheme } from "../../theme";
 
@@ -19,15 +20,24 @@ type MatureOptInProps = {
  */
 export function MatureOptIn({ onAccept, onDecline, revocable = false }: MatureOptInProps) {
   const { tokens } = useAppTheme();
+  const { isPhone } = useBreakpoint();
   const [acknowledged, setAcknowledged] = useState(false);
 
   return (
+    // MatureOptIn renders inline (not inside RN Modal) so the host route
+    // controls visibility. We still want full-coverage behavior on phone:
+    // width 100% guarantees the Surface fills its parent column, and the
+    // maxWidth: "100%" override on phone defeats the 520px cap so a 375px
+    // viewport gets every available pixel of read-room for the consent
+    // copy. This is the "modal coverage fix" the mobile pass calls out —
+    // without it the 520-cap leaves whitespace gutters on either side of
+    // the danger surface and the action buttons feel orphaned.
     <Surface
       padded
       style={{
         borderColor: tokens.colors.danger,
         gap: tokens.spacing.md,
-        maxWidth: 520,
+        maxWidth: isPhone ? "100%" : 520,
         width: "100%",
       }}
     >
@@ -78,7 +88,19 @@ export function MatureOptIn({ onAccept, onDecline, revocable = false }: MatureOp
         </Text>
       </Pressable>
 
-      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: tokens.spacing.sm }}>
+      {/*
+       * Consent action buttons. On phone we stack so each button claims
+       * the full Surface width — two side-by-side buttons on a 327px
+       * content row produce tiny ~160px CTAs that fail the comfortable
+       * touch target. Desktop+ keeps the inline row.
+       */}
+      <View
+        style={{
+          flexDirection: isPhone ? "column" : "row",
+          flexWrap: "wrap",
+          gap: tokens.spacing.sm,
+        }}
+      >
         <Button
           accessibilityLabel="Turn on mature content"
           disabled={!acknowledged}

@@ -1,7 +1,9 @@
 import { Modal, ScrollView, View } from "react-native";
 
+import { useBreakpoint } from "../../../lib/responsive";
 import { Button, Chip, Divider, Surface, Text } from "../../primitives";
 import { useAppTheme } from "../../../theme";
+import { NpcRoster } from "../NpcRoster";
 import { filterVisibleStats, type StatsHudCommonProps } from "../types";
 
 type FullSheetProps = StatsHudCommonProps & {
@@ -21,16 +23,21 @@ type FullSheetProps = StatsHudCommonProps & {
  * flag, which marks stats whose presence is privileged.
  */
 export function FullSheetMode({
+  accountId,
   characterName = "Reader",
   hiddenStatIds,
   inventory,
+  npcs,
   onCloseFullSheet,
+  saveId,
   stats,
   turnNumber,
   visible,
 }: FullSheetProps) {
   const { tokens } = useAppTheme();
+  const { isPhone } = useBreakpoint();
   const visibleStats = filterVisibleStats(stats, hiddenStatIds);
+  const hasNpcs = npcs ? Object.keys(npcs).length > 0 : false;
 
   return (
     <Modal
@@ -44,8 +51,12 @@ export function FullSheetMode({
         style={{
           backgroundColor: tokens.colors.overlay,
           flex: 1,
-          justifyContent: "center",
-          padding: tokens.spacing.lg,
+          // On phone viewports the sheet stretches to fill the screen
+          // (top-aligned so the title row doesn't disappear under a tall
+          // keyboard / status bar). On tablet+ it stays vertically
+          // centered with the previous max-width contract.
+          justifyContent: isPhone ? "flex-start" : "center",
+          padding: isPhone ? tokens.spacing.sm : tokens.spacing.lg,
         }}
       >
         <Surface
@@ -54,7 +65,10 @@ export function FullSheetMode({
           style={{
             alignSelf: "center",
             gap: tokens.spacing.md,
-            maxWidth: 520,
+            // Phone: occupy the full available width (the parent padding
+            // already provides 8px gutters). Desktop/tablet: cap at 520
+            // so the sheet doesn't sprawl across wide windows.
+            maxWidth: isPhone ? "100%" : 520,
             width: "100%",
           }}
         >
@@ -69,7 +83,12 @@ export function FullSheetMode({
           <Divider />
           <ScrollView
             contentContainerStyle={{ gap: tokens.spacing.md }}
-            style={{ maxHeight: 360 }}
+            // On phones we want the roster to scroll within the full
+            // screen rather than a fixed 360px viewport — the cast can
+            // get long (4–6 NPCs), and a tight inner ScrollView nested
+            // inside a phone-height Modal traps the reader inside a
+            // ~360px window that doesn't visibly indicate scrollability.
+            style={{ maxHeight: isPhone ? undefined : 360 }}
           >
             <View style={{ gap: tokens.spacing.xs }}>
               <Text variant="subtitle">Attributes</Text>
@@ -97,6 +116,16 @@ export function FullSheetMode({
                 )}
               </View>
             </View>
+            {hasNpcs ? (
+              <View style={{ gap: tokens.spacing.xs }}>
+                <Text variant="subtitle">Companions and Cast</Text>
+                <NpcRoster
+                  npcs={npcs}
+                  {...(accountId ? { accountId } : {})}
+                  {...(saveId ? { saveId } : {})}
+                />
+              </View>
+            ) : null}
           </ScrollView>
           {onCloseFullSheet ? (
             <Button accessibilityLabel="Close character sheet" onPress={onCloseFullSheet}>

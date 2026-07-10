@@ -9,6 +9,7 @@ import {
 import {
   assertValidStory,
   getStory,
+  getStoryMode,
   listStarterStories,
   listStarterStoryDefinitions,
   trainingRoom,
@@ -27,9 +28,18 @@ describe("starter stories", () => {
     ]);
   });
 
+  it("does not expose the open-canvas seed shell in the public starter list", () => {
+    expect(listStarterStories().map((story) => story.id)).not.toContain("open-canvas");
+  });
+
   it("returns stories by id", () => {
     expect(getStory("training-room").title).toBe("Escape the Training Room");
     expect(() => getStory("missing")).toThrow("story_not_found:missing");
+  });
+
+  it("resolves the hidden open-canvas starter via getStory and getStoryMode", () => {
+    expect(getStory("open-canvas").title).toBe("Open Canvas");
+    expect(getStoryMode("open-canvas")).toBe("llm-driven");
   });
 
   it("validates every starter story", () => {

@@ -1,11 +1,16 @@
 import { useCallback, useMemo, useState } from "react";
-import { TextInput, View } from "react-native";
 
-import type { StorySummary } from "@cyoa/stories";
+import { getLocalStorage as getStorage } from "../../lib/storage";
+import { TextInput, View } from "react-native";
 
 import type { LibrarySave } from "../../hooks/useLibrary";
 import { Button, Chip, Divider, Note, Stamp, Surface, Text } from "../primitives";
 import { useAppTheme } from "../../theme";
+import {
+  NpcCastEditor,
+  validateNpcCast,
+  type SeedNpcDraft,
+} from "./NpcCastEditor";
 import { SeedPremiseInput } from "./SeedPremiseInput";
 import { SEED_TONES, SeedToneSelector, type SeedTone } from "./SeedToneSelector";
 
@@ -13,13 +18,45 @@ export type SeedDraftMetadata = {
   title: string;
   premise: string;
   tone: SeedTone;
-  starterId: string;
+  /**
+   * Reader-authored cast captured at seed time. Persisted to localStorage so
+   * a refresh between editing and launching doesn't lose work; the source
+   * of truth after launch is the save record on the server.
+   */
+  npcCast: SeedNpcDraft[];
   createdAt: number;
 };
 
 const SEED_DRAFT_KEY = "cyoa.seedDraft.v1";
 
-const STARTER_PRESETS = [
+const SEED_PREMISE_PRESETS = [
+  // Broader-genre presets are listed first so the reader sees the full
+  // surface (sci-fi, survival, modern, undersea) before the dark-fantasy
+  // bias of the original three.
+  {
+    id: "freighter-alarm",
+    label: "Freighter alarm",
+    premise:
+      "The decompression alarm wakes you on deck three. Through the porthole, the stars are in the wrong places.",
+  },
+  {
+    id: "andes-crash",
+    label: "Andes crash",
+    premise:
+      "Snow is climbing the fuselage. The radio gives one word and then nothing. The pilot has not moved.",
+  },
+  {
+    id: "first-day-strange-campus",
+    label: "First day, strange campus",
+    premise:
+      "The campus map you were given has a building that isn't there. Your roommate insists you've been here for weeks.",
+  },
+  {
+    id: "submarine-third-bell",
+    label: "Submarine, third bell",
+    premise:
+      "Three bells means a hull breach, and the captain is locked in the conning tower. You have the only key.",
+  },
   {
     id: "lamp-lighter",
     label: "Lamp-lighter",
@@ -68,41 +105,42 @@ export function classifySeedPremiseLocally(premise: string): LocalSafetyResult {
 }
 
 export type SeedStoryFlowProps = {
-  /** Starter stories shown in the "pick where" step. */
-  starters: StorySummary[];
   /**
    * Create a real save through the existing useLibrary launch path. The
-   * seed-flow now passes the reader-authored title/premise/tone alongside
-   * the starter id so the host route can persist them on the save record
-   * — the backend uses them to override the starter's hardcoded seed in
-   * the LLM prompt.
+   * seed-flow passes the reader-authored title/premise/tone; the host
+   * route binds the open-canvas starter id and persists the seed fields
+   * on the save record so the backend uses them as the LLM premise.
    */
-  onLaunchStarter: (input: {
-    starterId: string;
+  onLaunchSeed: (input: {
     title: string;
     premise: string;
     tone: SeedTone;
+    /**
+     * Reader-authored cast (0–4 NPCs). Always defined; an empty array means
+     * the reader chose to skip the optional cast and the backend should
+     * fall back to its own NPC introduction cadence.
+     */
+    npcCast: SeedNpcDraft[];
   }) => LibrarySave | null | Promise<LibrarySave | null>;
   /** Called after a successful local validation + save creation. */
   onSeedLaunched: (save: LibrarySave, draft: SeedDraftMetadata) => void;
 };
 
 export function SeedStoryFlow({
-  onLaunchStarter,
+  onLaunchSeed,
   onSeedLaunched,
-  starters,
 }: SeedStoryFlowProps) {
   const { tokens } = useAppTheme();
   const [title, setTitle] = useState("");
   const [premise, setPremise] = useState("");
   const [tone, setTone] = useState<SeedTone | null>(null);
-  const [starterId, setStarterId] = useState<string | null>(starters[0]?.id ?? null);
+  const [npcCast, setNpcCast] = useState<SeedNpcDraft[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [safetyWarning, setSafetyWarning] = useState<string | null>(null);
 
   const canLaunch = useMemo(
-    () => Boolean(title.trim() && premise.trim().length >= 24 && tone && starterId),
-    [premise, starterId, title, tone],
+    () => Boolean(title.trim() && premise.trim().length >= 24 && tone),
+    [premise, title, tone],
   );
 
   const handlePremiseChange = useCallback((next: string) => {
@@ -128,10 +166,6 @@ export function SeedStoryFlow({
       setError("Pick a tone — the tone shapes the opening beat.");
       return;
     }
-    if (!starterId) {
-      setError("Pick where the seed launches from.");
-      return;
-    }
 
     const localCheck = classifySeedPremiseLocally(trimmedPremise);
     if (!localCheck.ok) {
@@ -144,13 +178,23 @@ export function SeedStoryFlow({
       return;
     }
 
+    // Validate the optional cast before round-tripping. Server is still
+    // authoritative (it runs the publishing-surface classifier on each
+    // description and may reject one) but the local gate catches obvious
+    // shape problems immediately.
+    const castCheck = validateNpcCast(npcCast);
+    if (!castCheck.ok) {
+      setError("Each cast member needs a name and an 8+ character description.");
+      return;
+    }
+
     let save;
     try {
-      save = await onLaunchStarter({
-        starterId,
+      save = await onLaunchSeed({
         title: trimmedTitle,
         premise: trimmedPremise,
         tone,
+        npcCast,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : "seed_launch_failed";
@@ -164,13 +208,21 @@ export function SeedStoryFlow({
         setSafetyWarning(
           "This premise crosses the safety policy. Please rework the opening before launching.",
         );
+      } else if (message === "seed_npc_blocked" || message.includes("seed_npc_blocked")) {
+        // Server-side publishing-surface classifier rejected one of the
+        // authored NPC descriptions. Surface a friendly nudge without
+        // pointing at a specific row — the backend doesn't tell us which
+        // one and we don't want to drop the rest of the user's work.
+        setError(
+          "One of your cast members crosses the safety policy. Reword and try again.",
+        );
       } else {
         setError(`Could not launch: ${message}`);
       }
       return;
     }
     if (!save) {
-      setError("Could not launch the seed save. Try a different starter.");
+      setError("Could not launch the seed save. Try again in a moment.");
       return;
     }
 
@@ -178,19 +230,19 @@ export function SeedStoryFlow({
       title: trimmedTitle,
       premise: trimmedPremise,
       tone,
-      starterId,
+      npcCast,
       createdAt: Date.now(),
     };
     persistSeedDraft(save.saveId, draft);
     onSeedLaunched(save, draft);
-  }, [onLaunchStarter, onSeedLaunched, premise, starterId, title, tone]);
+  }, [npcCast, onLaunchSeed, onSeedLaunched, premise, title, tone]);
 
   return (
     <View style={{ gap: tokens.spacing.lg }}>
       <View style={{ gap: tokens.spacing.sm }}>
         <Stamp>seed flow</Stamp>
         <Text variant="title">Seed an adventure</Text>
-        <Text muted>Pick where the candle is lit, the tone, and the opening beat.</Text>
+        <Text muted>Author a title, a tone, and an opening premise — the engine takes it from there.</Text>
       </View>
 
       <Surface padded>
@@ -219,41 +271,6 @@ export function SeedStoryFlow({
           <Divider />
 
           <View style={{ gap: tokens.spacing.sm }}>
-            <Text variant="subtitle">Pick where</Text>
-            <Text muted variant="caption">
-              The seed launches from the rules of an existing starter tale.
-            </Text>
-            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: tokens.spacing.xs }}>
-              {starters.map((starter) => {
-                const selected = starter.id === starterId;
-                return (
-                  <Text
-                    accessibilityRole="button"
-                    accessibilityState={{ selected }}
-                    key={starter.id}
-                    onPress={() => setStarterId(starter.id)}
-                    style={{
-                      backgroundColor: selected ? tokens.colors.accent : "transparent",
-                      borderColor: tokens.colors.accent,
-                      borderRadius: tokens.radii.pill,
-                      borderWidth: tokens.borderWidths.regular,
-                      color: selected ? tokens.colors.background : tokens.colors.accent,
-                      fontWeight: "700",
-                      paddingHorizontal: tokens.spacing.md,
-                      paddingVertical: tokens.spacing.xs,
-                    }}
-                    variant="caption"
-                  >
-                    {starter.title}
-                  </Text>
-                );
-              })}
-            </View>
-          </View>
-
-          <Divider />
-
-          <View style={{ gap: tokens.spacing.sm }}>
             <Text variant="subtitle">Tone</Text>
             <SeedToneSelector onChange={setTone} value={tone} />
           </View>
@@ -266,10 +283,14 @@ export function SeedStoryFlow({
               setPremise(next);
               setSafetyWarning(null);
             }}
-            presets={STARTER_PRESETS}
+            presets={SEED_PREMISE_PRESETS}
             value={premise}
             warning={safetyWarning}
           />
+
+          <Divider />
+
+          <NpcCastEditor onChange={setNpcCast} value={npcCast} />
 
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: tokens.spacing.sm }}>
             <Chip>Validation required</Chip>
@@ -295,7 +316,7 @@ export function SeedStoryFlow({
   );
 }
 
-export const SEED_PRESETS = STARTER_PRESETS;
+export const SEED_PRESETS = SEED_PREMISE_PRESETS;
 export const SEED_TONE_OPTIONS = SEED_TONES;
 
 function persistSeedDraft(saveId: string, draft: SeedDraftMetadata): void {
@@ -318,19 +339,32 @@ export function readSeedDraft(saveId: string): SeedDraftMetadata | null {
     if (
       typeof parsed.title !== "string" ||
       typeof parsed.premise !== "string" ||
-      typeof parsed.starterId !== "string" ||
       typeof parsed.createdAt !== "number" ||
       typeof parsed.tone !== "string"
     ) {
       return null;
     }
-    return parsed as SeedDraftMetadata;
+    // npcCast is optional in older drafts (predates the cast editor) —
+    // normalize to [] so consumers don't have to guard the field.
+    const npcCast: SeedNpcDraft[] = Array.isArray(parsed.npcCast)
+      ? (parsed.npcCast.filter(
+          (entry: unknown): entry is SeedNpcDraft =>
+            typeof entry === "object" &&
+            entry !== null &&
+            typeof (entry as SeedNpcDraft).name === "string" &&
+            typeof (entry as SeedNpcDraft).description === "string" &&
+            typeof (entry as SeedNpcDraft).role === "string",
+        ) as SeedNpcDraft[])
+      : [];
+    return {
+      title: parsed.title,
+      premise: parsed.premise,
+      tone: parsed.tone as SeedTone,
+      createdAt: parsed.createdAt,
+      npcCast,
+    };
   } catch {
     return null;
   }
 }
 
-function getStorage(): Pick<Storage, "getItem" | "setItem" | "removeItem"> | null {
-  if (typeof globalThis === "undefined") return null;
-  return (globalThis as { localStorage?: Storage }).localStorage ?? null;
-}

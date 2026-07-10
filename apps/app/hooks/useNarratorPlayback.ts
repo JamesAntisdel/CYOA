@@ -90,7 +90,10 @@ export function useNarratorPlayback(input: NarratorPlaybackInput): NarratorPlayb
     if (Platform.OS !== "web") return;
     if (typeof Audio === "undefined") return;
 
-    if (!uri) {
+    // Treat empty strings the same as undefined — Firefox/Chrome both log
+    // "Invalid URI. Load of media resource failed." when an Audio element
+    // is constructed with an empty src and we then call .play() below.
+    if (!uri || uri.length === 0) {
       const existing = audioRef.current;
       if (existing) {
         existing.pause();

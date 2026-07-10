@@ -2,6 +2,7 @@ import { Pressable, View, type StyleProp, type ViewStyle } from "react-native";
 
 import type { LibrarySave } from "../../hooks/useLibrary";
 import { Chip, Stamp, Text } from "../primitives";
+import { useBreakpoint } from "../../lib/responsive";
 import { useAppTheme } from "../../theme";
 
 export type ContinueReadingProps = {
@@ -32,6 +33,10 @@ export function ContinueReading({
 }: ContinueReadingProps) {
   const { tokens } = useAppTheme();
   const status = candleStatus ?? deriveCandleStatus(save);
+  // Phone gets a slightly smaller inner pad so the title doesn't crowd
+  // against the rounded corners on a 375px viewport. Also keep the bottom
+  // chip+Resume row stack-friendly via the flexWrap already in place.
+  const { isPhone } = useBreakpoint();
 
   return (
     <View style={[{ gap: tokens.spacing.sm }, style]}>
@@ -57,7 +62,7 @@ export function ContinueReading({
             gap: tokens.spacing.sm,
             minHeight: 96,
             opacity: pressed ? 0.85 : 1,
-            padding: tokens.spacing.lg,
+            padding: isPhone ? tokens.spacing.md : tokens.spacing.lg,
           } satisfies ViewStyle,
         ]}
       >

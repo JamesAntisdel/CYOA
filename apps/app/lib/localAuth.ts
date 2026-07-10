@@ -1,4 +1,7 @@
 import type { AgeBand } from "@cyoa/shared";
+
+import { getLocalStorage as getStorage } from "./storage";
+import { createId } from "./ids";
 import { emailAuthRequestSchema } from "@cyoa/shared";
 
 export type AuthSession = {
@@ -159,15 +162,4 @@ function createLocalPasswordVerifier(password: string): string {
   return `local:${password}`;
 }
 
-function getStorage(): Pick<Storage, "getItem" | "setItem" | "removeItem"> | null {
-  if (typeof globalThis === "undefined") return null;
-  return (globalThis as { localStorage?: Storage }).localStorage ?? null;
-}
 
-function createId(prefix: string): string {
-  const random =
-    typeof globalThis.crypto?.randomUUID === "function"
-      ? globalThis.crypto.randomUUID()
-      : Math.random().toString(36).slice(2);
-  return `${prefix}_${random}`;
-}

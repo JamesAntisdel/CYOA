@@ -1,7 +1,32 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { getLocalStorage as getStorage } from "../lib/storage";
+
 export type ReaderThemePreference = "day" | "night" | "sepia" | "system";
 export type HudMode = "full" | "quiet" | "hidden";
+/**
+ * Media-strategy the reader selects in /settings (omni-cinematics Req 1).
+ * Persisted to `mediaPrefs.cinematicMode` and consumed by the Convex
+ * media resolver, which composes it with entitlement + the per-modality
+ * gates (Build Correction C4). The client value is the reader's request;
+ * the server decides the *effective* strategy.
+ *   off               No image or video jobs — text + narrator only.
+ *   stills_only       Scene stills, no video.
+ *   endpoint_cinematic Endpoint Omni cinematics (opening + ending).
+ *   per_scene_legacy  The legacy per-turn Imagen→Veo chain.
+ */
+export type CinematicMode =
+  | "off"
+  | "stills_only"
+  | "endpoint_cinematic"
+  | "per_scene_legacy";
+
+export const CINEMATIC_MODES: readonly CinematicMode[] = [
+  "off",
+  "stills_only",
+  "endpoint_cinematic",
+  "per_scene_legacy",
+] as const;
 export type ReaderLayoutMode = "book" | "focus";
 export type ReaderLayoutVariant =
   | "book"
@@ -45,6 +70,14 @@ export type ReaderSettings = {
    */
   videoEnabled: boolean;
   /**
+   * Media-strategy selector (omni-cinematics Req 1). Default
+   * "endpoint_cinematic" — the north-star strategy; the server resolver
+   * caps it by entitlement / the per-modality gates. Persisted through the
+   * mediaPrefs path so it round-trips across devices as
+   * `mediaPrefs.cinematicMode`.
+   */
+  cinematicMode: CinematicMode;
+  /**
    * Narrator TTS playback speed. Default 1. Persists across scenes and
    * sessions. The reader UI exposes four discrete options (0.75, 1, 1.25,
    * 1.5); the value is clamped at the hook boundary to a safe range so
@@ -52,6 +85,14 @@ export type ReaderSettings = {
    * a pitch-distorting extreme.
    */
   narratorPlaybackRate: number;
+  /**
+   * Render dialogue lines as distinct indented blocks (with an optional
+   * speaker label) instead of inline within the prose flow. Default
+   * true. Readers who prefer the original single-paragraph rendering
+   * can flip this off in settings — the parser is bypassed entirely
+   * when false so the visual is identical to the pre-feature behavior.
+   */
+  dialogBlocksEnabled: boolean;
 };
 
 export const NARRATOR_PLAYBACK_RATES: readonly number[] = [0.75, 1, 1.25, 1.5] as const;
@@ -70,7 +111,9 @@ const defaultSettings: ReaderSettings = {
   imagesEnabled: true,
   audioEnabled: true,
   videoEnabled: true,
+  cinematicMode: "endpoint_cinematic",
   narratorPlaybackRate: 1,
+  dialogBlocksEnabled: true,
 };
 
 export function useReaderSettings() {
@@ -80,13 +123,28 @@ export function useReaderSettings() {
     setSettings(readSettings());
   }, []);
 
-  const updateSettings = useCallback((patch: Partial<ReaderSettings>) => {
-    setSettings((current) => {
-      const next = { ...current, ...patch };
-      writeSettings(next);
-      return next;
-    });
-  }, []);
+  const updateSettings = useCallback(
+    (
+      patch: Partial<ReaderSettings>,
+      // Optional side-effect that receives the post-merge snapshot. Runs
+      // inside the setState updater so callers (notably /settings'
+      // syncMediaPrefs server echo) always see the latest merged state
+      // — even when multiple toggles fire in the same animation frame.
+      // Without this, the closed-over `settings` value in each handler
+      // ignored sibling updates in flight, so two rapid toggles could
+      // race and the server-side prefs ended up with one of the changes
+      // dropped.
+      onMerged?: (next: ReaderSettings) => void,
+    ) => {
+      setSettings((current) => {
+        const next = { ...current, ...patch };
+        writeSettings(next);
+        if (onMerged) onMerged(next);
+        return next;
+      });
+    },
+    [],
+  );
 
   const resetSettings = useCallback(() => {
     writeSettings(defaultSettings);
@@ -124,12 +182,19 @@ function readSettings(): ReaderSettings {
       imagesEnabled: parsed.imagesEnabled !== false,
       audioEnabled: parsed.audioEnabled !== false,
       videoEnabled: parsed.videoEnabled !== false,
+      // Unknown / missing → the endpoint-cinematic default.
+      cinematicMode: isCinematicMode(parsed.cinematicMode)
+        ? parsed.cinematicMode
+        : defaultSettings.cinematicMode,
       // Coerce a stored numeric rate to one of the four allowed steps.
       // Anything missing or out-of-range falls back to the 1x default —
       // we never trust localStorage to deliver a sane float.
       narratorPlaybackRate: isAllowedRate(parsed.narratorPlaybackRate)
         ? (parsed.narratorPlaybackRate as number)
         : defaultSettings.narratorPlaybackRate,
+      // Dialog blocks default to on; only an explicit `=== false` flips
+      // them off so a missing field reads as enabled.
+      dialogBlocksEnabled: parsed.dialogBlocksEnabled !== false,
     };
   } catch {
     return defaultSettings;
@@ -149,14 +214,14 @@ function isLayoutVariant(value: unknown): value is ReaderLayoutVariant {
   return (READER_LAYOUT_VARIANTS as readonly string[]).includes(value as string);
 }
 
+function isCinematicMode(value: unknown): value is CinematicMode {
+  return (CINEMATIC_MODES as readonly string[]).includes(value as string);
+}
+
 function isAllowedRate(value: unknown): value is number {
   return typeof value === "number" && (NARRATOR_PLAYBACK_RATES as readonly number[]).includes(value);
 }
 
-function getStorage(): Pick<Storage, "getItem" | "setItem"> | null {
-  if (typeof globalThis === "undefined") return null;
-  return (globalThis as { localStorage?: Storage }).localStorage ?? null;
-}
 
 function dispatchSettingsChanged(settings: ReaderSettings): void {
   if (typeof globalThis.dispatchEvent !== "function" || typeof globalThis.CustomEvent !== "function") return;

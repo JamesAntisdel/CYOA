@@ -1,10 +1,13 @@
 import { mutationGeneric, queryGeneric } from "convex/server";
+
+import { accountFromDoc, cleanDoc } from "./lib/docs";
 import type { GenericMutationCtx, GenericQueryCtx } from "convex/server";
 import type { GenericId } from "convex/values";
 import { v } from "convex/values";
 
 import {
   buildAccountExport,
+  buildMediaPrefsUpdate,
   createAccountDeletionSummary,
   type AccountDeletionSummary,
   type AccountRecord,
@@ -162,6 +165,58 @@ export const setMatureContent = mutationGeneric({
   },
 });
 
+// Per-account media-generation gates. Mirrors the auth pattern of
+// setMatureContent: validate the session, then patch the row. The matching
+// gate enforcement lives in `convex/media/sceneMedia.ts` — when a modality
+// is false, the queue mutations short-circuit before scheduling Imagen /
+// Veo / Google TTS so the provider bill matches the reader's preference.
+//
+// Returns the projection (via the shared profile-builder path) so the
+// client can swap the new value into its local cache in one round-trip
+// without re-fetching getProfile.
+export const setMediaPrefs = mutationGeneric({
+  args: {
+    accountId,
+    guestTokenHash,
+    imagesEnabled: v.boolean(),
+    audioEnabled: v.boolean(),
+    videoEnabled: v.boolean(),
+    // omni-cinematics media-strategy selector. Optional so pre-feature clients
+    // keep working. MUST be accepted here (Convex rejects unknown args) AND
+    // persisted, so the server `resolveMediaStrategy` sees the reader's choice.
+    cinematicMode: v.optional(
+      v.union(
+        v.literal("off"),
+        v.literal("stills_only"),
+        v.literal("endpoint_cinematic"),
+        v.literal("per_scene_legacy"),
+      ),
+    ),
+  },
+  handler: async (ctx, args) => {
+    const account = await ctx.db.get(args.accountId);
+    if (!account) throw new AppError("account_not_found");
+    await assertAccountSessionAccess(ctx, accountFromDoc(account), args.guestTokenHash);
+    const update = buildMediaPrefsUpdate({
+      imagesEnabled: args.imagesEnabled,
+      audioEnabled: args.audioEnabled,
+      videoEnabled: args.videoEnabled,
+      ...(args.cinematicMode ? { cinematicMode: args.cinematicMode } : {}),
+    });
+    await ctx.db.patch(args.accountId, update);
+    const entitlement = await ctx.db
+      .query("entitlements")
+      .withIndex("by_accountId", (q) => q.eq("accountId", args.accountId))
+      .first();
+    const updatedAccount = await ctx.db.get(args.accountId);
+    if (!updatedAccount) throw new AppError("account_not_found");
+    return buildAccountProfile({
+      account: accountFromDoc(updatedAccount),
+      entitlement: entitlement ?? buildDefaultEntitlement(args.accountId, account.lastActiveAt),
+    });
+  },
+});
+
 async function buildAccountExportBundle(ctx: QueryCtx, id: GenericId<"accounts">, account: AccountRecord) {
   const [
     entitlements,
@@ -257,10 +312,3 @@ function stripSystemFields(doc: Record<string, unknown>): Record<string, unknown
   return rest;
 }
 
-function accountFromDoc(doc: Record<string, unknown>): AccountRecord {
-  return { ...doc, _id: String(doc._id) } as AccountRecord;
-}
-
-function cleanDoc<T extends Record<string, unknown>>(doc: T): T {
-  return Object.fromEntries(Object.entries(doc).filter(([, value]) => value !== undefined)) as T;
-}

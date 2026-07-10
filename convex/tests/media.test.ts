@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 
+import { DEFAULT_MEDIA_PREFS, resolveMediaPrefs } from "../account";
 import { projectSceneMedia, type AssetRecord } from "../assets";
 import { ambientPlaybackAllowed, listAmbientLoops, selectAmbientLoop } from "../media/audio";
+import { chunkNarrationText } from "../media/sceneMedia";
 import { queueImagenAsset, shouldQueueImageForScene, startImagenJob } from "../media/imagen";
 import {
   DEFAULT_VEO_CONFIG,
@@ -352,6 +354,55 @@ describe("media orchestration", () => {
     ).toMatchObject({ id: "distant-rain" });
   });
 
+  it("gates queueSceneImage on the account's imagesEnabled mediaPref", () => {
+    // queueSceneImage's first short-circuit (after the Pro gate) reads
+    // mediaPrefs.imagesEnabled. The helper that resolves the pref is
+    // unit-tested here against the same three account shapes the gate
+    // sees in prod: legacy row (no field, defaults on), explicit on,
+    // explicit off. Mirrors the production check in
+    // convex/media/sceneMedia.ts → getAccountMediaPrefs → return early
+    // with reason="images_disabled_by_user".
+    const legacy = resolveMediaPrefs({});
+    expect(legacy.imagesEnabled).toBe(true);
+    expect(legacy).toEqual(DEFAULT_MEDIA_PREFS);
+
+    const disabled = resolveMediaPrefs({
+      mediaPrefs: { imagesEnabled: false, audioEnabled: true, videoEnabled: true },
+    });
+    expect(disabled.imagesEnabled).toBe(false);
+    // Sibling modalities must remain independently controlled — flipping
+    // images off must not also disable audio / video.
+    expect(disabled.audioEnabled).toBe(true);
+    expect(disabled.videoEnabled).toBe(true);
+  });
+
+  it("gates queueSceneNarration on the account's audioEnabled mediaPref", () => {
+    // Same shape as the image gate. audioEnabled=false skips Google TTS
+    // before the row insert so we don't pay for narration the reader has
+    // explicitly muted via /settings.
+    const disabled = resolveMediaPrefs({
+      mediaPrefs: { imagesEnabled: true, audioEnabled: false, videoEnabled: true },
+    });
+    expect(disabled.audioEnabled).toBe(false);
+    expect(disabled.imagesEnabled).toBe(true);
+    expect(disabled.videoEnabled).toBe(true);
+  });
+
+  it("gates queueSceneVideo on the account's videoEnabled mediaPref", () => {
+    // CRITICAL: this gate fires for the post-Imagen Veo chain
+    // (runImagenJob → queueSceneVideo). With imagesEnabled=true the
+    // image generates, but with videoEnabled=false the chained Veo
+    // must NOT submit a predictLongRunning request. The check lives in
+    // queueSceneVideo ahead of the existing-asset and API-key checks so
+    // the chain is safe.
+    const disabled = resolveMediaPrefs({
+      mediaPrefs: { imagesEnabled: true, audioEnabled: true, videoEnabled: false },
+    });
+    expect(disabled.videoEnabled).toBe(false);
+    expect(disabled.imagesEnabled).toBe(true);
+    expect(disabled.audioEnabled).toBe(true);
+  });
+
   it("detects image and video scheduling eligibility by scene state", () => {
     expect(shouldQueueImageForScene({ entitlement: pro, existingAssets: [] })).toBe(true);
     expect(shouldQueueImageForScene({ entitlement: pro, existingAssets: [], nodeTags: ["no_media"] })).toBe(false);
@@ -407,3 +458,30 @@ function baseAsset(id: string, kind: "image" | "video"): AssetRecord {
     updatedAt: 1,
   };
 }
+
+describe("chunkNarrationText (concurrent narration synthesis)", () => {
+  it("returns short prose as a single chunk", () => {
+    expect(chunkNarrationText("A short line.")).toEqual(["A short line."]);
+    expect(chunkNarrationText("")).toEqual([]);
+    expect(chunkNarrationText("   ")).toEqual([]);
+  });
+
+  it("splits long prose on sentence boundaries within the char cap", () => {
+    const s = (n: number) => `Sentence number ${n} carries a little weight here.`;
+    const prose = [s(1), s(2), s(3), s(4), s(5), s(6)].join(" ");
+    const chunks = chunkNarrationText(prose, 80);
+    // Every chunk respects the cap and the reassembled text preserves order + words.
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const c of chunks) expect(c.length).toBeLessThanOrEqual(80);
+    const rejoined = chunks.join(" ").replace(/\s+/g, " ").trim();
+    const original = prose.replace(/\s+/g, " ").trim();
+    expect(rejoined).toBe(original);
+  });
+
+  it("hard-wraps a single sentence longer than the cap without dropping words", () => {
+    const long = "word ".repeat(60).trim() + ".";
+    const chunks = chunkNarrationText(long, 50);
+    for (const c of chunks) expect(c.length).toBeLessThanOrEqual(50);
+    expect(chunks.join(" ").split(/\s+/).filter(Boolean)).toHaveLength(60);
+  });
+})

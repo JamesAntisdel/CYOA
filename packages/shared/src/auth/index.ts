@@ -15,6 +15,15 @@ export const authProviderSchema = z.enum([
 ]);
 export type AuthProvider = z.infer<typeof authProviderSchema>;
 
+/**
+ * OAuth social providers (the auth providers minus the email magic link).
+ * Canonical single source shared by the client auth surface and the convex
+ * BetterAuth config so the two can't drift.
+ */
+export const socialProviderSchema = z.enum(["google", "apple", "github", "microsoft", "discord"]);
+export type SocialProvider = z.infer<typeof socialProviderSchema>;
+export const SOCIAL_PROVIDER_IDS: readonly SocialProvider[] = socialProviderSchema.options;
+
 export const createGuestRequestSchema = z.object({
   ageBand: ageBandSchema,
 });

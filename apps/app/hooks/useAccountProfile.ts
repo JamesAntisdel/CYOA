@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { getLocalStorage as getStorage } from "../lib/storage";
+
 import { signOut as clearAuthSession } from "../lib/localAuth";
 import {
   claimRemoteGuest,
@@ -7,7 +9,9 @@ import {
   exportRemoteAccount,
   getRemoteProfile,
   setRemoteMatureContent,
+  setRemoteMediaPrefs,
 } from "../lib/gameApi";
+import { READER_SETTINGS_CHANGED_EVENT, READER_SETTINGS_KEY, type ReaderSettings } from "./useReaderSettings";
 import { useAuthSession } from "./useAuthSession";
 import { guestAuthArgs, useGuestSession } from "./useGuestSession";
 
@@ -108,7 +112,17 @@ export function useAccountProfile() {
       accountId,
       ...guestAuthArgs(),
     }).then((profile) => {
-      if (!cancelled) setRemoteProfile(profile);
+      if (cancelled) return;
+      setRemoteProfile(profile);
+      // Reconcile per-modality media gates with localStorage on hydrate.
+      // Server is the source of truth across devices — if it has a value
+      // and the local cache differs (or is missing), adopt the server
+      // value and rebroadcast the settings-changed event so the reader UI
+      // re-reads. Skipped silently when running in a non-browser
+      // environment (SSR / native shells without window.localStorage).
+      if (profile?.mediaPrefs) {
+        reconcileMediaPrefsToLocal(profile.mediaPrefs);
+      }
     });
     return () => {
       cancelled = true;
@@ -155,6 +169,40 @@ export function useAccountProfile() {
       ...guestAuthArgs(),
     });
     if (nextProfile) setRemoteProfile(nextProfile);
+    return remote;
+  }, [guest.session]);
+
+  // Push per-modality media gates to the server. Mirrors
+  // setMatureContentEnabled. Best-effort by contract — localStorage is the
+  // authoritative client cache (the settings screen has already written
+  // the change before calling us). On success the server returns the
+  // refreshed profile so we swap it into local state without a follow-up
+  // getProfile round-trip. Errors are surfaced to the caller; settings/index
+  // swallows them silently so a transient backend hiccup doesn't break the
+  // UI feedback the reader just got from updateSettings.
+  const setMediaPrefs = useCallback(async (prefs: {
+    imagesEnabled: boolean;
+    audioEnabled: boolean;
+    videoEnabled: boolean;
+    // Media-strategy selector (omni-cinematics Req 1). Optional so existing
+    // callers keep working. Forwarded to the server as
+    // `mediaPrefs.cinematicMode`; carried via spread so it composes cleanly
+    // even before the transport/mutation type is widened to name it.
+    cinematicMode?: string;
+  }) => {
+    if (!guest.session) throw new Error("guest_session_required");
+    const remote = await setRemoteMediaPrefs({
+      accountId: guest.session.accountId,
+      ...guestAuthArgs(),
+      imagesEnabled: prefs.imagesEnabled,
+      audioEnabled: prefs.audioEnabled,
+      videoEnabled: prefs.videoEnabled,
+      // Spread so the extra key bypasses the excess-property check on
+      // setRemoteMediaPrefs' fixed param type (gameApi.ts is not edited by
+      // this feature) while still reaching the Convex mutation.
+      ...(prefs.cinematicMode ? { cinematicMode: prefs.cinematicMode } : {}),
+    });
+    if (remote) setRemoteProfile(remote);
     return remote;
   }, [guest.session]);
 
@@ -267,9 +315,11 @@ export function useAccountProfile() {
       renameArchetype,
       resetArchetypes,
       setMatureContentEnabled,
+      setMediaPrefs,
       signOut,
       toggleArchetypeMute,
       updateDisplayName,
+      remoteMediaPrefs: remoteProfile?.mediaPrefs ?? null,
     };
   }, [
     archetypes,
@@ -287,10 +337,54 @@ export function useAccountProfile() {
     renameArchetype,
     resetArchetypes,
     setMatureContentEnabled,
+    setMediaPrefs,
     signOut,
     toggleArchetypeMute,
     updateDisplayName,
   ]);
+}
+
+// Adopt the server's mediaPrefs into localStorage when they differ from
+// what's stored. Fires the settings-changed event afterwards so any
+// mounted useReaderSettings consumer re-reads. Defensive throughout —
+// localStorage parse failures, missing browser APIs, and write errors
+// all degrade silently because this is a best-effort cross-device sync.
+function reconcileMediaPrefsToLocal(serverPrefs: {
+  imagesEnabled: boolean;
+  audioEnabled: boolean;
+  videoEnabled: boolean;
+}): void {
+  const storage = (() => {
+    if (typeof globalThis === "undefined") return null;
+    return (globalThis as { localStorage?: Storage }).localStorage ?? null;
+  })();
+  if (!storage) return;
+  try {
+    const raw = storage.getItem(READER_SETTINGS_KEY);
+    const parsed = raw ? (JSON.parse(raw) as Partial<ReaderSettings>) : {};
+    const localImages = parsed.imagesEnabled !== false;
+    const localAudio = parsed.audioEnabled !== false;
+    const localVideo = parsed.videoEnabled !== false;
+    if (
+      localImages === serverPrefs.imagesEnabled &&
+      localAudio === serverPrefs.audioEnabled &&
+      localVideo === serverPrefs.videoEnabled
+    ) {
+      return;
+    }
+    const next = {
+      ...parsed,
+      imagesEnabled: serverPrefs.imagesEnabled,
+      audioEnabled: serverPrefs.audioEnabled,
+      videoEnabled: serverPrefs.videoEnabled,
+    };
+    storage.setItem(READER_SETTINGS_KEY, JSON.stringify(next));
+    if (typeof globalThis.dispatchEvent === "function" && typeof globalThis.CustomEvent === "function") {
+      globalThis.dispatchEvent(new CustomEvent(READER_SETTINGS_CHANGED_EVENT, { detail: next }));
+    }
+  } catch {
+    // localStorage tampering / quota / private mode — leave as-is.
+  }
 }
 
 type RemoteProfileState = Awaited<ReturnType<typeof getRemoteProfile>>;
@@ -395,11 +489,6 @@ function writeDisplayNames(displayNames: Record<string, string>): void {
   getStorage()?.setItem(DISPLAY_NAMES_KEY, JSON.stringify(displayNames));
 }
 
-function getStorage(): Pick<Storage, "getItem" | "setItem" | "removeItem"> | null {
-  if (typeof globalThis === "undefined") return null;
-  const maybeStorage = (globalThis as { localStorage?: Storage }).localStorage;
-  return maybeStorage ?? null;
-}
 
 function readArchetypes(): ArchetypeTag[] | null {
   const storage = getStorage();

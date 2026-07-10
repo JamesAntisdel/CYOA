@@ -6,6 +6,7 @@ import {
   resolveTerminal,
   type ChoiceEvaluation,
   type LlmSceneProposal,
+  type NpcState,
   type PlayerState,
   type Story,
   type TerminalResult,
@@ -36,6 +37,20 @@ export type SaveRecord = {
   seedPremise?: string;
   seedTitle?: string;
   seedTone?: string;
+  // Running "story so far" summary, maintained by `convex/llm/summarizer.ts`
+  // after each successful turn. Capped at ~500 chars; surfaced to the next
+  // scene prompt as canonical context so the LLM doesn't re-propose actions
+  // the reader already took. Absent until the first turn completes.
+  storySummary?: string;
+  // Reference-image carry-over for scene illustrations. Asset ids of the
+  // protagonist + setting anchor images generated on turn 1 of an
+  // llm-driven save (see `convex/media/geminiImageClient.ts`). Subsequent
+  // scene-image calls fetch the underlying storage bytes via
+  // `convex/media/sceneMedia.ts:runImagenJob` and pass them as inline
+  // references to Gemini Flash Image so character + setting stay
+  // visually consistent across scenes.
+  anchorProtagonistAssetId?: string;
+  anchorSettingAssetId?: string;
   createdAt: number;
   updatedAt: number;
 };
@@ -66,6 +81,28 @@ export type SceneProjection = {
    * useful inside the LLM prompt's player-state summary.
    */
   inventory: Array<{ id: string; label: string }>;
+  /**
+   * NPC roster currently in player state. Empty `{}` when no NPCs have been
+   * spawned. Surfaced to the reader's character sheet (NpcRoster). Mirrors
+   * `PlayerState.npcs` (Requirement 31) — projecting it here is what powers
+   * the FullSheet "Companions and Cast" section for remote LLM-driven saves.
+   */
+  npcs: Record<string, NpcState>;
+  /**
+   * Reader-authored title from the Seed-an-Adventure flow (Requirement 22.7).
+   * When present, the reader UI prefers this over the engine `story.title`
+   * so seeded saves show the user's title instead of "Open Canvas".
+   * Optional — legacy starters and pre-seed-flow saves omit it.
+   */
+  seedTitle?: string;
+  /**
+   * True when the scene record carries the deterministic-fallback sentinel
+   * (`scene.isFallback === true`). Surfaced on the projection so the reader
+   * UI can render the FallbackTurnPanel ("the page is blank for a moment —
+   * try again") instead of the deterministic placeholder prose + choices.
+   * Absent on every real-provider scene; clients treat absent as `false`.
+   */
+  isFallback?: boolean;
   terminal: ReturnType<typeof resolveTerminal>;
 };
 
@@ -130,6 +167,11 @@ export function projectCurrentScene(save: SaveRecord, story: Story): SceneProjec
       vitality: save.state.vitality,
       inventoryCount: save.state.inventory.length,
       inventory: inventoryFromState(save.state),
+      // Defensive default: pre-migration saves snuck through before
+      // `state.npcs` was always initialized would otherwise crash the
+      // projection. Empty roster → UI suppresses the section.
+      npcs: save.state.npcs ?? {},
+      ...(save.seedTitle ? { seedTitle: save.seedTitle } : {}),
       terminal: null,
     };
   }
@@ -147,6 +189,8 @@ export function projectCurrentScene(save: SaveRecord, story: Story): SceneProjec
     vitality: save.state.vitality,
     inventoryCount: save.state.inventory.length,
     inventory: inventoryFromState(save.state),
+    npcs: save.state.npcs ?? {},
+    ...(save.seedTitle ? { seedTitle: save.seedTitle } : {}),
     terminal: resolveTerminal(save.state, story),
   };
 }
@@ -174,6 +218,12 @@ export function projectLlmDrivenScene(input: {
   prose: string;
   streamStatus: SceneProjection["streamStatus"];
   terminal?: TerminalResult | null;
+  /**
+   * Deterministic-fallback sentinel from the scene record. Forwarded
+   * onto the projection so the reader UI can render the FallbackTurnPanel
+   * instead of the deterministic placeholder prose + choices.
+   */
+  isFallback?: boolean;
 }): SceneProjection {
   // The reader doesn't render effects on choices — they exist only for the
   // engine's per-turn validation. Strip them from the projection so the
@@ -201,6 +251,12 @@ export function projectLlmDrivenScene(input: {
     vitality: input.save.state.vitality,
     inventoryCount: input.save.state.inventory.length,
     inventory: inventoryFromState(input.save.state),
+    npcs: input.save.state.npcs ?? {},
+    ...(input.save.seedTitle ? { seedTitle: input.save.seedTitle } : {}),
+    // Surface the deterministic-fallback sentinel only when actually true —
+    // omitting the key on real-provider scenes keeps the projection wire
+    // shape stable for clients that don't yet read `isFallback`.
+    ...(input.isFallback === true ? { isFallback: true } : {}),
     terminal: input.terminal ?? null,
   };
 }

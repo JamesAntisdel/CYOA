@@ -2,11 +2,15 @@ import { View } from "react-native";
 
 import { ChoiceList } from "../../choices/ChoiceList";
 import { EndingPanel } from "../../death/EndingPanel";
+import { CinematicMoment } from "../../media/CinematicMoment";
 import { SceneCinematic } from "../../media/SceneCinematic";
 import { SceneMedia } from "../../media/SceneMedia";
 import { Divider, Stamp, Surface, Text } from "../../primitives";
 import { StatsHud } from "../../stats/StatsHud";
 import { useAppTheme } from "../../../theme";
+import { EffectBadge } from "../EffectBadge";
+import { FallbackTurnPanel } from "../FallbackTurnPanel";
+import { ProseRenderer } from "../ProseRenderer";
 import { endingPanelHandlers, endingVariantProps, type ReaderLayoutProps } from "./types";
 
 /**
@@ -29,6 +33,8 @@ export function BookLayout({
   endingTier,
   cinematicUri,
   endingIsFirstFind,
+  endingCinematic,
+  muted = false,
   imagesEnabled = true,
   audioEnabled = true,
   videoEnabled = true,
@@ -37,9 +43,20 @@ export function BookLayout({
   onFreeformSubmit,
   freeformPending = false,
   freeformError = null,
+  dialogBlocksEnabled = true,
+  accountId,
+  recentChoiceEcho = null,
+  onRetryCurrentTurn,
 }: ReaderLayoutProps) {
   const { tokens } = useAppTheme();
   const showHud = hudMode !== "hidden";
+  // Deterministic-fallback branch: the prose + choices on this projection
+  // are the deterministic provider's placeholder ("press on into the
+  // story") — the reader must NEVER see that as if it were a real scene.
+  // Render `<FallbackTurnPanel />` in place of the prose surface + choice
+  // list. Defensive: when the retry handler isn't wired we still suppress
+  // the fake content (better an empty page than a fake scene).
+  const isFallback = projection.scene.isFallback === true;
 
   return (
     <View style={{ gap: tokens.spacing.lg, maxWidth: 760, width: "100%" }}>
@@ -49,59 +66,93 @@ export function BookLayout({
         <Text muted>{projection.scene.title}</Text>
       </View>
 
-      <SceneMedia
-        media={projection.scene.media}
-        reducedMotion={reducedMotion}
-        sceneId={projection.scene.id}
-        imagesEnabled={imagesEnabled}
-        audioEnabled={audioEnabled}
-        narratorPlaybackRate={narratorPlaybackRate}
-        {...(onNarratorPlaybackRateChange ? { onNarratorPlaybackRateChange } : {})}
-      />
-
-      <Surface padded style={{ gap: tokens.spacing.lg }}>
-        <Text variant="body" accessibilityLiveRegion={isStreaming ? "polite" : "none"}>
-          {streamedProse}
-        </Text>
-        {showHud ? (
-          <>
-            <Divider />
-            <StatsHud
-              inventory={projection.inventory}
-              // HUD reads mode from useReaderSettings itself
-              stats={projection.stats}
-            />
-          </>
-        ) : null}
-      </Surface>
-
-      <SceneCinematic
-        media={projection.scene.media}
-        reducedMotion={reducedMotion}
-        videoEnabled={videoEnabled}
-      />
-
-      {projection.ending ? (
-        <EndingPanel
-          ending={projection.ending}
-          {...endingVariantProps({
-            projection,
-            ...(endingTier !== undefined ? { tier: endingTier } : {}),
-            ...(cinematicUri !== undefined ? { cinematicUri } : {}),
-            ...(endingIsFirstFind !== undefined ? { isFirstFind: endingIsFirstFind } : {}),
-          })}
-          {...endingPanelHandlers({ onOpenEndings, onOpenLibrary, onReturnHome })}
+      {isFallback ? (
+        <FallbackTurnPanel
+          onRetry={onRetryCurrentTurn ?? (() => undefined)}
+          reducedMotion={reducedMotion}
         />
       ) : (
-        <ChoiceList
-          choices={projection.choices}
-          disabled={isStreaming}
-          onChoose={onChoose}
-          pendingChoiceId={pendingChoiceId}
-          {...(onFreeformSubmit ? { onFreeformSubmit } : {})}
-          freeformPending={freeformPending}
-          freeformError={freeformError}
-        />
+        <>
+          <SceneMedia
+            media={projection.scene.media}
+            reducedMotion={reducedMotion}
+            sceneId={projection.scene.id}
+            imagesEnabled={imagesEnabled}
+            audioEnabled={audioEnabled}
+            narratorPlaybackRate={narratorPlaybackRate}
+            {...(onNarratorPlaybackRateChange ? { onNarratorPlaybackRateChange } : {})}
+          />
+
+          <Surface padded style={{ gap: tokens.spacing.lg }}>
+            <ProseRenderer
+              prose={streamedProse}
+              isStreaming={isStreaming}
+              dialogBlocksEnabled={dialogBlocksEnabled}
+            />
+            {showHud ? (
+              <>
+                <Divider />
+                <StatsHud
+                  inventory={projection.inventory}
+                  // HUD reads mode from useReaderSettings itself
+                  {...(projection.npcs ? { npcs: projection.npcs } : {})}
+                  stats={projection.stats}
+                  {...(accountId ? { accountId } : {})}
+                  saveId={projection.saveId}
+                />
+              </>
+            ) : null}
+          </Surface>
+
+          <SceneCinematic
+            media={projection.scene.media}
+            reducedMotion={reducedMotion}
+            videoEnabled={videoEnabled}
+          />
+
+          {/*
+            Inline "what just changed" pill. Sits between the prose surface
+            and the choice list so the reader's eye lands on the consequence
+            as they finish reading and reach for the next pick. Renders
+            nothing on the first turn or when the echo is neutral/empty.
+          */}
+          <EffectBadge entry={recentChoiceEcho} reducedMotion={reducedMotion} />
+
+          {projection.ending ? (
+            <>
+              {endingCinematic ? (
+                <CinematicMoment
+                  cinematic={endingCinematic}
+                  reducedMotion={reducedMotion}
+                  muted={muted}
+                  {...(projection.scene.media?.imageUri
+                    ? { posterFallbackUri: projection.scene.media.imageUri }
+                    : {})}
+                />
+              ) : null}
+              <EndingPanel
+                ending={projection.ending}
+                {...endingVariantProps({
+                  projection,
+                  ...(endingTier !== undefined ? { tier: endingTier } : {}),
+                  ...(cinematicUri !== undefined ? { cinematicUri } : {}),
+                  ...(endingIsFirstFind !== undefined ? { isFirstFind: endingIsFirstFind } : {}),
+                })}
+                {...endingPanelHandlers({ onOpenEndings, onOpenLibrary, onReturnHome })}
+              />
+            </>
+          ) : (
+            <ChoiceList
+              choices={projection.choices}
+              disabled={isStreaming}
+              onChoose={onChoose}
+              pendingChoiceId={pendingChoiceId}
+              {...(onFreeformSubmit ? { onFreeformSubmit } : {})}
+              freeformPending={freeformPending}
+              freeformError={freeformError}
+            />
+          )}
+        </>
       )}
     </View>
   );

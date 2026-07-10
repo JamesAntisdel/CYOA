@@ -11,6 +11,10 @@ export function Bar({ candle = false, pct = 60, style, ...props }: BarProps) {
   const { tokens } = useAppTheme();
   const clampedPct = Math.max(0, Math.min(100, pct));
 
+  // Bar height tracks `spacing.sm` so the progress affordance scales with
+  // the rest of the spacing rhythm (was a hard-coded 10).
+  const height = tokens.spacing.sm + 2;
+
   return (
     <View
       accessibilityRole="progressbar"
@@ -21,7 +25,7 @@ export function Bar({ candle = false, pct = 60, style, ...props }: BarProps) {
           borderColor: tokens.colors.border,
           borderRadius: tokens.radii.pill,
           borderWidth: tokens.borderWidths.regular,
-          height: 10,
+          height,
           overflow: "hidden",
           width: "100%",
         },

@@ -221,6 +221,173 @@ Both surfaces consume the same daily-turn allowance and run `evaluateTextPolicy(
 - Cross-save NPC roster persistence — each save owns its own `state.npcs`.
 - Cinematic and portrait media for NPCs — Pro media remains scene-level only in v0.
 
+### Story Arc Beats (design for Requirement 32)
+
+**2026-05-24 addition (future feature, no code yet):** the engine today has no notion of "this story must include moment X before it can end". An LLM-driven save can drift into an ending that skips the authored climax, or a vitality-zero death can fire before the protagonist ever meets the antagonist. Requirement 32 introduces *arc beats* — declared narrative milestones — and a two-pronged enforcement model: a per-turn soft nudge in the prompt and a hard gate at terminal time. The split keeps normal turns flexible (the LLM is never told it *must* surface a beat right now) while making ending-skipping impossible without engine cooperation.
+
+**Data model.** `ArcBeat` lives in `packages/engine/src/state.ts` alongside the Story types:
+
+```
+ArcBeat = {
+  id: string;
+  name: string;                    // short label for tooling / logs
+  description: string;             // prose-level intent for the LLM
+  requiredBefore?:
+    | { kind: "ending" }
+    | { kind: "endingId"; endingId: string }
+    | { kind: "death" }
+    | { kind: "turn"; turnNumber: number };
+  priorityHint?: "early" | "mid" | "late";
+}
+```
+
+`Story` gains an optional `arcBeats?: ArcBeat[]`. `PlayerState` gains `completedArcBeats: Record<string, { completedAt: number; turnNumber: number }>` and `forcedBeatTurn: boolean` (defaults `false`). The LLM proposal schema gains an optional `arcBeatCompletions: string[]` — presentational only, mirroring the `npcMentions` pattern from Requirement 31. A derived helper `pendingArcBeats(story, state)` returns beats not yet in `completedArcBeats`, used by both the prompt builder and the terminal gate. The engine `schemaVersion` increments by one; `migrateEngineState` injects the two missing fields into legacy snapshots so existing saves continue to load.
+
+**Soft nudge (every turn).** When `convex/llm/prompts/scene.ts` builds a scene prompt for an LLM-driven story, it inserts a "Pending arc beats" section listing the top 3 highest-priority pending beats by `priorityHint` order (`early` → `mid` → `late`, tiebroken by declaration order). Each entry is `name` + `description` only. The directive is explicitly soft: "if narratively appropriate this turn, aim to surface one of these — you are not required to". Cap at 3 to keep the prompt tight; a story with 12 beats does not balloon every prompt. When the LLM returns `arcBeatCompletions: string[]`, the engine validates each id against the active story's `arcBeats[].id`, silently drops unknowns, and appends valid ids to `state.completedArcBeats` with the current `turnNumber` and timestamp.
+
+**Hard gate (terminals).** Whenever a terminal is about to fire — vitality drops to 0, an authored ending scene is reached, or the LLM proposes a `terminal` field — the engine first calls `pendingArcBeats(story, state)` and filters to beats whose `requiredBefore.kind` matches the imminent terminal. `{ kind: "ending" }` blocks any non-safe ending. `{ kind: "endingId", endingId: "ending-cathedral" }` blocks that specific ending only. `{ kind: "death" }` blocks a vitality-zero death. If any matching pending beats remain, the engine rejects the terminal with an `arc_beats_pending` AppError, sets `state.forcedBeatTurn = true`, and forces another scene. The next prompt prepends a stronger directive: "Required before ending: <pending beat name(s) + description(s)>. Surface this beat now." The `forcedBeatTurn` flag clears once the next valid proposal lands. If the LLM successfully surfaces the beat (via `arcBeatCompletions`) and the terminal would now satisfy the gate, the terminal fires on the following turn.
+
+**Turn-bound beats (soft warning).** A beat with `requiredBefore.kind === "turn"` is a "should have surfaced by now" warning rather than a hard gate. When `state.turnNumber >= requiredBefore.turnNumber` and the beat is still pending, the engine sets `forcedBeatTurn = true` on the next prompt (one-turn warning). On the turn after that, the engine SHALL still allow the LLM to proceed even if the beat was not surfaced — only ending/death/endingId beats block terminals.
+
+**Compatibility with NPCs (Requirement 31).** An arc beat MAY describe an NPC moment ("Mira reveals her true allegiance to the Iron Court"). The engine does NOT enforce NPC presence as part of beat validation — that is the prompt builder's job. When the pending-beats section is rendered, the existing NPC-sheet selector (Requirement 31.3) already surfaces NPCs in scope, so a beat referencing "Mira" composes naturally with Mira's sheet if she is currently present. If she is not in scope, the LLM may relocate her in prose (subject to engine-authored `npc_relocate` effects on the resulting choice), or wait for a later turn. Neither system reaches into the other.
+
+**Compatibility with Seed-an-Adventure (Requirement 22.7).** Open-premise saves launched through the Seed-an-Adventure flow inherit no arc beats by default — the starter's `arcBeats` array is replaced by `[]` when the reader-typed premise overrides the starter's seed, since the authored beats were tied to the starter's authored arc. A future iteration MAY let the reader author a 3-beat sketch as part of the seed flow (matching Requirement 31.7's NPC-roster-builder deferral); explicitly out of scope for v0.
+
+**Failure modes.** If the LLM ignores the soft nudge indefinitely on normal turns, nothing forces the issue — soft is soft. Only terminals trigger the hard gate. A reader who never reaches a terminal can leave beats pending forever, and that is by design (a slow-burn save in the middle of a story has not yet earned its ending). The only failure mode that produces a visible "stuck" state is a misauthored beat whose required-before condition can never be satisfied (e.g. `requiredBefore.endingId` pointing at an ending that no choice path can reach); Task 63's story validator catches this at story-load time.
+
+**Out of scope for v0.**
+
+- Reader-authored arc-beat sketches in the Seed-an-Adventure flow.
+- A creator-side beat editor surface (no UI; beats are declared in code).
+- Cross-save beat persistence — each save owns its own `completedArcBeats`.
+- Adaptive beat selection based on reader behavior (the top-3 selector is deterministic by priority).
+
+### Running story summary (design for Requirement 33)
+
+**2026-05-24 addition (commit pending):** the memory window already feeds the LLM a verbatim transcript of the last N turns (`loadMemoryWindow` in `convex/game.ts`), which gives the model recent texture but no canonical state. On a long save the window slides off the early turns entirely — the LLM forgets the protagonist already opened the coconut and proposes opening it again, since "opened coconut" was 12 turns ago and fell off the window. Requirement 33 fixes this with a parallel, non-blocking summarizer that maintains a running ~500-char canonical-state breadcrumb on the save record and surfaces it in every scene prompt above the memory window.
+
+**Data flow.** `save.storySummary?: string` (new field on the `saves` table, mirrored in `SaveRecord`) holds the most recent summary. The flow per turn:
+
+1. **Turn completes** — `completeSceneStream` finalizes the scene, persists the prose + effects, and returns to the client (the user-visible read loop is unblocked at this point — the summarizer never holds up the return).
+2. **Schedule summarizer** — same action schedules `summarizer.regenerate({ saveId })` via `ctx.scheduler.runAfter(0, ...)` (parallel, fire-and-forget pattern matching `queueSceneImage` from Requirement 24).
+3. **Summarizer runs** — `convex/llm/summarizer.ts` loads the prior summary + just-completed scene prose + the latest engine effects, calls the provider router with a tight system prompt that emits canonical-facts-only prose (named NPCs, current location, key inventory, established world facts, completed beats; drop weather, mood, single-line dialogue beats that did not change state), truncates at the last sentence boundary ≤500 chars, and persists via a mutation atomically.
+4. **Next prompt surfaces** — `convex/llm/prompts/scene.ts` reads `save.storySummary` and inserts a `Story so far: <summary>` block ABOVE the memory window and BELOW the player-state snapshot + NPC-sheet sections. The model now sees canonical state first, recent texture second.
+
+**Failure-safe.** The summarizer is best-effort. Provider error, parse error, safety block, network timeout — all swallowed. The prior `storySummary` value remains untouched (never blanked because of a transient hiccup) and a redacted `summarizer_failed` metric is emitted for the operator dashboard. A save can run for hundreds of turns with a stale summary and still function; the summary is a quality improvement, not a correctness gate.
+
+**Relationship to the memory window.** Memory = recent texture (the LLM's short-term sensory feed of the last N turns' prose). Summary = canonical state (the LLM's long-term factual ground truth). The two serve different purposes and are deliberately separate: summary is concise + drift-corrected by re-derivation every turn; memory is verbatim + slides naturally with time. They compose. A turn 50 prompt contains the summary ("Mira and the protagonist are camped in the Bone Cathedral's lower crypt. Mira carries the Iron Key. The lantern was lit at turn 38 and remains lit.") plus the last 3-5 turns of full prose. The model never has to guess at canonical facts because the summary always restates them.
+
+**Cost rationale.** The summarizer adds one LLM call per turn at a cheap-tier price point (a ~500-char synthesizer prompt on the cost-optimized DeepSeek slot from Requirement 5, or Vertex Gemini fallback). Per-turn cost increase is single-digit-percent of the scene-generation call. The scene-generation call itself gets cheaper at the margin because the prompt no longer needs to defensively re-include far-back facts.
+
+**Out of scope for v0.**
+
+- Summary versioning / rollback — only the latest summary is stored.
+- Reader-visible summary surface — the summary is a prompt-builder concern, not a reader-facing UI element.
+- Summary diff display in the operator dashboard — only the failed-call counter is surfaced.
+
+### Stat-change narration (design for Requirement 34)
+
+**2026-05-24 addition (commit pending):** today the engine echoes structured stat changes (`deriveEngineEcho` / `deriveRemoteEcho` in `apps/app/hooks/useTurn.ts`) into a one-line string the projection carries, but the prose itself doesn't always narrate the cause. The reader sees vitality drop −1 while the prose describes a scenic vista, with no in-world reason given for the loss. The same gap exists for currency, attributes, and inventory. Requirement 34 fixes this on two surfaces simultaneously: a strengthened prompt rule that makes cause-narration mandatory, and a new `<EffectBadge>` UI component that surfaces the most recent change inline near the prose so the reader can correlate prose ↔ numbers without scanning the HUD.
+
+**Prompt-level (rule 7 strengthening).** `convex/llm/prompts/scene.ts` rule 7 is rewritten from a soft "you may narrate stat changes" to a mandatory "the prose MUST narrate the cause of any stat, currency, or inventory change that the engine applies this turn." The directive is paired with concrete examples: "if vitality drops, the prose must surface the in-world reason (injury, hunger, fatigue, poison); if currency rises, the prose must surface the transaction or find that produced it; if an inventory item appears, the prose must show the reader receiving it." This is a behavioral nudge, not a structural enforcement — the LLM may still produce a turn that fails the directive, and the engine does not reject such turns (rejecting on a soft-content rule would create infinite-retry loops). The UI-level `<EffectBadge>` (below) gives the reader a visible signal even when the LLM under-narrates.
+
+**UI-level (`<EffectBadge>` component).** New `apps/app/components/reading/EffectBadge.tsx`. Renders a single inline pill: tone-colored fill + glyph + short label + delta. Tone color mapping (uses semantic aliases from Requirement 30.2, never hex literals):
+
+| Direction | Token alias  | Use                                              |
+|-----------|--------------|--------------------------------------------------|
+| positive  | `success`  | vitality gain, currency gain, attribute up       |
+| negative  | `danger`   | vitality loss, currency loss, attribute down     |
+| neutral   | `candleSoft` | inventory swap (no count change), flag set     |
+
+The badge is sized for inline reading — not a chrome element, not competing with prose. Per-layout placement:
+
+- `Book` — inline within the prose column, immediately after the paragraph that triggered the change (or trailing the scene if the change spans multiple paragraphs).
+- `Journal` — inline, journal-margin-aligned with the existing pip animation.
+- `GraphicNovel` — floating near the stat-HUD frame, mirroring the existing chip rail.
+- `ModernApp` — floating with stat-HUD, app-card treatment.
+- `Mobile` — thin strip immediately above the choice list, full-width.
+
+`prefers-reduced-motion` (Requirement 18.5, NFR Usability) renders the badge as a static block with no animation; otherwise it uses the same brief candle-flicker entry the existing stat-pip uses (~120ms, well under the 100ms pip-latency budget for visual update, since the animation overlaps with the pip).
+
+**Data plumbing (no schema change).** `apps/app/hooks/useTurn.ts` already projects an `echo` string into the turn projection via `deriveEngineEcho` (engine path) and `deriveRemoteEcho` (LLM path). The hook is extended to also project a structured `recentEffect?: { kind: "vitality" | "currency" | "attribute" | "inventory" | "flag"; label: string; delta?: number; tone: "positive" | "negative" | "neutral" }` derived from the same source data (engine diffs for the engine path; the LLM scene's effect array for the remote path). No new server-side state, no schema change, no Convex round-trip — this is a pure client-side projection of data the hook already receives. Layouts consume `recentEffect` (when defined) and render `<EffectBadge>` at the per-layout placement above.
+
+**Failure modes.**
+
+- Multi-effect turn (e.g. vitality −1 AND inventory +Iron Key on the same turn) — the projection surfaces ONE badge for the most significant change (priority: vitality > currency > attribute > inventory > flag). The other effects still appear in the stat-HUD's full sheet (Requirement 6.4); the badge is a recent-change focus, not a full inventory.
+- LLM under-narrates despite the strengthened rule 7 — the badge surfaces the engine truth regardless, so the reader is never confused about WHAT changed even if WHY is muddy. This is the structural backstop for the soft prompt rule.
+- Reduced-motion + dense effect turns — badge persists for the full turn duration (no fade), so a reader scanning a static page still sees the change.
+
+**Out of scope for v0.**
+
+- Per-effect badge stack (only the most significant is surfaced).
+- Reader-tunable badge placement (per-layout is fixed).
+- Per-NPC effect badges (NPC stat changes from Requirement 31 are surfaced via the NPC roster row, not via `<EffectBadge>`).
+
+### Reference image anchors (design for Requirement 35)
+
+**2026-05-24 addition (commit pending):** today every scene image is a fresh text-to-image call (`runImagenJob` in `convex/media/sceneMedia.ts` → Imagen 4 fast on Vertex). The protagonist in scene 1 has nothing in common visually with the protagonist in scene 5 because each call only sees the scene's text prompt — there is no shared visual seed. The Veo i2v chain (Requirement 24.2a) keeps the video locked to the still it received, so per-scene first-frame consistency is solved, but across-scene character + setting consistency is not. Requirement 35 fixes this by switching the primary scene-image path to Gemini 2.5 Flash Image (a multi-modal model that accepts prior images as references) and persisting two anchor images per save — a protagonist portrait and a setting establishing shot — generated at turn 1 and passed as `inline_data` references on every subsequent scene's image call.
+
+**Model choice rationale (Gemini 2.5 Flash Image vs Vertex Imagen customization).** Two viable paths exist for reference-conditioned image generation: Vertex Imagen's reference-image / customization endpoints, or Gemini 2.5 Flash Image's multi-modal stateless-with-context pattern. Gemini wins for this project because:
+
+- **Single API surface.** Both the LLM (text generation) and the image generator live on the Google Generative Language API surface today; one auth path, one rate-limit pool to monitor, one SDK in `convex/llm/` and `convex/media/`. Adding Vertex customization means a second auth path (OAuth-scoped service account vs API key), a second quota system, and a second client wrapper.
+- **No OAuth dependency.** Gemini Flash Image uses the same API-key auth as the existing Gemini text path. Vertex Imagen customization requires OAuth-scoped service-account credentials, which adds a Secret Manager surface this project hasn't needed and would slow the iteration loop.
+- **Stateless-with-context.** Each Gemini Flash Image call is independent — pass the references as `inline_data` parts each call, model produces the new image. No fine-tune step, no model-version pinning per save, no customization-job to monitor. This matches the per-turn turn-loop pattern the rest of the media pipeline uses.
+- **Cost shape.** Gemini Flash Image bills per-call without a customization training fee; Vertex customization has a per-fine-tune cost that would amortize poorly for a per-save anchor pair.
+
+The trade-off: Gemini Flash Image is newer (preview-tier) and may have stricter rate limits than Imagen 4 fast. The fallback path (Imagen 4 fast text-only) is preserved end-to-end so a Gemini outage or quota exhaust degrades to today's behavior, not a broken read loop.
+
+**Two-anchor pattern (protagonist + setting).** The minimum viable anchor set is two images: a portrait of the protagonist (face, clothing, signature props) and an establishing shot of the world's signature setting (architecture, mood, color palette, distinctive geography). Together they pin the two visual dimensions the reader most notices drifting: WHO and WHERE. Additional anchors (NPC portraits per Task 52d, scene-specific props) are out of scope for v0 — the NPC portrait pipeline already exists at the roster level (Task 52d, Requirement 31) and composes naturally with the protagonist anchor; props would balloon the per-call `inline_data` payload past Gemini Flash Image's practical multi-image budget without a clear consistency win.
+
+**LLM proposal extension.** `packages/engine/src/llm.ts` proposal schema gains two optional string fields, `protagonistAnchor` and `settingAnchor`, each ≤500 chars. These are presentational-only — engine treats them like `npcMentions` from Requirement 31 (LLM cannot mutate engine state through them). They are only meaningful on turn 1 of a save; the prompt builder includes the rule only on turn 1, and `completeSceneStream` only schedules anchor generation when the save has no anchors yet (idempotent — re-running turn 1 because of a retry doesn't double-schedule).
+
+**Anchor generation pipeline.** New `convex/media/sceneMedia.ts:queueAnchorImage(saveId, kind, prompt)` schedules a standalone Imagen 4 fast call (text-only, since no prior anchors exist yet at turn 1), stores the resulting bytes via `ctx.storage.store`, creates an `assets` row with the new `referenceKind: "protagonist" | "setting"` discriminator (Requirement 35.4), and updates the save record's `anchorProtagonistAssetId` / `anchorSettingAssetId` pointer. Two anchor jobs and the turn-1 scene image fire in parallel from `completeSceneStream` — total wall-clock for turn 1 is `max(scene image, protagonist anchor, setting anchor) ≈ 3-5s` rather than serialized.
+
+**Subsequent scenes use anchors via `inline_data`.** New `convex/media/geminiImageClient.ts` wraps Gemini 2.5 Flash Image (`gemini-2.5-flash-image-preview`). For turn ≥ 2 with both anchors present, `runImagenJob` fetches anchor bytes from Convex storage, base64-encodes them, and includes them as `inline_data` parts on the Gemini Flash Image request alongside the scene text prompt. The model conditions on them and produces a scene image with the protagonist's face + the setting's palette and architecture preserved. The resulting bytes flow through the existing `ctx.storage.store` + asset-row pipeline unchanged, and chain into `queueSceneVideo(imageStorageId)` for i2v exactly as before.
+
+**Anchor-vs-scene-2 race condition.** Anchor jobs are parallel and may take 3-10s; the reader is already reading turn 1 prose by then, and turn 2 may fire (cinematic preload + reader speed-tap) before both anchors land. The pipeline handles this safely:
+
+- `queueSceneImage` reads the save's `anchorProtagonistAssetId` / `anchorSettingAssetId` at job-start time.
+- If either is missing, the call proceeds with whatever anchors ARE available (one anchor is better than none — the protagonist anchor alone still pins WHO consistently).
+- If both are missing, the call falls back to Gemini Flash Image text-only (still upgrades the model from Imagen 4 fast, no consistency benefit) or further to Imagen 4 fast text-only (today's behavior) on Gemini failure.
+- Once both anchors land, every subsequent scene benefits. The reader sees a "warming up" period for the first 1-2 scenes where consistency may drift, then locks in.
+
+This is deliberate. Blocking turn 2 on anchor availability would add ~5s to the reader-perceived turn latency on every fresh save, violating the NFR Performance time-to-first-token budget. The cosmetic drift in the first 1-2 scenes is acceptable; the alternative of synchronous anchor generation is not.
+
+**Failure-safe ladder.** Three fallback rungs:
+
+1. Gemini Flash Image with anchor references (the happy path on turn ≥ 2).
+2. Gemini Flash Image text-only (when anchors are not yet ready, or one is missing).
+3. Imagen 4 fast text-only (today's behavior, on Gemini provider error / safety / quota exhaust).
+
+Each fall-through is logged: `gemini_anchor_missing` (rung 2), `gemini_anchor_fallback` (rung 3). The operator dashboard surfaces both counters so we can spot quota or provider regressions early. Scene image generation never breaks the read loop — fall through to text scene with no image (Requirement 24, "never block prose").
+
+**Veo unchanged rationale.** The Veo i2v chain (Requirement 24.2a) is untouched by this work. `queueSceneVideo(imageStorageId)` still receives the anchored still as the i2v first-frame; Veo locks the clip's opening on that frame and generates the rest from it. Because the still is now consistency-anchored, the video inherits the consistency for free — no Veo-side changes needed. The cross-scene continuity step-up that the existing design.md noted ("requires the full or fast `veo-3.1-generate-preview` model — the current `veo-3.1-lite-generate-preview` does not accept `referenceImages`") is no longer needed for the WHO + WHERE consistency the reader most notices, because the still already carries it. We can keep `veo-3.1-lite-generate-preview` and its cost profile.
+
+**Data flow (turn 1 vs turn N).**
+
+Turn 1 (anchor seeding):
+
+1. LLM proposal returns `prose`, `choices`, `terminal?`, `protagonistAnchor`, `settingAnchor`.
+2. `completeSceneStream` schedules `queueSceneImage` (turn 1 has no anchors yet — falls back to Imagen 4 fast text-only) PLUS `queueAnchorImage("protagonist", ...)` PLUS `queueAnchorImage("setting", ...)` in parallel.
+3. Each anchor job calls Imagen 4 fast text-only, stores bytes, creates an `assets` row with `referenceKind` set, updates the save's anchor pointers.
+4. Turn 1's scene image + Veo i2v chain run normally; no anchors used yet.
+
+Turn N ≥ 2 (anchor referencing):
+
+1. LLM proposal returns `prose`, `choices`, `terminal?` (no anchor fields — they're turn-1 only).
+2. `completeSceneStream` schedules `queueSceneImage` only.
+3. `runImagenJob` reads `save.anchorProtagonistAssetId` + `anchorSettingAssetId`, fetches bytes, base64-encodes, builds the Gemini Flash Image multi-modal request with `inline_data` parts.
+4. Gemini Flash Image produces a scene image conditioned on the references.
+5. Chain into `queueSceneVideo(imageStorageId)` exactly as before; Veo inherits the consistency.
+
+**Out of scope for v0.**
+
+- Re-rolling anchors mid-save (anchors are turn-1-only; if the reader's prose drifts the protagonist's appearance, the anchors stay frozen).
+- Per-NPC reference images on scene calls (the Task 52d NPC portrait pipeline produces NPC portraits at the roster level, not as scene-image references — adding them as `inline_data` parts on every scene call would balloon the payload).
+- Reader-tunable anchor descriptions (the LLM authors them on turn 1; the reader has no edit surface).
+- Anchor versioning / history (only the latest anchor per kind is stored; if a future feature wants per-act anchors, that's a separate spec).
+- Vertex Imagen customization as a primary path (Gemini Flash Image is the chosen path per the rationale above).
+
 ### Modular Design Principles
 
 - **Engine modules are pure:** all randomness, clocks, and provider output are passed in by Convex.

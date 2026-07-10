@@ -81,6 +81,61 @@ describe("LLM scene parser", () => {
     expect(() => parseLlmSceneProposal("just prose here")).toThrow("llm_scene_not_json");
   });
 
+  it("accepts optional protagonistAnchor + settingAnchor fields on turn 1 proposals", () => {
+    const parsed = llmSceneOutputSchema.parse({
+      prose: "p",
+      choices: [
+        { id: "a", label: "A" },
+        { id: "b", label: "B" },
+      ],
+      protagonistAnchor: "Korean woman late 30s, faded yellow rain jacket, painterly realism.",
+      settingAnchor: "Pacific Northwest cove at dawn, gray fog over slick black rocks.",
+    });
+    expect(parsed.protagonistAnchor).toContain("Korean woman");
+    expect(parsed.settingAnchor).toContain("Pacific Northwest cove");
+  });
+
+  it("treats anchors as fully optional (scene-2+ proposals don't carry them)", () => {
+    const parsed = llmSceneOutputSchema.parse({
+      prose: "p",
+      choices: [
+        { id: "a", label: "A" },
+        { id: "b", label: "B" },
+      ],
+    });
+    expect(parsed.protagonistAnchor).toBeUndefined();
+    expect(parsed.settingAnchor).toBeUndefined();
+  });
+
+  it("rejects anchor strings shorter than 8 chars and clamps long ones to 1000", () => {
+    // Min-length still rejects — too-short anchor descriptions provide
+    // no useful signal for portrait generation.
+    expect(() =>
+      llmSceneOutputSchema.parse({
+        prose: "p",
+        choices: [
+          { id: "a", label: "A" },
+          { id: "b", label: "B" },
+        ],
+        protagonistAnchor: "tiny",
+      }),
+    ).toThrow();
+    // Max-length is now CLAMPED rather than rejected. Gemini's
+    // responseSchema soft-ignores maxLength on strings (see
+    // `clampedString` rationale in llm.ts), so failing here would send
+    // the router into the deterministic fallback. The clamp lets the
+    // proposal land while still bounding downstream consumers.
+    const parsed = llmSceneOutputSchema.parse({
+      prose: "p",
+      choices: [
+        { id: "a", label: "A" },
+        { id: "b", label: "B" },
+      ],
+      settingAnchor: "a".repeat(1500),
+    });
+    expect(parsed.settingAnchor?.length).toBe(1000);
+  });
+
   it("rejects scenes with fewer than two choices", () => {
     expect(() =>
       llmSceneOutputSchema.parse({
@@ -117,20 +172,59 @@ describe("LLM scene parser", () => {
     ).toThrow(/duplicate_choice_id/u);
   });
 
-  it("rejects effects with unknown kinds", () => {
-    expect(() =>
-      llmSceneOutputSchema.parse({
+  it("drops unknown effect kinds but keeps valid effects and the scene", () => {
+    // An LLM occasionally emits an unrecognized effect kind. Rejecting the
+    // whole scene over it hard-fails the turn (`llm_scene_invalid_shape`);
+    // instead the invalid effect is dropped (never applied) while the prose,
+    // choices, and any valid effects survive. The engine is authoritative
+    // over effects, so an unknown one is simply ignored.
+    const parsed = llmSceneOutputSchema.parse({
+      prose: "p",
+      choices: [
+        {
+          id: "a",
+          label: "A",
+          effects: [
+            { kind: "raw_state_mutation", payload: { vitality: 99 } }, // dropped
+            { kind: "stat", statId: "resolve", delta: 2 }, // kept
+          ],
+        },
+        { id: "b", label: "B" },
+      ],
+    });
+    expect(parsed.choices).toHaveLength(2);
+    expect(parsed.choices[0]?.effects).toEqual([{ kind: "stat", statId: "resolve", delta: 2 }]);
+  });
+
+  it("drops npc_* effect kinds so the LLM can never mutate NPC state (Requirement 31.2)", () => {
+    // The LLM MUST NOT mutate NPC state — those flow through engine-authored
+    // effects only. The LLM effect union excludes npc_* kinds, so any such
+    // effect is DROPPED (never applied) rather than failing the whole turn.
+    // Dropping preserves the security guarantee AND keeps the read loop alive
+    // on model drift. Mirrors Requirement 9: no direct state patches from model
+    // output.
+    for (const kind of [
+      "npc_spawn",
+      "npc_despawn",
+      "npc_relocate",
+      "npc_disposition_delta",
+      "npc_attribute_delta",
+      "npc_inventory_add",
+      "npc_inventory_remove",
+      "npc_flag_set",
+      "npc_learn_fact",
+    ]) {
+      const parsed = llmSceneOutputSchema.parse({
         prose: "p",
         choices: [
-          {
-            id: "a",
-            label: "A",
-            effects: [{ kind: "raw_state_mutation", payload: { vitality: 99 } }],
-          },
+          { id: "a", label: "A", effects: [{ kind, npcId: "mira", delta: 1 }] },
           { id: "b", label: "B" },
         ],
-      }),
-    ).toThrow();
+      });
+      // npc_* effect dropped (not applied), scene preserved.
+      expect(parsed.choices[0]?.effects).toEqual([]);
+      expect(parsed.choices).toHaveLength(2);
+    }
   });
 
   it("clamps absurd stat deltas to engine-safe bounds", () => {

@@ -1,4 +1,4 @@
-import { Platform, View } from "react-native";
+import { Platform, View, type DimensionValue } from "react-native";
 
 import { Button, Stamp, Surface, Text } from "../primitives";
 import { useAppTheme } from "../../theme";
@@ -14,6 +14,14 @@ type TierCardProps = {
    */
   nativePlatform?: boolean | undefined;
   onSubscribe?: ((id: PatronTierId) => void) | undefined;
+  /**
+   * Flex basis override from the compare board's responsive grid. When the
+   * parent decides the column count (1 on phone, 2 on tablet, 4 on desktop),
+   * it pins each card to the corresponding flexBasis so cards never reflow
+   * into orphan rows at borderline widths. Accepts the same dimension
+   * primitives as ViewStyle.flexBasis (number, "<n>%", "auto").
+   */
+  cardBasis?: DimensionValue;
 };
 
 /**
@@ -28,6 +36,7 @@ export function TierCard({
   isCurrent,
   nativePlatform,
   onSubscribe,
+  cardBasis,
 }: TierCardProps) {
   const { tokens } = useAppTheme();
   const isNative = nativePlatform ?? Platform.OS !== "web";
@@ -38,9 +47,14 @@ export function TierCard({
       padded
       style={{
         borderColor: isCurrent ? tokens.colors.accent : tokens.colors.border,
-        flex: 1,
+        // flexBasis controls the column count from TierCompare. When unset
+        // we fall back to the original "fill remaining row, never less than
+        // 220" sizing so existing call sites stay visually identical.
+        flexBasis: cardBasis,
+        flexGrow: 1,
+        flexShrink: 1,
         gap: tokens.spacing.sm,
-        minWidth: 220,
+        minWidth: cardBasis === undefined ? 220 : 0,
       }}
       testID={`tier-card-${tier.id}`}
     >

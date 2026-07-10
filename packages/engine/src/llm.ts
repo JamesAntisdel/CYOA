@@ -28,12 +28,35 @@ const DELAYED_MAX_HORIZON = 12;
 const MAX_EFFECTS_PER_CHOICE = 6;
 const MAX_CHOICES = 4;
 const MIN_CHOICES = 2;
+// Authoritative bound on the engine's scene prose. With `responseSchema`
+// dropped from the Vertex provider (gemini-3-flash-preview ignores it),
+// the Zod parser is the actual gate. The model self-paces well under
+// this with only `responseMimeType: "application/json"` set — 11-trial
+// test (2026-05-28) showed median ~1500 chars per turn. The 12K ceiling
+// stays here as the hard upper bound for legacy compatibility.
 const MAX_PROSE_CHARS = 12_000;
 
+// Clamp-instead-of-reject string. Gemini's responseSchema soft-ignores
+// `maxLength` constraints on strings — verified 2026-05-25 where the LLM
+// produced a 380-char visualDescription despite `maxLength: 320`, and
+// a tone string > 32 chars despite the bound. Rather than play whack-a-
+// mole on every string field, every LLM-emitted string in this proposal
+// schema uses `clampedString` so over-length values truncate at parse
+// time instead of failing `llm_scene_invalid_shape` and sending the
+// router into the deterministic fallback (which produces the broken
+// "premise as prose" output the user saw repeatedly).
+function clampedString(opts: { min?: number; max: number }) {
+  const min = opts.min ?? 0;
+  return z
+    .string()
+    .min(min)
+    .transform((s) => (s.length > opts.max ? s.slice(0, opts.max) : s));
+}
+
 const itemSchema = z.object({
-  id: z.string().min(1).max(64),
-  label: z.string().min(1).max(120),
-  description: z.string().max(480).optional(),
+  id: clampedString({ min: 1, max: 64 }),
+  label: clampedString({ min: 1, max: 120 }),
+  description: clampedString({ max: 480 }).optional(),
 });
 
 // Effects the LLM may propose at the leaf — no nested delayed effects allowed
@@ -43,7 +66,7 @@ const itemSchema = z.object({
 const leafEffectSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("stat"),
-    statId: z.string().min(1).max(64),
+    statId: clampedString({ min: 1, max: 64 }),
     delta: z
       .number()
       .finite()
@@ -57,13 +80,13 @@ const leafEffectSchema = z.discriminatedUnion("kind", [
       .transform((value) => clampDelta(value, CURRENCY_DELTA_BOUND)),
   }),
   z.object({ kind: z.literal("inventory_add"), item: itemSchema }),
-  z.object({ kind: z.literal("inventory_remove"), itemId: z.string().min(1).max(64) }),
+  z.object({ kind: z.literal("inventory_remove"), itemId: clampedString({ min: 1, max: 64 }) }),
   z.object({
     kind: z.literal("flag_set"),
-    flag: z.string().min(1).max(64),
-    value: z.union([z.boolean(), z.number().finite(), z.string().max(240)]),
+    flag: clampedString({ min: 1, max: 64 }),
+    value: z.union([z.boolean(), z.number().finite(), clampedString({ max: 240 })]),
   }),
-  z.object({ kind: z.literal("flag_unset"), flag: z.string().min(1).max(64) }),
+  z.object({ kind: z.literal("flag_unset"), flag: clampedString({ min: 1, max: 64 }) }),
 ]);
 
 const delayedEffectSchema = z.object({
@@ -75,16 +98,34 @@ const delayedEffectSchema = z.object({
 export const llmEffectSchema = z.union([leafEffectSchema, delayedEffectSchema]);
 
 export const llmChoiceSchema = z.object({
-  id: z.string().min(1).max(64),
-  label: z.string().min(1).max(240),
-  tone: z.string().min(1).max(32).optional(),
-  effects: z.array(llmEffectSchema).max(MAX_EFFECTS_PER_CHOICE).optional(),
+  id: clampedString({ min: 1, max: 64 }),
+  label: clampedString({ min: 1, max: 240 }),
+  tone: clampedString({ min: 1, max: 32 }).optional(),
+  // Tolerant effects: an LLM occasionally emits an unrecognized effect `kind`
+  // (or more than the per-choice cap). Rejecting the whole scene over one bad
+  // effect throws away an otherwise-valid turn (good prose + choices) and
+  // hard-fails the read loop with `llm_scene_invalid_shape`. The engine is
+  // authoritative over effects anyway — it clamps deltas and strips strings
+  // right here — so drop only the malformed/excess effects and keep the rest.
+  // Valid effects still parse (and clamp) exactly as before. The convex parse
+  // boundary logs what was dropped so model drift stays visible.
+  effects: z
+    .array(z.unknown())
+    .transform((raw) =>
+      raw.reduce<z.infer<typeof llmEffectSchema>[]>((kept, candidate) => {
+        if (kept.length >= MAX_EFFECTS_PER_CHOICE) return kept;
+        const parsed = llmEffectSchema.safeParse(candidate);
+        if (parsed.success) kept.push(parsed.data);
+        return kept;
+      }, []),
+    )
+    .optional(),
 });
 
 export const llmTerminalSchema = z.object({
   kind: z.enum(["death", "success", "safe"]),
-  endingId: z.string().min(1).max(64),
-  label: z.string().min(1).max(160).optional(),
+  endingId: clampedString({ min: 1, max: 64 }),
+  label: clampedString({ min: 1, max: 160 }).optional(),
 });
 
 export const llmSceneOutputSchema = z
@@ -92,6 +133,48 @@ export const llmSceneOutputSchema = z
     prose: z.string().min(1).max(MAX_PROSE_CHARS),
     choices: z.array(llmChoiceSchema).min(MIN_CHOICES).max(MAX_CHOICES),
     terminal: llmTerminalSchema.nullable().optional(),
+    /**
+     * NPC ids the model believes were mentioned in this scene's prose.
+     * Optional — the model is encouraged to populate this but legacy
+     * proposals (and providers that don't yet honor the contract) simply
+     * omit it. Persisted by `convex/game.ts` as `turn_history.mentionsExtracted`
+     * so the next turn's prompt-builder can surface the relevant NPC sheets
+     * without re-parsing prose (Requirement 31.3 / 31.4).
+     *
+     * Bounded at 10 to keep the recent-mentions window small enough that
+     * `loadRecentNpcMentions` doesn't pull a runaway list back into the
+     * prompt; the convex helper still de-dupes / orders by recency.
+     */
+    npcMentions: z.array(clampedString({ min: 1, max: 64 })).max(10).optional(),
+    /**
+     * Concrete scene description optimized for image and video generation.
+     * One short sentence naming the subject, setting, key objects, and
+     * composition — e.g. "Boeing 737 cockpit at dawn, captain slumped over
+     * the yoke, snow blowing through a cracked windshield, wide shot from
+     * the first officer's seat." When present, the convex media queue uses
+     * this verbatim instead of truncating the prose. Bounded at 320 chars
+     * so prompt-hash stability and Imagen/Veo token budgets both hold.
+     *
+     * Why this exists: prose truncation produces incoherent images (the
+     * model that draws does not know what the model that wrote was thinking).
+     * Asking the writer to articulate the visual closes that gap.
+     */
+    visualDescription: clampedString({ min: 8, max: 1000 }).optional(),
+    /**
+     * One-time character anchor written at scene 1. Describes the protagonist
+     * for portrait generation: face/build/clothing/era. The image pipeline
+     * uses this to generate the protagonist anchor that gets passed as a
+     * reference image to every subsequent scene's image call.
+     * Optional — only meaningful on the first turn; ignored thereafter.
+     */
+    protagonistAnchor: clampedString({ min: 8, max: 1000 }).optional(),
+    /**
+     * One-time setting anchor written at scene 1. Establishing shot of the
+     * primary location (or the most defining one if the story has multiple).
+     * Same purpose as protagonistAnchor — referenced in subsequent calls
+     * to keep the world visually consistent.
+     */
+    settingAnchor: clampedString({ min: 8, max: 1000 }).optional(),
   })
   .superRefine((value, ctx) => {
     const ids = new Set<string>();

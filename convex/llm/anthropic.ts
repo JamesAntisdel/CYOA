@@ -19,7 +19,7 @@ export function createAnthropicProvider(available = defaultAnthropicAvailable(),
       available,
       ...(available ? {} : { degradedReason: "anthropic_not_configured" }),
     }),
-    generate: async (request: SceneGenerationRequest): Promise<ProviderGeneration> => {
+    generate: async (request: SceneGenerationRequest, signal?: AbortSignal): Promise<ProviderGeneration> => {
       if (!available) throw new Error("anthropic_not_configured");
       const prompt = buildProviderPrompt(request);
       const response = await postJson({
@@ -36,6 +36,7 @@ export function createAnthropicProvider(available = defaultAnthropicAvailable(),
           seed: request.seed,
           messages: [{ role: "user", content: prompt }],
         },
+        ...(signal ? { signal } : {}),
       });
       const text = extractAnthropicText(response);
       const usage = (response as { usage?: { input_tokens?: number; output_tokens?: number } }).usage;

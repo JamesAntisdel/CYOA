@@ -57,6 +57,7 @@ const save: SaveRecord & { _id: string } = {
     path: [],
     delayed: [],
     endingsUnlocked: {},
+    npcs: {},
   },
   currentNodeId: "start",
   turnNumber: 0,

@@ -1,53 +1,162 @@
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { useEffect, useMemo, useState } from "react";
+import { ScrollView, View } from "react-native";
+
+import { listStarterStoryDefinitions } from "@cyoa/stories";
 
 import { EndingsMap, TrophyCrypt, type EndingNode } from "../../components/endings";
+import { Text } from "../../components/primitives";
+import { guestAuthArgs, useGuestSession } from "../../hooks/useGuestSession";
+import { useLibrary } from "../../hooks/useLibrary";
+import { useTrophyCinematics } from "../../hooks/useTrophyCinematics";
+import { hasRemoteGameApi } from "../../lib/gameApi";
+import { listRemoteUnlockedEndings, type RemoteUnlockedEnding } from "../../lib/endingsApi";
+import type { RemoteCinematicView } from "../../lib/cinematicApi";
+import { useAppTheme } from "../../theme";
 
-const endings: EndingNode[] = [
-  { id: "escape", title: "The Door Opens", unlocked: true, pathHint: "Training Room / Dawn" },
-  { id: "quiet-return", title: "The Quiet Return", unlocked: true, pathHint: "Training Room / Listen" },
-  { id: "iron-risk", title: "Iron Lesson", unlocked: false },
-  { id: "lantern-crypt", title: "Lantern Crypt", unlocked: false },
-];
+const NEW_BADGE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
+function endingKey(storyId: string, endingId: string): string {
+  return `${storyId}:${endingId}`;
+}
+
+/**
+ * Build the trophy-crypt node list: the authored ending catalog (every ending
+ * declared across the starter stories) unioned with the reader's server-side
+ * unlocks. Authored endings the reader hasn't reached render as locked/hidden;
+ * unlocked ones surface with their recorded path and a "★ NEW" badge when
+ * recently earned. Server unlocks not present in any authored catalog (e.g.
+ * llm-driven or safety endings) are appended as unlocked nodes.
+ */
+function buildEndingNodes(
+  unlocks: RemoteUnlockedEnding[],
+  now: number,
+  // Best endpoint cinematic per raw endingId, aggregated across the
+  // reader's saves (C5 — cinematics are per-save; the crypt surfaces the
+  // playable one for each unlocked ending).
+  cinematicsByEndingId: Record<string, RemoteCinematicView>,
+): EndingNode[] {
+  const unlockByKey = new Map<string, RemoteUnlockedEnding>();
+  for (const u of unlocks) unlockByKey.set(endingKey(u.storyId, u.endingId), u);
+
+  const nodes: EndingNode[] = [];
+  const seen = new Set<string>();
+
+  for (const def of listStarterStoryDefinitions()) {
+    for (const ending of Object.values(def.story.endings)) {
+      const key = endingKey(def.story.id, ending.id);
+      seen.add(key);
+      const unlock = unlockByKey.get(key);
+      const cinematic = cinematicsByEndingId[ending.id];
+      nodes.push({
+        id: key,
+        title: ending.label,
+        unlocked: Boolean(unlock),
+        ...(unlock && unlock.path.length > 0 ? { pathHint: unlock.path.join(" → ") } : {}),
+        ...(unlock && now - unlock.firstSeen < NEW_BADGE_WINDOW_MS ? { isNew: true } : {}),
+        ...(unlock && cinematic ? { cinematic } : {}),
+      });
+    }
+  }
+
+  // Append unlocks that aren't in any authored catalog (llm-driven / safety).
+  for (const u of unlocks) {
+    const key = endingKey(u.storyId, u.endingId);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const cinematic = cinematicsByEndingId[u.endingId];
+    nodes.push({
+      id: key,
+      title: u.safetyEnding ? "A safe close" : u.endingId,
+      unlocked: true,
+      ...(u.path.length > 0 ? { pathHint: u.path.join(" → ") } : {}),
+      ...(now - u.firstSeen < NEW_BADGE_WINDOW_MS ? { isNew: true } : {}),
+      ...(cinematic ? { cinematic } : {}),
+    });
+  }
+
+  return nodes;
+}
+
+/**
+ * Trophy crypt entry point. Every color/spacing/typography value resolves
+ * through `useAppTheme().tokens` so the surface paints correctly in day,
+ * night, and sepia. Ending data is live: unlocked endings come from the
+ * account's `endings_unlocked` rows via `listUnlockedEndings`.
+ */
 export default function EndingsRoute() {
+  const { tokens } = useAppTheme();
+  const guest = useGuestSession();
+  const library = useLibrary(guest.session);
+  const [unlocks, setUnlocks] = useState<RemoteUnlockedEnding[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!guest.session || !hasRemoteGameApi()) {
+      setUnlocks([]);
+      return;
+    }
+    void listRemoteUnlockedEndings({
+      accountId: guest.session.accountId,
+      ...guestAuthArgs(),
+    }).then((rows) => {
+      if (!cancelled && rows) setUnlocks(rows);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [guest.session]);
+
+  // Ending cinematics across the reader's terminal saves (per-save, C5),
+  // aggregated to the best playable cinematic per endingId for the crypt.
+  const terminalSaveIds = useMemo(
+    () =>
+      library.saves
+        .filter(
+          (s) =>
+            s.status === "dead" || s.status === "ended" || s.status === "ended_safely",
+        )
+        .map((s) => s.saveId),
+    [library.saves],
+  );
+  const cinematicsByEndingId = useTrophyCinematics(
+    guest.session?.accountId,
+    terminalSaveIds,
+  );
+
+  const nodes = useMemo(
+    () => buildEndingNodes(unlocks, Date.now(), cinematicsByEndingId),
+    [unlocks, cinematicsByEndingId],
+  );
+
   return (
-    <ScrollView contentContainerStyle={styles.page}>
-      <View style={styles.header}>
-        <Text style={styles.kicker}>Endings</Text>
-        <Text style={styles.title}>Known paths and hidden doors.</Text>
-        <Text style={styles.copy}>Hidden endings stay concealed until they are earned.</Text>
+    <ScrollView
+      contentContainerStyle={{
+        backgroundColor: tokens.colors.background,
+        flexGrow: 1,
+        gap: tokens.spacing.lg,
+        padding: tokens.spacing.lg,
+      }}
+    >
+      <View style={{ gap: tokens.spacing.sm, maxWidth: 760 }}>
+        <Text
+          style={{
+            color: tokens.colors.textMuted,
+            fontFamily: tokens.typography.families.mono,
+            fontWeight: "800",
+            letterSpacing: 2,
+            textTransform: "uppercase",
+          }}
+          variant="caption"
+        >
+          Endings
+        </Text>
+        <Text variant="title">Known paths and hidden doors.</Text>
+        <Text muted variant="bodySmall">
+          Hidden endings stay concealed until they are earned.
+        </Text>
       </View>
-      <EndingsMap nodes={endings} />
-      <TrophyCrypt endings={endings} />
+      <EndingsMap nodes={nodes} />
+      <TrophyCrypt endings={nodes} />
     </ScrollView>
   );
 }
-
-const styles = StyleSheet.create({
-  page: {
-    backgroundColor: "#efe2c8",
-    flexGrow: 1,
-    gap: 18,
-    padding: 18,
-  },
-  header: {
-    gap: 8,
-    maxWidth: 760,
-  },
-  kicker: {
-    color: "#7b5a35",
-    fontSize: 12,
-    fontWeight: "800",
-    textTransform: "uppercase",
-  },
-  title: {
-    color: "#24180f",
-    fontSize: 30,
-    fontWeight: "800",
-  },
-  copy: {
-    color: "#594635",
-    fontSize: 15,
-    lineHeight: 22,
-  },
-});

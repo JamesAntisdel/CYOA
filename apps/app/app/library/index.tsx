@@ -1,22 +1,43 @@
 import { useRouter } from "expo-router";
-import { Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Image, Pressable, ScrollView, View } from "react-native";
 import type { StorySummary } from "@cyoa/stories";
 import { useEffect, useState } from "react";
 
 import { AgeGate } from "../../components/account/AgeGate";
 import { ContinueReading } from "../../components/library";
 import { AppNav } from "../../components/navigation";
+import { Text } from "../../components/primitives";
 import { hasRemoteGameApi, listRemotePublishedCreatorSeeds, type RemoteCreatorSeedItem } from "../../lib/gameApi";
 import { getStoryCoverSource } from "../../lib/designAssets";
+import { useBreakpoint } from "../../lib/responsive";
 import { creatorSeedSaveId, listLocalCreatorSeeds, type LocalCreatorSeed } from "../../lib/localCreatorSeeds";
 import { guestAuthArgs, useGuestSession, type AgeSelection } from "../../hooks/useGuestSession";
 import { useLibrary, type LibrarySave } from "../../hooks/useLibrary";
 import { useNarratorVoice } from "../../hooks/useNarratorVoice";
+import { useAppTheme } from "../../theme";
 
+/**
+ * Guest shelf / library route. Every color/spacing/typography value
+ * resolves through `useAppTheme().tokens` so the page paints correctly in
+ * day, night, and sepia. The previous version hardcoded a sepia palette
+ * in StyleSheet.create which rendered tan-on-tan when the theme provider
+ * was set to Day or Night — most visibly the eyebrow above "Choose a
+ * starter adventure." and the `<Text variant="subtitle">Continue
+ * reading</Text>` ContinueReading caption.
+ *
+ * Drift guard: see
+ * `apps/app/components/reading/__tests__/themedSurfaces.test.mjs`.
+ */
 export default function LibraryRoute() {
   const router = useRouter();
   const guest = useGuestSession();
   const library = useLibrary(guest.session);
+  const { tokens } = useAppTheme();
+  // Responsive: every story card on the shelf collapses cover+body to a
+  // single stacked column on phones (<520px). Without this the title+meta
+  // pane has ~211px to work with at 375 viewport — well below the
+  // comfortable reading width and the user reports cramped wrap.
+  const { isPhone } = useBreakpoint();
   // Library is the other start-a-tale surface (starters + creator seeds).
   // No active save here, so we read the last-used voice and forward it on
   // the createRemoteSave call. Matches the cover-screen flow at app/index.tsx.
@@ -63,7 +84,15 @@ export default function LibraryRoute() {
 
   if (!guest.session) {
     return (
-      <ScrollView contentContainerStyle={styles.gatePage}>
+      <ScrollView
+        contentContainerStyle={{
+          alignItems: "center",
+          backgroundColor: tokens.colors.background,
+          flexGrow: 1,
+          justifyContent: "center",
+          padding: tokens.spacing.lg,
+        }}
+      >
         <AgeGate
           blockedMessage={guest.blocked ? guest.error : null}
           onSubmit={handleAgeSubmit}
@@ -73,17 +102,44 @@ export default function LibraryRoute() {
   }
 
   return (
-    <ScrollView contentContainerStyle={styles.page}>
-      <View style={styles.header}>
+    <ScrollView
+      contentContainerStyle={{
+        backgroundColor: tokens.colors.background,
+        flexGrow: 1,
+        gap: tokens.spacing.lg,
+        padding: tokens.spacing.lg,
+      }}
+    >
+      <View
+        style={{
+          alignItems: "flex-start",
+          gap: tokens.spacing.md,
+          maxWidth: 900,
+          width: "100%",
+        }}
+      >
         <AppNav current="library" />
         <View>
-          <Text style={styles.eyebrow}>Guest shelf</Text>
-          <Text style={styles.title}>Choose a starter adventure.</Text>
+          <Text
+            style={{
+              color: tokens.colors.textMuted,
+              fontFamily: tokens.typography.families.mono,
+              fontWeight: "800",
+              letterSpacing: 2,
+              textTransform: "uppercase",
+            }}
+            variant="caption"
+          >
+            Guest shelf
+          </Text>
+          <Text style={{ marginTop: tokens.spacing.xs }} variant="title">
+            Choose a starter adventure.
+          </Text>
         </View>
       </View>
 
       {library.continueSave ? (
-        <View style={styles.section}>
+        <View style={{ gap: tokens.spacing.sm, maxWidth: 900, width: "100%" }}>
           <ContinueReading
             save={library.continueSave}
             onContinue={(save) => openSave(save.saveId)}
@@ -91,9 +147,134 @@ export default function LibraryRoute() {
         </View>
       ) : null}
 
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Starters</Text>
-        <View style={styles.storyList}>
+      {/* Reader-authored / in-progress adventures. Previously the library
+          only surfaced the SINGLE most-recent save via Continue Reading
+          and showed starter templates beneath it — readers with multiple
+          seeded saves couldn't see them all and reported "do new stories
+          appear?". This section lists every save the reader has on this
+          account, newest first, with the reader's authored title (server
+          projects save.seedTitle when present, else the story id). */}
+      {library.saves.length > 0 ? (
+        <View style={{ gap: tokens.spacing.sm, maxWidth: 900, width: "100%" }}>
+          <View
+            style={{
+              alignItems: "center",
+              flexDirection: "row",
+              justifyContent: "space-between",
+            }}
+          >
+            <Text style={{ fontWeight: "800" }} variant="subtitle">
+              Your adventures
+            </Text>
+            <Pressable accessibilityRole="button" onPress={() => router.push("/creator")}>
+              <Text tone="accent" style={{ fontWeight: "800" }} variant="bodySmall">
+                Seed a new one
+              </Text>
+            </Pressable>
+          </View>
+          <View style={{ gap: tokens.spacing.sm }}>
+            {[...library.saves]
+              .sort((a, b) => b.updatedAt - a.updatedAt)
+              .map((save) => (
+                <Pressable
+                  accessibilityRole="button"
+                  key={save.saveId}
+                  onPress={() => openSave(save.saveId)}
+                  style={{
+                    backgroundColor: tokens.colors.surface,
+                    borderColor: tokens.colors.border,
+                    borderRadius: tokens.radii.sm,
+                    borderWidth: tokens.borderWidths.hairline,
+                    flexDirection: isPhone ? "column" : "row",
+                    gap: tokens.spacing.sm,
+                    // No fixed height on phones — stacked layout sizes to
+                    // content so long titles don't get truncated.
+                    minHeight: 164,
+                    overflow: "hidden",
+                  }}
+                >
+                  <View
+                    style={{
+                      alignItems: "center",
+                      backgroundColor: tokens.colors.text,
+                      justifyContent: "center",
+                      // Phone: stripe across full width as a banner.
+                      minHeight: isPhone ? 48 : undefined,
+                      paddingVertical: isPhone ? tokens.spacing.md : 0,
+                      width: isPhone ? "100%" : 128,
+                    }}
+                  >
+                    <Text
+                      style={{
+                        color: tokens.colors.accent,
+                        fontFamily: tokens.typography.families.mono,
+                        fontWeight: "800",
+                        letterSpacing: 1,
+                        textTransform: "uppercase",
+                      }}
+                      variant="body"
+                    >
+                      {save.status === "active" ? "Read" : save.status === "dead" ? "Died" : "Ended"}
+                    </Text>
+                  </View>
+                  <View
+                    style={{
+                      flex: 1,
+                      gap: tokens.spacing.sm,
+                      justifyContent: "center",
+                      padding: tokens.spacing.md,
+                    }}
+                  >
+                    <View
+                      style={{
+                        alignItems: "center",
+                        flexDirection: "row",
+                        flexWrap: "wrap",
+                        gap: tokens.spacing.sm,
+                        justifyContent: "space-between",
+                      }}
+                    >
+                      <Text
+                        muted
+                        style={{
+                          fontFamily: tokens.typography.families.mono,
+                          fontWeight: "800",
+                          letterSpacing: 1,
+                          textTransform: "uppercase",
+                        }}
+                        variant="caption"
+                      >
+                        {`Turn ${save.turnNumber}`}
+                      </Text>
+                      <Text muted style={{ fontWeight: "700" }} variant="caption">
+                        {save.mode}
+                      </Text>
+                    </View>
+                    <Text style={{ fontWeight: "800" }} variant="subtitle">
+                      {save.title}
+                    </Text>
+                    <Text muted variant="bodySmall">
+                      {save.storyId === "open-canvas" ? "Seeded adventure" : save.storyId}
+                    </Text>
+                    <Text
+                      tone="accent"
+                      style={{ fontWeight: "800", marginTop: tokens.spacing.xs }}
+                      variant="bodySmall"
+                    >
+                      {save.status === "active" ? "Continue" : "Re-read"}
+                    </Text>
+                  </View>
+                </Pressable>
+              ))}
+          </View>
+        </View>
+      ) : null}
+
+      <View style={{ gap: tokens.spacing.sm, maxWidth: 900, width: "100%" }}>
+        <Text style={{ fontWeight: "800" }} variant="subtitle">
+          Starters
+        </Text>
+        <View style={{ gap: tokens.spacing.sm }}>
           {library.starterStories.map((story: StorySummary) => (
             <Pressable
               accessibilityRole="button"
@@ -107,27 +288,110 @@ export default function LibraryRoute() {
                 );
                 openSave(save.saveId);
               }}
-              style={styles.storyCard}
+              style={{
+                backgroundColor: tokens.colors.surface,
+                borderColor: tokens.colors.border,
+                borderRadius: tokens.radii.sm,
+                borderWidth: tokens.borderWidths.hairline,
+                // Horizontal card on every viewport — see landing for
+                // rationale. Stacking on phone made each card eat the
+                // full screen; a compact row card fits multiple titles
+                // above the fold on a 667 px phone.
+                flexDirection: "row",
+                gap: tokens.spacing.sm,
+                overflow: "hidden",
+              }}
             >
-              <View style={styles.storyCover}>
+              <View
+                style={{
+                  alignItems: "center",
+                  backgroundColor: tokens.colors.text,
+                  borderBottomLeftRadius: tokens.radii.sm,
+                  borderBottomRightRadius: 0,
+                  borderTopLeftRadius: tokens.radii.sm,
+                  borderTopRightRadius: 0,
+                  justifyContent: "center",
+                  padding: isPhone ? tokens.spacing.xs : tokens.spacing.sm,
+                  // Compact slipcase on phone (96 px), original 128 on desktop.
+                  width: isPhone ? 96 : 128,
+                }}
+              >
                 <Image
                   accessibilityLabel={`${story.title} cover`}
                   resizeMode="contain"
                   source={getStoryCoverSource(story.id)}
-                  style={styles.storyCoverImage}
+                  style={{
+                    aspectRatio: 7 / 10,
+                    width: "100%",
+                  }}
                 />
-                <View style={styles.storyBadge}>
-                  <Text style={styles.storyBadgeText}>{story.difficulty}</Text>
+                <View
+                  style={{
+                    backgroundColor: tokens.colors.overlay,
+                    paddingHorizontal: tokens.spacing.sm,
+                    paddingVertical: tokens.spacing.xs,
+                  }}
+                >
+                  <Text
+                    style={{
+                      color: tokens.colors.accent,
+                      fontFamily: tokens.typography.families.mono,
+                      fontWeight: "800",
+                      letterSpacing: 1,
+                      textTransform: "uppercase",
+                    }}
+                    variant="caption"
+                  >
+                    {story.difficulty}
+                  </Text>
                 </View>
               </View>
-              <View style={styles.storyBody}>
-                <View style={styles.storyHeader}>
-                  <Text style={styles.storyMeta}>{story.estimatedLength}</Text>
-                  <Text style={styles.storyTone}>{story.tone}</Text>
+              <View
+                style={{
+                  flex: 1,
+                  gap: tokens.spacing.sm,
+                  justifyContent: "center",
+                  padding: tokens.spacing.md,
+                }}
+              >
+                <View
+                  style={{
+                    alignItems: "center",
+                    flexDirection: "row",
+                    flexWrap: "wrap",
+                    gap: tokens.spacing.sm,
+                    justifyContent: "space-between",
+                  }}
+                >
+                  <Text
+                    muted
+                    style={{
+                      fontFamily: tokens.typography.families.mono,
+                      fontWeight: "800",
+                      letterSpacing: 1,
+                      textTransform: "uppercase",
+                    }}
+                    variant="caption"
+                  >
+                    {story.estimatedLength}
+                  </Text>
+                  <Text muted style={{ fontWeight: "700" }} variant="caption">
+                    {story.tone}
+                  </Text>
                 </View>
-                <Text style={styles.storyTitle}>{story.title}</Text>
-                <Text style={styles.storySummary}>{story.summary}</Text>
-                <Text style={styles.launchText}>Launch story</Text>
+                <Text style={{ fontWeight: "800" }} variant="subtitle">
+                  {story.title}
+                </Text>
+                <Text muted variant="bodySmall">
+                  {story.summary}
+                </Text>
+                <Text
+                  tone="accent"
+                  style={{ fontWeight: "800", marginTop: tokens.spacing.xs }}
+                  variant="bodySmall"
+                >
+                  Launch story
+                </Text>
               </View>
             </Pressable>
           ))}
@@ -135,14 +399,24 @@ export default function LibraryRoute() {
       </View>
 
       {hasCreatedSeeds ? (
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Created by you</Text>
+        <View style={{ gap: tokens.spacing.sm, maxWidth: 900, width: "100%" }}>
+          <View
+            style={{
+              alignItems: "center",
+              flexDirection: "row",
+              justifyContent: "space-between",
+            }}
+          >
+            <Text style={{ fontWeight: "800" }} variant="subtitle">
+              Created by you
+            </Text>
             <Pressable accessibilityRole="button" onPress={() => router.push("/creator")}>
-              <Text style={styles.textButton}>New seed</Text>
+              <Text tone="accent" style={{ fontWeight: "800" }} variant="bodySmall">
+                New seed
+              </Text>
             </Pressable>
           </View>
-          <View style={styles.storyList}>
+          <View style={{ gap: tokens.spacing.sm }}>
             {remoteCreatorSeeds.map((seed) => (
               <Pressable
                 accessibilityRole="button"
@@ -150,19 +424,86 @@ export default function LibraryRoute() {
                 onPress={() => {
                   void openRemoteCreatorSeed(seed);
                 }}
-                style={[styles.storyCard, styles.creatorCard]}
+                style={{
+                  backgroundColor: tokens.colors.surface,
+                  borderColor: tokens.colors.border,
+                  borderRadius: tokens.radii.sm,
+                  borderWidth: tokens.borderWidths.hairline,
+                  flexDirection: isPhone ? "column" : "row",
+                  gap: tokens.spacing.sm,
+                  minHeight: 164,
+                  overflow: "hidden",
+                }}
               >
-                <View style={styles.creatorMark}>
-                  <Text style={styles.creatorMarkText}>Seed</Text>
+                <View
+                  style={{
+                    alignItems: "center",
+                    backgroundColor: tokens.colors.text,
+                    justifyContent: "center",
+                    minHeight: isPhone ? 48 : undefined,
+                    paddingVertical: isPhone ? tokens.spacing.md : 0,
+                    width: isPhone ? "100%" : 128,
+                  }}
+                >
+                  <Text
+                    style={{
+                      color: tokens.colors.accent,
+                      fontFamily: tokens.typography.families.mono,
+                      fontWeight: "800",
+                      letterSpacing: 1,
+                      textTransform: "uppercase",
+                    }}
+                    variant="body"
+                  >
+                    Seed
+                  </Text>
                 </View>
-                <View style={styles.storyBody}>
-                  <View style={styles.storyHeader}>
-                    <Text style={styles.storyMeta}>Published</Text>
-                    <Text style={styles.storyTone}>account shelf</Text>
+                <View
+                  style={{
+                    flex: 1,
+                    gap: tokens.spacing.sm,
+                    justifyContent: "center",
+                    padding: tokens.spacing.md,
+                  }}
+                >
+                  <View
+                    style={{
+                      alignItems: "center",
+                      flexDirection: "row",
+                      flexWrap: "wrap",
+                      gap: tokens.spacing.sm,
+                      justifyContent: "space-between",
+                    }}
+                  >
+                    <Text
+                      muted
+                      style={{
+                        fontFamily: tokens.typography.families.mono,
+                        fontWeight: "800",
+                        letterSpacing: 1,
+                        textTransform: "uppercase",
+                      }}
+                      variant="caption"
+                    >
+                      Published
+                    </Text>
+                    <Text muted style={{ fontWeight: "700" }} variant="caption">
+                      account shelf
+                    </Text>
                   </View>
-                  <Text style={styles.storyTitle}>{seed.title}</Text>
-                  <Text style={styles.storySummary}>{seed.opening}</Text>
-                  <Text style={styles.launchText}>Launch story</Text>
+                  <Text style={{ fontWeight: "800" }} variant="subtitle">
+                    {seed.title}
+                  </Text>
+                  <Text muted variant="bodySmall">
+                    {seed.opening}
+                  </Text>
+                  <Text
+                    tone="accent"
+                    style={{ fontWeight: "800", marginTop: tokens.spacing.xs }}
+                    variant="bodySmall"
+                  >
+                    Launch story
+                  </Text>
                 </View>
               </Pressable>
             ))}
@@ -171,21 +512,86 @@ export default function LibraryRoute() {
                 accessibilityRole="button"
                 key={seed.seedId}
                 onPress={() => openSave(creatorSeedSaveId(seed.seedId))}
-                style={[styles.storyCard, styles.creatorCard]}
+                style={{
+                  backgroundColor: tokens.colors.surface,
+                  borderColor: tokens.colors.border,
+                  borderRadius: tokens.radii.sm,
+                  borderWidth: tokens.borderWidths.hairline,
+                  flexDirection: isPhone ? "column" : "row",
+                  gap: tokens.spacing.sm,
+                  minHeight: 164,
+                  overflow: "hidden",
+                }}
               >
-                <View style={styles.creatorMark}>
-                  <Text style={styles.creatorMarkText}>Seed</Text>
+                <View
+                  style={{
+                    alignItems: "center",
+                    backgroundColor: tokens.colors.text,
+                    justifyContent: "center",
+                    minHeight: isPhone ? 48 : undefined,
+                    paddingVertical: isPhone ? tokens.spacing.md : 0,
+                    width: isPhone ? "100%" : 128,
+                  }}
+                >
+                  <Text
+                    style={{
+                      color: tokens.colors.accent,
+                      fontFamily: tokens.typography.families.mono,
+                      fontWeight: "800",
+                      letterSpacing: 1,
+                      textTransform: "uppercase",
+                    }}
+                    variant="body"
+                  >
+                    Seed
+                  </Text>
                 </View>
-                <View style={styles.storyBody}>
-                  <View style={styles.storyHeader}>
-                    <Text style={styles.storyMeta}>Published</Text>
-                    <Text style={styles.storyTone}>saved draft</Text>
+                <View
+                  style={{
+                    flex: 1,
+                    gap: tokens.spacing.sm,
+                    justifyContent: "center",
+                    padding: tokens.spacing.md,
+                  }}
+                >
+                  <View
+                    style={{
+                      alignItems: "center",
+                      flexDirection: "row",
+                      flexWrap: "wrap",
+                      gap: tokens.spacing.sm,
+                      justifyContent: "space-between",
+                    }}
+                  >
+                    <Text
+                      muted
+                      style={{
+                        fontFamily: tokens.typography.families.mono,
+                        fontWeight: "800",
+                        letterSpacing: 1,
+                        textTransform: "uppercase",
+                      }}
+                      variant="caption"
+                    >
+                      Published
+                    </Text>
+                    <Text muted style={{ fontWeight: "700" }} variant="caption">
+                      saved draft
+                    </Text>
                   </View>
-                  <Text style={styles.storyTitle}>{seed.title}</Text>
-                  <Text style={styles.storySummary}>
+                  <Text style={{ fontWeight: "800" }} variant="subtitle">
+                    {seed.title}
+                  </Text>
+                  <Text muted variant="bodySmall">
                     {seed.story.nodes[seed.story.startNodeId]?.seed ?? "Open the seed and test the first branch."}
                   </Text>
-                  <Text style={styles.launchText}>Read story</Text>
+                  <Text
+                    tone="accent"
+                    style={{ fontWeight: "800", marginTop: tokens.spacing.xs }}
+                    variant="bodySmall"
+                  >
+                    Read story
+                  </Text>
                 </View>
               </Pressable>
             ))}
@@ -195,190 +601,3 @@ export default function LibraryRoute() {
     </ScrollView>
   );
 }
-
-const styles = StyleSheet.create({
-  gatePage: {
-    alignItems: "center",
-    backgroundColor: "#efe2c8",
-    flexGrow: 1,
-    justifyContent: "center",
-    padding: 18,
-  },
-  page: {
-    backgroundColor: "#efe2c8",
-    flexGrow: 1,
-    gap: 24,
-    padding: 18,
-  },
-  header: {
-    alignItems: "flex-start",
-    gap: 16,
-    maxWidth: 900,
-    width: "100%",
-  },
-  headerTitleRow: {
-    alignItems: "flex-start",
-    flex: 1,
-    flexDirection: "row",
-    gap: 12,
-  },
-  eyebrow: {
-    color: "#7b5a35",
-    fontSize: 12,
-    fontWeight: "800",
-    textTransform: "uppercase",
-  },
-  title: {
-    color: "#24180f",
-    fontSize: 30,
-    fontWeight: "800",
-    lineHeight: 36,
-    marginTop: 4,
-  },
-  textButton: {
-    color: "#7b3f20",
-    fontSize: 15,
-    fontWeight: "800",
-  },
-  section: {
-    gap: 12,
-    maxWidth: 900,
-    width: "100%",
-  },
-  sectionTitle: {
-    color: "#24180f",
-    fontSize: 20,
-    fontWeight: "800",
-  },
-  sectionHeader: {
-    alignItems: "center",
-    flexDirection: "row",
-    justifyContent: "space-between",
-  },
-  continueCard: {
-    alignItems: "stretch",
-    backgroundColor: "#2d1d12",
-    borderRadius: 8,
-    flexDirection: "row",
-    gap: 8,
-    height: 150,
-    minHeight: 132,
-    overflow: "hidden",
-  },
-  continueCover: {
-    aspectRatio: 7 / 10,
-    backgroundColor: "#17100b",
-    height: 150,
-    width: 92,
-  },
-  continueBody: {
-    flex: 1,
-    gap: 8,
-    justifyContent: "center",
-    padding: 16,
-  },
-  continueTitle: {
-    color: "#fff8ea",
-    fontSize: 20,
-    fontWeight: "800",
-  },
-  continueSummary: {
-    color: "#ead9bd",
-    fontSize: 15,
-    lineHeight: 21,
-  },
-  storyList: {
-    gap: 12,
-  },
-  storyCard: {
-    backgroundColor: "#fff8ea",
-    borderColor: "#d5b98f",
-    borderRadius: 8,
-    borderWidth: 1,
-    flexDirection: "row",
-    gap: 8,
-    height: 220,
-    minHeight: 186,
-    overflow: "hidden",
-  },
-  creatorCard: {
-    height: 178,
-    minHeight: 164,
-  },
-  creatorMark: {
-    alignItems: "center",
-    backgroundColor: "#2d1d12",
-    justifyContent: "center",
-    width: 128,
-  },
-  creatorMarkText: {
-    color: "#e6ca85",
-    fontSize: 18,
-    fontWeight: "800",
-    textTransform: "uppercase",
-  },
-  storyCover: {
-    alignItems: "center",
-    backgroundColor: "#17100b",
-    borderBottomLeftRadius: 8,
-    borderTopLeftRadius: 8,
-    height: 220,
-    justifyContent: "center",
-    padding: 8,
-    width: 128,
-  },
-  storyCoverImage: {
-    aspectRatio: 7 / 10,
-    width: "100%",
-  },
-  storyBadge: {
-    backgroundColor: "rgba(19, 17, 13, 0.74)",
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-  },
-  storyBadgeText: {
-    color: "#e6ca85",
-    fontSize: 11,
-    fontWeight: "800",
-    textTransform: "uppercase",
-  },
-  storyBody: {
-    flex: 1,
-    gap: 8,
-    justifyContent: "center",
-    padding: 16,
-  },
-  storyHeader: {
-    alignItems: "center",
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-    justifyContent: "space-between",
-  },
-  storyMeta: {
-    color: "#7b5a35",
-    fontSize: 12,
-    fontWeight: "800",
-  },
-  storyTone: {
-    color: "#594635",
-    fontSize: 12,
-    fontWeight: "700",
-  },
-  storyTitle: {
-    color: "#24180f",
-    fontSize: 20,
-    fontWeight: "800",
-  },
-  storySummary: {
-    color: "#594635",
-    fontSize: 15,
-    lineHeight: 21,
-  },
-  launchText: {
-    color: "#7b3f20",
-    fontSize: 15,
-    fontWeight: "800",
-    marginTop: 4,
-  },
-});

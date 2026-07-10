@@ -24,11 +24,11 @@ export function Stamp({ children, style, ...props }: PropsWithChildren<ViewProps
     >
       <Text
         style={{
-          color: tokens.colors.accent,
           fontFamily: tokens.typography.families.mono,
           fontWeight: "700",
           textTransform: "uppercase",
         }}
+        tone="accent"
         variant="caption"
       >
         {children}

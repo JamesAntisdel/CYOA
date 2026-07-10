@@ -55,6 +55,41 @@ export function buildCheckoutSessionRequest(plan: CheckoutPlan): CheckoutSession
   };
 }
 
+export type CustomerPortalParams = {
+  customer: string;
+  return_url: string;
+};
+
+/**
+ * Builds the params object passed to `stripe.billingPortal.sessions.create`.
+ *
+ * The Stripe Billing Portal is the standard surface for paid subscribers to
+ * cancel, switch plans, update payment methods, and view invoices — without
+ * us building a bespoke management UI. The portal redirects back to
+ * `returnUrl` when the user is done.
+ *
+ * As with `buildCheckoutSessionRequest`, we require HTTPS for the return URL
+ * because Stripe rejects http return URLs outside the test sandbox and the
+ * mismatch yields opaque "Invalid URL" errors. Failing fast here surfaces
+ * the misconfiguration at call sites (local-dev http origin) instead of at
+ * Stripe.
+ */
+export function buildCustomerPortalParams(input: {
+  customerId: string;
+  returnUrl: string;
+}): CustomerPortalParams {
+  if (!input.returnUrl.startsWith("https://")) {
+    throw new AppError("portal_return_url_must_be_https");
+  }
+  if (!input.customerId) {
+    throw new AppError("stripe_customer_missing");
+  }
+  return {
+    customer: input.customerId,
+    return_url: input.returnUrl,
+  };
+}
+
 export function buildCheckoutSessionCreateParams(input: {
   plan: CheckoutPlan;
   prices: StripePriceConfig;

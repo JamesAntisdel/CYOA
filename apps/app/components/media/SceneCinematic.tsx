@@ -50,27 +50,42 @@ export function SceneCinematic({ media, reducedMotion, videoEnabled = true }: Sc
   const preferences = useMediaPreferences();
   const resolvedReducedMotion = reducedMotion ?? preferences.reducedMotion;
 
-  // User-facing video gate. Mirror the `reducedMotion` short-circuit
-  // below — and keep this check before the failure / readiness checks so
-  // toggling off the slider stops the slot from rendering even when a
-  // ready Veo asset is attached to the scene.
-  if (!videoEnabled) return null;
-
   // Track local video-element failure separately from projection status. A
   // <video> element might fail to load even when the projection reports
   // `status: "ready"`; the hosted file could 404 or be CORS-blocked. When
   // that happens we hide the slot quietly per the spec.
+  //
+  // IMPORTANT: every hook below must be called unconditionally. The user-
+  // facing `videoEnabled` toggle flips between renders (Settings → toggle →
+  // re-render), so an early `if (!videoEnabled) return null` placed before
+  // the hook calls would change the hook count between renders and trip
+  // React error #300 ("Rendered fewer hooks than expected"). All the
+  // null-returning gates live AFTER the hook calls instead.
   const [videoFailed, setVideoFailed] = useState(false);
 
   // Prefer the explicit `videoUri` field from the projection — that's the
   // ready Veo URL regardless of which kind ended up as primary. Falls
   // back to the legacy `uri` only when the projection's primary is video.
-  const videoUri =
+  // Defensive: require a non-empty string before treating the URI as
+  // playable. Without the length check an asset row that landed with
+  // status==="ready" but an empty `url` (mis-set by an upstream bug or
+  // a half-populated projection) would mount `<video src="">` and trip
+  // the browser's "Invalid URI" error on every render.
+  const rawVideoUri =
     media?.videoUri ??
     (media?.kind === "video" && media.status === "ready" ? media.uri : undefined);
+  const videoUri =
+    typeof rawVideoUri === "string" && rawVideoUri.length > 0 ? rawVideoUri : undefined;
   useEffect(() => {
     setVideoFailed(false);
   }, [videoUri]);
+
+  // User-facing video gate. Mirror the `reducedMotion` short-circuit
+  // below — toggling off the slider stops the slot from rendering even
+  // when a ready Veo asset is attached to the scene. Placed AFTER the
+  // hook calls above so the hook count stays stable when the toggle
+  // flips between renders.
+  if (!videoEnabled) return null;
 
   // Reduced-motion users never see the cinematic slot at all.
   if (resolvedReducedMotion) return null;

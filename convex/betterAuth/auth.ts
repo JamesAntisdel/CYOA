@@ -6,6 +6,7 @@ import type { GenericCtx } from "@convex-dev/better-auth";
 import { components } from "../_generated/api";
 import type { DataModel } from "../_generated/dataModel";
 import authConfig from "../auth.config";
+import { buildMagicLinkPlugin, buildSocialProviders } from "./providers";
 
 export const authComponent = createClient<DataModel>(components.betterAuth);
 
@@ -13,6 +14,11 @@ const basePath = "/api/auth";
 
 export function createAuth(ctx: GenericCtx<DataModel>) {
   const siteUrl = getSiteUrl();
+  // Social providers + magic link are env-gated: each is only wired when its
+  // secrets are present, so the config stays valid without OAuth/email creds and
+  // becomes functional the moment they are supplied. See ./providers.ts.
+  const socialProviders = buildSocialProviders(process.env);
+  const magicLinkPlugin = buildMagicLinkPlugin(process.env);
   return betterAuth({
     basePath,
     baseURL: siteUrl,
@@ -22,12 +28,14 @@ export function createAuth(ctx: GenericCtx<DataModel>) {
       enabled: true,
       requireEmailVerification: false,
     },
+    ...(Object.keys(socialProviders).length > 0 ? { socialProviders } : {}),
     plugins: [
       convex({
         authConfig,
         ...(process.env.JWKS ? { jwks: process.env.JWKS } : {}),
         options: { basePath },
       }),
+      ...(magicLinkPlugin ? [magicLinkPlugin] : []),
     ],
   });
 }

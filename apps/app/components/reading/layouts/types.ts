@@ -1,7 +1,8 @@
 import type { ReaderHudMode } from "../shared";
-import type { ReaderProjection } from "../../../hooks/useTurn";
+import type { ChoiceHistoryEntry, ReaderProjection } from "../../../hooks/useTurn";
 import type { ChoiceProjection } from "../../../hooks/useTurn";
 import type { PatronTier } from "../../../lib/billingConfig";
+import type { RemoteCinematicView } from "../../../lib/cinematicApi";
 
 /**
  * Every reading layout consumes the same projection + streaming state and
@@ -38,6 +39,19 @@ export type ReaderLayoutProps = {
    */
   endingIsFirstFind?: boolean;
   /**
+   * Endpoint (Omni) ending cinematic for this save, when one exists
+   * (omni-cinematics Req 7.2). When present the layout renders a full-bleed
+   * `<CinematicMoment>` above the ending panel — the "movie of your
+   * playthrough" — and the panel's existing still remains the fallback.
+   * Absent for scripted / non-Pro saves; the ending renders as before.
+   */
+  endingCinematic?: RemoteCinematicView;
+  /**
+   * Reader mute preference. Forwarded to `<CinematicMoment>` so the
+   * cinematic's native audio track plays silent when the reader has muted.
+   */
+  muted?: boolean;
+  /**
    * User-facing media-gate sliders (settings → "Show illustrations" etc.).
    * Each defaults to true at the SceneMedia / SceneCinematic level, so
    * omitting the prop preserves the previous always-on behavior. Layouts
@@ -70,6 +84,43 @@ export type ReaderLayoutProps = {
   onFreeformSubmit?: (text: string) => void;
   freeformPending?: boolean;
   freeformError?: string | null;
+  /**
+   * When true (default), scene prose is parsed at render time and
+   * dialog lines render as distinct indented `<DialogLine>` blocks.
+   * When false, the prose renders verbatim in a single `<Text>` block
+   * (the pre-feature behavior). Layouts forward this straight through
+   * to `<ProseRenderer>`; ReaderScreen supplies it from
+   * `useReaderSettings`.
+   */
+  dialogBlocksEnabled?: boolean;
+  /**
+   * Account identifier for the active reader. Forwarded to `<StatsHud>` →
+   * `<FullSheetMode>` → `<NpcRoster>` so per-NPC portrait queries
+   * (`media/npcMedia:getNpcPortraitUrl`) can authenticate. Optional —
+   * local-only / training-room saves render with no live portrait lookup,
+   * which is correct: those saves never queue NPC assets.
+   */
+  accountId?: string;
+  /**
+   * Most-recent visible choice the reader made — i.e. what brought them to
+   * the current scene. Surfaced inline as the `<EffectBadge>` so the reader
+   * can connect the dot between their pick and the stat / inventory change
+   * that just happened. Omitted on the first turn (no prior choice) and on
+   * layouts that the parent intentionally doesn't wire (currently all five
+   * receive it). Layouts treat a missing prop the same as null: no badge.
+   */
+  recentChoiceEcho?: ChoiceHistoryEntry | null;
+  /**
+   * Retry callback for the deterministic-fallback sentinel
+   * (`projection.scene.isFallback === true`). When set and the scene is a
+   * fallback, layouts render `<FallbackTurnPanel onRetry={onRetry} />` in
+   * place of the prose surface + ChoiceList so the deterministic
+   * placeholder text never reaches the reader. ReaderScreen wires this to
+   * `useTurn.retryCurrentTurn`. Omitted on local-only / scripted saves
+   * (the deterministic provider never serves there) and on layouts that
+   * don't render the fallback panel.
+   */
+  onRetryCurrentTurn?: () => void | Promise<void>;
 };
 
 type Nav = (() => void) | undefined;

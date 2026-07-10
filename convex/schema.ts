@@ -21,6 +21,32 @@ export default defineSchema({
     lastActiveAt: v.number(),
     ttlExpiresAt: v.optional(v.number()),
     isAdmin: v.optional(v.boolean()),
+    /**
+     * Per-account media-generation gates. Wired through the settings screen
+     * (`apps/app/app/settings/index.tsx`) — when a modality is false, the
+     * matching `convex/media/sceneMedia.ts` queue mutation short-circuits
+     * before scheduling Imagen / Veo / Google TTS so the provider bill
+     * matches the reader's stated preference. Absence means "all enabled"
+     * (default behavior). Settings is global to the reader (not per-save),
+     * so the gate lives on the account row rather than the save row.
+     */
+    mediaPrefs: v.optional(v.object({
+      imagesEnabled: v.boolean(),
+      audioEnabled: v.boolean(),
+      videoEnabled: v.boolean(),
+      // omni-cinematics media-strategy switch. Absent = legacy per-scene
+      // behavior. The server resolver composes this with the per-modality
+      // booleans above (videoEnabled:false caps at "stills_only" — build
+      // correction C4) and the Pro entitlement gate.
+      cinematicMode: v.optional(
+        v.union(
+          v.literal("off"),
+          v.literal("stills_only"),
+          v.literal("endpoint_cinematic"),
+          v.literal("per_scene_legacy"),
+        ),
+      ),
+    })),
   })
     .index("by_userId", ["userId"])
     .index("by_guestTokenHash", ["guestTokenHash"])
@@ -89,6 +115,32 @@ export default defineSchema({
     seedPremise: v.optional(v.string()),
     seedTitle: v.optional(v.string()),
     seedTone: v.optional(v.string()),
+    // Running "story so far" summary maintained by `convex/llm/summarizer.ts`
+    // after every successful turn. Surfaced to the next scene prompt as
+    // canonical context above the rolling memory window so the LLM stops
+    // proposing actions the reader already took (e.g. "open the coconut" on
+    // turn 4 after it was opened on turn 2). Capped at ~500 characters by
+    // the summarizer; absent on every save until the first successful turn
+    // completes (the opening scene has nothing to summarise yet).
+    storySummary: v.optional(v.string()),
+    // Reference-image carry-over for scene illustrations. On turn 1 of an
+    // llm-driven save, the LLM emits `protagonistAnchor` + `settingAnchor`
+    // descriptions; convex/media schedules anchor jobs that generate
+    // dedicated portrait + establishing-shot images and stores their
+    // assetIds here. Subsequent scene-image calls fetch the storage bytes
+    // for these anchors and pass them as inline reference inputs to
+    // Gemini Flash Image so the protagonist face + setting style stay
+    // consistent across the read. Optional — saves that pre-date this
+    // feature (or where the LLM omitted the anchors) simply render
+    // without references and fall back to the existing Imagen path.
+    anchorProtagonistAssetId: v.optional(v.id("assets")),
+    anchorSettingAssetId: v.optional(v.id("assets")),
+    // omni-cinematics double-fire guard. `queueEndpointCinematic` patches this
+    // on every successful queue so two concurrent queues (SSE re-mount /
+    // double-scheduled turn completion) serialize on THIS document — Convex OCC
+    // does not conflict on phantom inserts into an empty asset range, so the
+    // asset-query dedupe alone can't stop a same-instant double-fire.
+    lastCinematicQueuedAt: v.optional(v.number()),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
@@ -110,6 +162,17 @@ export default defineSchema({
       v.literal("failed"),
       v.literal("blocked"),
     ),
+    /**
+     * Timestamp (ms since epoch) at which the SSE handler claimed the
+     * "streaming" lock for this scene. `getAuthorizedSceneStreamRequest`
+     * uses this together with `SCENE_STREAM_LOCK_TTL_MS` to reject a
+     * concurrent stream-open against a still-running scene while still
+     * allowing a recovery retry after the holder has clearly crashed.
+     * Optional: scenes created before this field shipped, and scenes that
+     * are still in `pending` / `complete` / `blocked` / `failed`, never
+     * populate it.
+     */
+    streamStartedAt: v.optional(v.number()),
     choiceViews: v.array(jsonValue),
     engineEvents: v.array(jsonValue),
     safety: jsonValue,
@@ -122,6 +185,17 @@ export default defineSchema({
     // proposal up to apply the chosen choice's effects.
     proposal: v.optional(jsonValue),
     terminal: v.optional(jsonValue),
+    /**
+     * True when the router served this scene from the deterministic
+     * fallback provider (every real provider failed or was ineligible).
+     * Reader UI uses this to render the FallbackTurnPanel ("the page is
+     * blank for a moment — try again") instead of the deterministic
+     * placeholder prose + choices, which would otherwise look like a
+     * real LLM scene. Absent on every real-provider scene; treat absent
+     * as `false`. Cleared (left absent) once the reader retries and a
+     * real provider responds.
+     */
+    isFallback: v.optional(v.boolean()),
   })
     .index("by_save_turn", ["saveId", "turnNumber"])
     .index("by_save_node_fingerprint", ["saveId", "nodeId", "stateFingerprint"]),
@@ -143,6 +217,16 @@ export default defineSchema({
      * with rows written before this field existed.
      */
     choiceLabel: v.optional(v.string()),
+    /**
+     * NPC ids the LLM (or the engine, when it scans free-form prose) flagged
+     * as mentioned in this turn's scene. Persisted so the next turn's
+     * prompt-builder can surface those NPCs' sheets without re-parsing prose
+     * (Requirements 31.3 / 31.4). Most-recent-first when read back via
+     * `loadRecentNpcMentions`. Optional for backwards compatibility with rows
+     * written before this field existed; the field is set by the LLM-contract
+     * task (Task 55) once `proposal.npcMentions` is wired through the parser.
+     */
+    mentionsExtracted: v.optional(v.array(v.string())),
     engineDiffs: v.array(jsonValue),
     engineEvents: v.array(jsonValue),
     provider: v.union(v.literal("anthropic"), v.literal("vertex"), v.literal("deepseek"), v.literal("deterministic")),
@@ -161,6 +245,9 @@ export default defineSchema({
     firstSeen: v.number(),
     mode: v.union(v.literal("story"), v.literal("hardcore")),
     path: v.array(v.string()),
+    // Set true when the unlock was a safety-forced safe ending (Req 11.4), so
+    // the trophy crypt can distinguish it from an earned ending.
+    safetyEnding: v.optional(v.boolean()),
   })
     .index("by_account_story", ["accountId", "storyId"])
     .index("by_account_ending", ["accountId", "endingId"]),
@@ -176,7 +263,27 @@ export default defineSchema({
     forkPolicy: v.union(v.literal("any_decision"), v.literal("ending_only"), v.literal("disabled")),
     isMature: v.boolean(),
     safetySummary: jsonValue,
+    // Reference ids into the source save's turn_history (kept for lineage).
     snapshotTurnIds: v.array(v.id("turn_history")),
+    // Denormalized, immutable snapshot of the story this tale captured. Persisted
+    // so a published tale survives the source save being rewound or purged
+    // (which deletes the referenced turn_history/scenes). Read + fork resolve
+    // from these; snapshotTurnIds remain only for lineage. Optional for
+    // backward-compatibility with any tale published before this field existed.
+    storyId: v.optional(v.string()),
+    snapshotTurns: v.optional(v.array(jsonValue)),
+    // omni-cinematics Req 10.1: the source save's ending cinematic, denormalized
+    // at publish time (owner-consented, safety-gated) so the published tale can
+    // lead with it even after the source save/asset is gone.
+    leadCinematic: v.optional(
+      v.object({
+        assetId: v.id("assets"),
+        url: v.string(),
+        hasAudio: v.boolean(),
+        synthId: v.boolean(),
+        endingId: v.optional(v.string()),
+      }),
+    ),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
@@ -250,6 +357,11 @@ export default defineSchema({
     activeParticipantId: v.optional(v.string()),
     voteEndsAt: v.optional(v.number()),
     votes: jsonValue,
+    // Set true for a mature co-op room (Req 20.7). Written only when true.
+    isMature: v.optional(v.boolean()),
+    // Audit timestamp for when the room was closed; status:"closed" is the
+    // source of truth, this is optional bookkeeping.
+    closedAt: v.optional(v.number()),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
@@ -292,11 +404,31 @@ export default defineSchema({
     taleId: v.optional(taleId),
     sceneId: v.optional(v.id("scenes")),
     nodeId: v.optional(v.string()),
-    kind: v.union(v.literal("image"), v.literal("video"), v.literal("audio")),
+    // NPC portrait asset (Requirement 31). When set, this asset row is a
+    // square 1:1 portrait generated by `convex/media/npcMedia.ts` for the
+    // named NPC inside the owning save. `sceneId` and `nodeId` may both
+    // be absent on portrait rows — portraits live on the save, not on a
+    // single scene. Queries that filter by `npcId` use the `by_npc_save`
+    // index below to look up the live portrait for a roster card.
+    npcId: v.optional(v.string()),
+    // Reference-anchor classifier for the scene-image carry-over pipeline.
+    // When set, this asset row is one of the two save-level anchors
+    // (protagonist portrait or setting establishing shot) generated on
+    // turn 1 by `convex/media/geminiImageClient.ts`. The save row points
+    // at these anchors via `anchorProtagonistAssetId` / `anchorSettingAssetId`;
+    // every subsequent scene-image call fetches the storage bytes of the
+    // pointed-at anchors and passes them as inline references to Gemini
+    // Flash Image. Absent on normal scene images, NPC portraits,
+    // videos, and audio.
+    referenceKind: v.optional(v.union(v.literal("protagonist"), v.literal("setting"))),
+    // "cinematic" (omni-cinematics spec): an endpoint cinematic (opening /
+    // ending) produced by Gemini Omni, distinct from per-scene image/video.
+    kind: v.union(v.literal("image"), v.literal("video"), v.literal("audio"), v.literal("cinematic")),
     provider: v.union(
       v.literal("vertex-imagen"),
       v.literal("vertex-veo"),
       v.literal("gemini-veo"),
+      v.literal("gemini-omni"),
       v.literal("google-tts"),
       v.literal("uploaded"),
     ),
@@ -309,6 +441,14 @@ export default defineSchema({
     alt: v.optional(v.string()),
     tags: v.optional(v.array(v.string())),
     durationMs: v.optional(v.number()),
+    // Cinematic-only fields (kind === "cinematic"). `trigger` marks which
+    // endpoint produced it; `endingId` links an ending cinematic to the
+    // reached ending (per-save — repeat unlocks reuse the endingId but a new
+    // asset row, see spec build-correction C5); `hasAudio` flags Omni's native
+    // synchronized audio track. Absent on image/video/audio rows.
+    cinematicTrigger: v.optional(v.union(v.literal("opening"), v.literal("ending"), v.literal("chapter"))),
+    endingId: v.optional(v.string()),
+    hasAudio: v.optional(v.boolean()),
     createdAt: v.number(),
     updatedAt: v.optional(v.number()),
     readyAt: v.optional(v.number()),
@@ -317,7 +457,12 @@ export default defineSchema({
     .index("by_saveId", ["saveId"])
     .index("by_taleId", ["taleId"])
     .index("by_status", ["status"])
-    .index("by_scene", ["sceneId"]),
+    .index("by_scene", ["sceneId"])
+    // Look up a save's NPC portraits in one query — used by
+    // `getNpcPortraitUrl` and the idempotency check in queueNpcPortrait.
+    .index("by_npc_save", ["saveId", "npcId"])
+    // Cinematics for a save (trophy-crypt playback + dedupe by trigger).
+    .index("by_save_kind", ["saveId", "kind"]),
 
   migrations: defineTable({
     saveId,

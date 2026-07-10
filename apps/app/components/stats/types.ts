@@ -1,3 +1,5 @@
+import type { NpcState } from "@cyoa/engine";
+
 import type { ReaderInventoryItem, ReaderStats } from "../../hooks/useTurn";
 
 /**
@@ -114,6 +116,21 @@ export type StatsHudCommonProps = {
   characterName?: string;
   /** Turn number for header context. */
   turnNumber?: number;
+  /**
+   * Cast roster surfaced inside the FullSheet "Companions and Cast" section.
+   * Sourced from `PlayerState.npcs` (Requirement 31). Optional — older
+   * projections that don't yet emit `npcs` simply render no roster.
+   */
+  npcs?: Record<string, NpcState>;
+  /**
+   * Account + save identity. Forwarded to `<NpcRoster>` so it can resolve
+   * each NPC's portrait via the convex `media/npcMedia:getNpcPortraitUrl`
+   * query. Both required for live resolution; either being absent silently
+   * falls back to the initials placeholder (which is correct for local-only
+   * demo / training-room renders).
+   */
+  accountId?: string;
+  saveId?: string;
   /** Open the full character sheet on demand. */
   onOpenFullSheet?: () => void;
   /** Dismiss the full character sheet. */

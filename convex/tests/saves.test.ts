@@ -11,6 +11,8 @@ import {
   endingRecordFromUnlock,
   projectCurrentScene,
 } from "../index";
+import { projectAuthoredSceneFromRecord } from "../game";
+import { projectLlmDrivenScene } from "../saves";
 
 const story: Story = {
   id: "training-room",
@@ -72,6 +74,158 @@ describe("save domain", () => {
 
     expect(projection.choices.map((choice) => choice.choice.id)).toEqual(["go", "locked"]);
     expect(projection.visibleStats).toEqual([{ statId: "focus", label: "Focus", value: 2 }]);
+    expect(projection.prose).toBe("Start prose.");
+  });
+
+  it("authored scene projection prefers LLM-elaborated prose from the scene record", async () => {
+    const save = {
+      ...createSaveRecord({ accountId: "acct", story, mode: "story", now: 1, rngSeed: "r" }),
+      _id: "save",
+      currentSceneId: "scene_1",
+    };
+    const elaborated =
+      "The lantern's glow pulls forward, catching dust motes between two locked alcoves and a low chalked sigil.";
+    const ctx = {
+      db: {
+        get: async (id: string) => {
+          if (id === "scene_1") {
+            return { _id: "scene_1", prose: elaborated, streamStatus: "complete" };
+          }
+          return null;
+        },
+      },
+    };
+
+    const projection = await projectAuthoredSceneFromRecord(ctx, save, story);
+
+    expect(projection.prose).toBe(elaborated);
+    expect(projection.streamStatus).toBe("complete");
+  });
+
+  it("authored scene projection falls back to seed prose when scene record is empty", async () => {
+    const save = {
+      ...createSaveRecord({ accountId: "acct", story, mode: "story", now: 1, rngSeed: "r" }),
+      _id: "save",
+      currentSceneId: "scene_1",
+    };
+    const ctx = {
+      db: {
+        get: async (id: string) => {
+          if (id === "scene_1") {
+            return { _id: "scene_1", prose: "", streamStatus: "pending" };
+          }
+          return null;
+        },
+      },
+    };
+
+    const projection = await projectAuthoredSceneFromRecord(ctx, save, story);
+
+    expect(projection.prose).toBe("Start prose.");
+    expect(projection.streamStatus).toBe("pending");
+  });
+
+  it("authored scene projection surfaces isFallback when the scene record carries the sentinel", async () => {
+    // Bug fix guard: the deterministic-fallback marker must travel from
+    // the scene record onto the projection so the reader UI can render
+    // the FallbackTurnPanel. Authored-mode branch of
+    // `projectAuthoredSceneFromRecord`.
+    const save = {
+      ...createSaveRecord({ accountId: "acct", story, mode: "story", now: 1, rngSeed: "r" }),
+      _id: "save",
+      currentSceneId: "scene_1",
+    };
+    const ctx = {
+      db: {
+        get: async (id: string) => {
+          if (id === "scene_1") {
+            return {
+              _id: "scene_1",
+              prose: "Deterministic placeholder prose.",
+              streamStatus: "complete",
+              isFallback: true,
+            };
+          }
+          return null;
+        },
+      },
+    };
+
+    const projection = await projectAuthoredSceneFromRecord(ctx, save, story);
+
+    expect(projection.isFallback).toBe(true);
+  });
+
+  it("projectLlmDrivenScene surfaces isFallback when input.isFallback === true", () => {
+    // The llm-driven branch carries the sentinel through a different
+    // helper than the authored branch; pin its behaviour here so a future
+    // refactor doesn't silently drop the field for one mode.
+    const save = {
+      ...createSaveRecord({ accountId: "acct", story, mode: "story", now: 1, rngSeed: "r" }),
+      _id: "save",
+    };
+    const fallback = projectLlmDrivenScene({
+      save,
+      proposal: null,
+      prose: "Deterministic placeholder.",
+      streamStatus: "complete",
+      isFallback: true,
+    });
+    const real = projectLlmDrivenScene({
+      save,
+      proposal: null,
+      prose: "Real provider prose.",
+      streamStatus: "complete",
+    });
+    expect(fallback.isFallback).toBe(true);
+    expect(real.isFallback).toBeUndefined();
+  });
+
+  it("authored scene projection omits isFallback when the scene record is from a real provider", async () => {
+    // Counterpart of the above: a real-provider scene record must NOT
+    // surface the sentinel, or every reader's turn would render the
+    // FallbackTurnPanel.
+    const save = {
+      ...createSaveRecord({ accountId: "acct", story, mode: "story", now: 1, rngSeed: "r" }),
+      _id: "save",
+      currentSceneId: "scene_1",
+    };
+    const ctx = {
+      db: {
+        get: async (id: string) => {
+          if (id === "scene_1") {
+            return {
+              _id: "scene_1",
+              prose: "Real provider prose.",
+              streamStatus: "complete",
+              isFallback: false,
+            };
+          }
+          return null;
+        },
+      },
+    };
+
+    const projection = await projectAuthoredSceneFromRecord(ctx, save, story);
+
+    expect(projection.isFallback).toBeUndefined();
+  });
+
+  it("authored scene projection skips DB read when currentSceneId is absent", async () => {
+    const save = createSaveRecord({ accountId: "acct", story, mode: "story", now: 1, rngSeed: "r" });
+    let dbCalls = 0;
+    const ctx = {
+      db: {
+        get: async () => {
+          dbCalls += 1;
+          return null;
+        },
+      },
+    };
+
+    const projection = await projectAuthoredSceneFromRecord(ctx, save, story);
+
+    expect(dbCalls).toBe(0);
     expect(projection.prose).toBe("Start prose.");
   });
 

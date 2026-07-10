@@ -1,4 +1,6 @@
 import { mutationGeneric, queryGeneric } from "convex/server";
+
+import { accountFromDoc, cleanDoc } from "./lib/docs";
 import { v } from "convex/values";
 
 import type { AccountRecord } from "./account";
@@ -101,14 +103,8 @@ export const archive = mutationGeneric({
   },
 });
 
-function accountFromDoc(doc: Record<string, unknown>): AccountRecord {
-  return { ...doc, _id: String(doc._id) } as AccountRecord;
-}
 
 function seedFromDoc(doc: Record<string, unknown>): AuthoredSeedRecord {
   return { ...doc, _id: String(doc._id) } as AuthoredSeedRecord;
 }
 
-function cleanDoc<T extends Record<string, unknown>>(doc: T): T {
-  return Object.fromEntries(Object.entries(doc).filter(([, value]) => value !== undefined)) as T;
-}

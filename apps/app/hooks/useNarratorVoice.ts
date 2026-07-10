@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { getLocalStorage as getStorage } from "../lib/storage";
+
 // Seed voice catalogue. Provider-stable IDs that survive across releases and
 // tales. Real TTS provider lookup happens server-side in a later wave — this
 // list seeds the picker for visual-design wave 2.
@@ -60,10 +62,6 @@ function perSaveKey(saveId: string): string {
   return `cyoa.narratorVoice.${saveId}.v1`;
 }
 
-function getStorage(): Pick<Storage, "getItem" | "setItem" | "removeItem"> | null {
-  if (typeof globalThis === "undefined") return null;
-  return (globalThis as { localStorage?: Storage }).localStorage ?? null;
-}
 
 function isKnownVoiceId(id: string | null | undefined): id is string {
   if (!id) return false;
@@ -107,7 +105,49 @@ function writePinned(saveId: string, voiceId: string): void {
   }
 }
 
+function writeLastUsed(voiceId: string): void {
+  const storage = getStorage();
+  if (!storage) return;
+  try {
+    storage.setItem(LAST_USED_KEY, voiceId);
+  } catch {
+    // ignore storage failures (quota / private mode)
+  }
+}
+
 export type NarratorVoiceStatus = "fresh" | "pinned";
+
+export type HydratedVoiceState = {
+  voiceId: string;
+  status: NarratorVoiceStatus;
+};
+
+/**
+ * Pure resolver for the voice + status that {@link useNarratorVoice} should
+ * surface at mount time. Extracted so the read-from-storage rules can be
+ * exercised in tests without spinning up React.
+ *
+ * - With no save id: returns the reader's last-used voice (or the default if
+ *   none has been recorded). Status is always "fresh" because per-save
+ *   pinning only applies once a save id is in play.
+ * - With a save id: returns the per-save pinned voice if one is recorded; if
+ *   not, falls back to the reader's last-used voice with status "fresh" so
+ *   the reader can still pin from the cover.
+ */
+export function resolveInitialVoiceState(
+  saveId: string | null | undefined,
+): HydratedVoiceState {
+  if (!saveId) {
+    const lastUsed = readLastUsed();
+    return { voiceId: lastUsed ?? DEFAULT_VOICE_ID, status: "fresh" };
+  }
+  const pinned = readPinned(saveId);
+  if (pinned) {
+    return { voiceId: pinned, status: "pinned" };
+  }
+  const lastUsed = readLastUsed();
+  return { voiceId: lastUsed ?? DEFAULT_VOICE_ID, status: "fresh" };
+}
 
 export type ChangeIntent = {
   targetVoiceId: string;
@@ -136,31 +176,24 @@ export function useNarratorVoice(saveId: string | null | undefined): UseNarrator
   const [voiceId, setVoiceId] = useState<string>(DEFAULT_VOICE_ID);
   const [status, setStatus] = useState<NarratorVoiceStatus>("fresh");
   const [pendingChange, setPendingChange] = useState<ChangeIntent | null>(null);
-  const hydratedSaveId = useRef<string | null>(null);
+  const hydratedSaveId = useRef<string | null | undefined>(undefined);
 
   // Hydrate from storage whenever the save id changes.
   useEffect(() => {
-    if (!saveId) {
-      hydratedSaveId.current = null;
-      setVoiceId(DEFAULT_VOICE_ID);
-      setStatus("fresh");
-      setPendingChange(null);
-      return;
-    }
-    if (hydratedSaveId.current === saveId) return;
-    hydratedSaveId.current = saveId;
+    // Library / creator / cover / settings screens pass saveId === null
+    // because there isn't an active save yet. In that case we still want to
+    // surface the reader's most recent choice so createSave(...) forwards
+    // the picked voice instead of always falling back to DEFAULT_VOICE_ID.
+    const targetKey: string | null = saveId ?? null;
+    // Use a sentinel so we hydrate once per saveId (including null). Further
+    // state updates from pickVoice must not be clobbered by this effect
+    // re-running with the same input.
+    if (hydratedSaveId.current === targetKey) return;
+    hydratedSaveId.current = targetKey;
 
-    const pinned = readPinned(saveId);
-    if (pinned) {
-      setVoiceId(pinned);
-      setStatus("pinned");
-      setPendingChange(null);
-      return;
-    }
-
-    const lastUsed = readLastUsed();
-    setVoiceId(lastUsed ?? DEFAULT_VOICE_ID);
-    setStatus("fresh");
+    const resolved = resolveInitialVoiceState(saveId);
+    setVoiceId(resolved.voiceId);
+    setStatus(resolved.status);
     setPendingChange(null);
   }, [saveId]);
 
@@ -168,6 +201,11 @@ export function useNarratorVoice(saveId: string | null | undefined): UseNarrator
     (nextVoiceId: string) => {
       if (!isKnownVoiceId(nextVoiceId)) return;
       if (!saveId) {
+        // No save context — persist as the reader's last-used voice so that
+        // /library, /creator, and the cover screen all pick it up on remount
+        // and forward it to createSave. Status stays "fresh" (per-save pinning
+        // only applies once a save id exists).
+        writeLastUsed(nextVoiceId);
         setVoiceId(nextVoiceId);
         return;
       }
@@ -223,4 +261,5 @@ export const __internal = {
   readPinned,
   readLastUsed,
   writePinned,
+  writeLastUsed,
 };

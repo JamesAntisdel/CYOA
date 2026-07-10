@@ -16,6 +16,13 @@ type LockedChoiceCopyProps = {
  * Spec-gap guidance shown beneath a locked choice. The copy must not reveal
  * any hidden flags, raw stat thresholds, or scripted requirement IDs. We
  * surface a generic narrator note plus an optional in-world hint.
+ *
+ * Contrast note: the in-world hint was previously rendered as `muted
+ * variant="caption"`, which on the day theme dropped to ~52% opacity ink
+ * and read as almost-disappeared microcopy. The user-flagged "muted-text
+ * issue" hit this line hardest, so the hint now renders at bodySmall with
+ * the regular text color — still secondary to the headline but actually
+ * readable.
  */
 export function LockedChoiceCopy({ hint }: LockedChoiceCopyProps) {
   const { tokens } = useAppTheme();
@@ -34,11 +41,11 @@ export function LockedChoiceCopy({ hint }: LockedChoiceCopyProps) {
       <Text style={{ color: tokens.colors.danger, fontWeight: "700" }} variant="caption">
         Path closed for now
       </Text>
-      <Text muted variant="bodySmall">
+      <Text variant="bodySmall">
         Something the story has not yet given you would be needed here.
       </Text>
       {hint ? (
-        <Text muted variant="caption">
+        <Text style={{ color: tokens.colors.textMuted }} variant="bodySmall">
           {hint}
         </Text>
       ) : null}

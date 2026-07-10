@@ -2,11 +2,15 @@ import { useWindowDimensions, View } from "react-native";
 
 import { ChoiceList } from "../../choices/ChoiceList";
 import { EndingPanel } from "../../death/EndingPanel";
+import { CinematicMoment } from "../../media/CinematicMoment";
 import { SceneCinematic } from "../../media/SceneCinematic";
 import { SceneMedia } from "../../media/SceneMedia";
 import { Divider, Stamp, Surface, Text } from "../../primitives";
 import { StatsHud } from "../../stats/StatsHud";
 import { useAppTheme } from "../../../theme";
+import { EffectBadge } from "../EffectBadge";
+import { FallbackTurnPanel } from "../FallbackTurnPanel";
+import { ProseRenderer } from "../ProseRenderer";
 import { endingPanelHandlers, endingVariantProps, type ReaderLayoutProps } from "./types";
 
 const RAIL_BREAKPOINT = 760;
@@ -30,6 +34,8 @@ export function ModernAppLayout({
   endingTier,
   cinematicUri,
   endingIsFirstFind,
+  endingCinematic,
+  muted = false,
   imagesEnabled = true,
   audioEnabled = true,
   videoEnabled = true,
@@ -38,11 +44,19 @@ export function ModernAppLayout({
   onFreeformSubmit,
   freeformPending = false,
   freeformError = null,
+  dialogBlocksEnabled = true,
+  accountId,
+  recentChoiceEcho = null,
+  onRetryCurrentTurn,
 }: ReaderLayoutProps) {
   const { tokens } = useAppTheme();
   const { width } = useWindowDimensions();
   const showRails = width >= RAIL_BREAKPOINT;
   const showHud = hudMode !== "hidden";
+  // Deterministic-fallback branch: suppress the prose surface + choices,
+  // render `<FallbackTurnPanel />` only in the center column. The chapter
+  // / HUD rails stay mounted so the reader doesn't lose orientation.
+  const isFallback = projection.scene.isFallback === true;
 
   return (
     <View style={{ flexDirection: showRails ? "row" : "column", gap: tokens.spacing.lg, width: "100%" }}>
@@ -67,46 +81,72 @@ export function ModernAppLayout({
       <View style={{ flex: 1, gap: tokens.spacing.md, minWidth: 0 }}>
         <RailLabel>{projection.storyTitle}</RailLabel>
         <Text variant="title">{projection.scene.title}</Text>
-        <SceneMedia
-          media={projection.scene.media}
-          reducedMotion={reducedMotion}
-          sceneId={projection.scene.id}
-          imagesEnabled={imagesEnabled}
-          audioEnabled={audioEnabled}
-          narratorPlaybackRate={narratorPlaybackRate}
-          {...(onNarratorPlaybackRateChange ? { onNarratorPlaybackRateChange } : {})}
-        />
-        <Surface padded style={{ gap: tokens.spacing.md }}>
-          <Text accessibilityLiveRegion={isStreaming ? "polite" : "none"} variant="body">
-            {streamedProse}
-          </Text>
-        </Surface>
-        <SceneCinematic
-          media={projection.scene.media}
-          reducedMotion={reducedMotion}
-          videoEnabled={videoEnabled}
-        />
-        {projection.ending ? (
-          <EndingPanel
-            ending={projection.ending}
-            {...endingVariantProps({
-              projection,
-              ...(endingTier !== undefined ? { tier: endingTier } : {}),
-              ...(cinematicUri !== undefined ? { cinematicUri } : {}),
-              ...(endingIsFirstFind !== undefined ? { isFirstFind: endingIsFirstFind } : {}),
-            })}
-            {...endingPanelHandlers({ onOpenEndings, onOpenLibrary, onReturnHome })}
+        {isFallback ? (
+          <FallbackTurnPanel
+            onRetry={onRetryCurrentTurn ?? (() => undefined)}
+            reducedMotion={reducedMotion}
           />
         ) : (
-          <ChoiceList
-            choices={projection.choices}
-            disabled={isStreaming}
-            onChoose={onChoose}
-            pendingChoiceId={pendingChoiceId}
-            {...(onFreeformSubmit ? { onFreeformSubmit } : {})}
-            freeformPending={freeformPending}
-            freeformError={freeformError}
-          />
+          <>
+            <SceneMedia
+              media={projection.scene.media}
+              reducedMotion={reducedMotion}
+              sceneId={projection.scene.id}
+              imagesEnabled={imagesEnabled}
+              audioEnabled={audioEnabled}
+              narratorPlaybackRate={narratorPlaybackRate}
+              {...(onNarratorPlaybackRateChange ? { onNarratorPlaybackRateChange } : {})}
+            />
+            <Surface padded style={{ gap: tokens.spacing.md }}>
+              <ProseRenderer
+                prose={streamedProse}
+                isStreaming={isStreaming}
+                dialogBlocksEnabled={dialogBlocksEnabled}
+              />
+            </Surface>
+            {/* Inline consequence pill — sits between prose and cinematic in
+                the center column where the reader's focus already is. */}
+            <EffectBadge entry={recentChoiceEcho} reducedMotion={reducedMotion} />
+            <SceneCinematic
+              media={projection.scene.media}
+              reducedMotion={reducedMotion}
+              videoEnabled={videoEnabled}
+            />
+            {projection.ending ? (
+              <>
+                {endingCinematic ? (
+                  <CinematicMoment
+                    cinematic={endingCinematic}
+                    reducedMotion={reducedMotion}
+                    muted={muted}
+                    {...(projection.scene.media?.imageUri
+                      ? { posterFallbackUri: projection.scene.media.imageUri }
+                      : {})}
+                  />
+                ) : null}
+                <EndingPanel
+                  ending={projection.ending}
+                  {...endingVariantProps({
+                    projection,
+                    ...(endingTier !== undefined ? { tier: endingTier } : {}),
+                    ...(cinematicUri !== undefined ? { cinematicUri } : {}),
+                    ...(endingIsFirstFind !== undefined ? { isFirstFind: endingIsFirstFind } : {}),
+                  })}
+                  {...endingPanelHandlers({ onOpenEndings, onOpenLibrary, onReturnHome })}
+                />
+              </>
+            ) : (
+              <ChoiceList
+                choices={projection.choices}
+                disabled={isStreaming}
+                onChoose={onChoose}
+                pendingChoiceId={pendingChoiceId}
+                {...(onFreeformSubmit ? { onFreeformSubmit } : {})}
+                freeformPending={freeformPending}
+                freeformError={freeformError}
+              />
+            )}
+          </>
         )}
       </View>
 
@@ -124,7 +164,10 @@ export function ModernAppLayout({
           <StatsHud
             inventory={projection.inventory}
             // HUD reads mode from useReaderSettings itself
+            {...(projection.npcs ? { npcs: projection.npcs } : {})}
             stats={projection.stats}
+            {...(accountId ? { accountId } : {})}
+            saveId={projection.saveId}
           />
         </Surface>
       ) : !showRails && showHud ? (
@@ -134,7 +177,10 @@ export function ModernAppLayout({
           <StatsHud
             inventory={projection.inventory}
             // HUD reads mode from useReaderSettings itself
+            {...(projection.npcs ? { npcs: projection.npcs } : {})}
             stats={projection.stats}
+            {...(accountId ? { accountId } : {})}
+            saveId={projection.saveId}
           />
         </>
       ) : null}

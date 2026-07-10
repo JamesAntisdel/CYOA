@@ -35,7 +35,8 @@ import {
 import { AppError } from "../lib/errors";
 import { assertAccountSessionAccess } from "../lib/authz";
 import { assertCanAccessSave, type SaveRecord } from "../saves";
-import type { AccountRecord } from "../account";
+import { resolveMediaPrefs, type AccountRecord, type MediaPrefs } from "../account";
+import { devForceProMedia } from "./proMediaGate";
 import {
   hashPrompt,
   projectSceneMedia,
@@ -44,6 +45,13 @@ import {
   type SceneMediaProjection,
 } from "../assets";
 import { mapVoiceIdToGoogleTts } from "../llm/ttsVoices";
+import {
+  decodeBase64ToUint8Array,
+  maybeRunImagen,
+  rewriteToPublicOrigin,
+} from "./imagenClient";
+import { resolveGeminiImageModel, runGeminiImage, type GeminiImageReference } from "./geminiImageClient";
+import { resolveMediaStrategy } from "./mediaStrategy";
 
 const accountId = v.id("accounts");
 const saveId = v.id("saves");
@@ -71,11 +79,24 @@ type AssetDoc = {
   readyAt?: number;
 };
 
-// Dev-only override. When CYOA_DEV_FORCE_PRO_MEDIA=1 every read becomes
-// Pro-eligible regardless of the actual entitlement so the local stack
-// is testable without configuring billing.
-function devForceProMedia(): boolean {
-  return process.env.CYOA_DEV_FORCE_PRO_MEDIA === "1";
+
+// Per-account modality gates from the settings screen. When a reader toggles
+// "Show illustrations" / "Play narration & ambient audio" / "Play scene
+// cinematics" off, the matching queue mutation must short-circuit BEFORE
+// any provider call so the Imagen / Veo / Google TTS bill stops too. Reads
+// the account row's `mediaPrefs` and defaults each modality to enabled when
+// the field is absent (legacy accounts pre-date the toggles).
+//
+// Returns the resolved `MediaPrefs` object so the caller can also log
+// which gate fired — useful in prod where we want to grep for spend-saving
+// skips by reason.
+async function getAccountMediaPrefs(
+  ctx: { db: { get: (id: any) => Promise<unknown> } },
+  accountId: string,
+): Promise<MediaPrefs> {
+  const doc = (await ctx.db.get(accountId)) as { mediaPrefs?: MediaPrefs } | null;
+  if (!doc) return resolveMediaPrefs({});
+  return resolveMediaPrefs(doc);
 }
 
 export const queueSceneImage = internalMutationGeneric({
@@ -101,6 +122,39 @@ export const queueSceneImage = internalMutationGeneric({
       if (!entitlement || entitlement.tier !== "pro" || entitlement.status !== "active") {
         return { queued: false, reason: "pro_entitlement_required" } as const;
       }
+    }
+
+    // Reader's per-modality gate from /settings. When "Show illustrations"
+    // is off we never schedule Imagen — saving the per-image spend. Cheap
+    // before the existing-asset query.
+    const mediaPrefs = await getAccountMediaPrefs(ctx, args.accountId);
+    if (!mediaPrefs.imagesEnabled) {
+      console.log(
+        `[sceneMedia] queueSceneImage skipped: imagesEnabled=false account=${args.accountId} scene=${args.sceneId}`,
+      );
+      // Cinematics are normally chained from runImagenJob's post-image step,
+      // which we're skipping here. If the reader disabled images but LEFT
+      // "Play scene cinematics" on, queue the video directly (text-only Veo —
+      // there's no i2v still to seed it) so a video-enabled reader doesn't
+      // silently lose the modality they kept on. queueSceneVideo re-checks the
+      // pro gate + videoEnabled + strategy, so scheduling it here is safe.
+      //
+      // Per-scene Veo is the LEGACY behavior only (omni-cinematics Req 1.2):
+      // under endpoint_cinematic / stills_only / off the per-turn clip is
+      // retired (endpoint cinematics carry the video budget), so we don't even
+      // schedule the mutation. Stills are unaffected by this branch.
+      const imgOffStrategy = await resolveMediaStrategy(ctx, args.accountId);
+      if (mediaPrefs.videoEnabled && imgOffStrategy === "per_scene_legacy") {
+        await ctx.scheduler.runAfter(0, ("media/sceneMedia:queueSceneVideo" as unknown) as any, {
+          accountId: args.accountId,
+          saveId: args.saveId,
+          sceneId: args.sceneId,
+          ...(args.nodeId ? { nodeId: args.nodeId } : {}),
+          ...(args.alt ? { alt: args.alt } : {}),
+          prompt: args.prompt,
+        });
+      }
+      return { queued: false, reason: "images_disabled_by_user" } as const;
     }
 
     // Skip if a non-failed image asset already exists for this scene.
@@ -142,6 +196,32 @@ export const queueSceneImage = internalMutationGeneric({
       updatedAt: now,
     });
 
+    // Resolve anchor asset ids for the reference-image carry-over pipeline.
+    // The two anchors are generated on turn 1 (see queueAnchorImage); every
+    // subsequent scene-image call passes them as reference inputs to
+    // Gemini Flash Image so character + setting stay consistent.
+    // Race-tolerant: anchors might still be queuing/generating when scene 2
+    // fires, in which case the asset row exists but `status !== "ready"`.
+    // We only pass references whose underlying storage bytes are already
+    // available; runImagenJob double-checks at fetch time and silently
+    // drops missing ones (fall back to no-reference render).
+    const saveDoc = await ctx.db.get(args.saveId);
+    const protoId = (saveDoc as { anchorProtagonistAssetId?: string } | null)?.anchorProtagonistAssetId;
+    const settingId = (saveDoc as { anchorSettingAssetId?: string } | null)?.anchorSettingAssetId;
+    const referenceAssetIds: { protagonist?: string; setting?: string } = {
+      ...(protoId ? { protagonist: protoId } : {}),
+      ...(settingId ? { setting: settingId } : {}),
+    };
+
+    // Per-scene Veo is the LEGACY behavior only (omni-cinematics Req 1.2). Under
+    // endpoint_cinematic / stills_only / off, the per-turn clip is retired — the
+    // still is still produced (it feeds the cinematic reference set), but the
+    // post-Imagen Veo chain must NOT be scheduled. Resolve the effective
+    // strategy here (mutation has ctx.db) and pass a flag; runImagenJob (an
+    // action, no ctx.db) can't resolve it itself.
+    const strategy = await resolveMediaStrategy(ctx, args.accountId);
+    const videoAllowed = strategy === "per_scene_legacy";
+
     // Kick off the async job. runAfter(0) puts it on the next tick. We
     // pass the full scene context so runImagenJob can chain into
     // queueSceneVideo with the resulting image's storageId (i2v) once
@@ -154,6 +234,10 @@ export const queueSceneImage = internalMutationGeneric({
       sceneId: args.sceneId,
       ...(args.nodeId ? { nodeId: args.nodeId } : {}),
       ...(args.alt ? { alt: args.alt } : {}),
+      ...(referenceAssetIds.protagonist || referenceAssetIds.setting
+        ? { referenceAssetIds }
+        : {}),
+      videoAllowed,
     });
 
     return { queued: true, assetId } as const;
@@ -174,6 +258,23 @@ export const runImagenJob = actionGeneric({
     sceneId: v.optional(v.id("scenes")),
     nodeId: v.optional(v.string()),
     alt: v.optional(v.string()),
+    // Reference-image carry-over inputs. When present, the action loads
+    // the storage bytes for each anchor and passes them to Gemini 2.5
+    // Flash Image so the generated scene image maintains protagonist +
+    // setting consistency. The validators accept either the typed
+    // `_storage` id or a string for forward compatibility; we coerce
+    // both before fetching.
+    referenceAssetIds: v.optional(
+      v.object({
+        protagonist: v.optional(v.id("assets")),
+        setting: v.optional(v.id("assets")),
+      }),
+    ),
+    // Omni-cinematics Req 1.2: whether the post-Imagen Veo chain may run.
+    // `false` under endpoint_cinematic / stills_only / off (per-scene video
+    // retired). Absent (older in-flight schedules) → treated as allowed, and
+    // queueSceneVideo re-checks the strategy as a backstop.
+    videoAllowed: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const now = Date.now();
@@ -183,11 +284,19 @@ export const runImagenJob = actionGeneric({
       { assetId: args.assetId, jobId: `imagen_${now}`, at: now },
     );
 
-    // Live Imagen path when GEMINI_API_KEY or Vertex creds are present.
-    // Falls back to a deterministic Picsum placeholder when (a) no key
-    // is configured OR (b) the configured key is invalid / Imagen
-    // returned an error. Bad-key shouldn't be fatal — dev still gets a
-    // picture, and the failure is logged for operators.
+    // Live image path. Preference order:
+    //   1. Gemini Flash Image with reference anchors (carry-over). This
+    //      is the path that gives us protagonist + setting consistency
+    //      across scenes. References might still be queuing on turn 2;
+    //      `loadReferenceBytes` returns only the anchors whose underlying
+    //      storage bytes are ready, falling back to no-reference render
+    //      otherwise.
+    //   2. Imagen 4 fast (legacy `maybeRunImagen` path) — used when Gemini
+    //      Flash Image returns null (no key, API error, empty response).
+    //   3. Picsum placeholder — used when both providers come back empty.
+    //
+    // Bad-key / API outage shouldn't be fatal: dev still gets a picture,
+    // and the failure is logged for operators.
     let liveUrl: string | null = null;
     let liveError: string | null = null;
     // Lifted out of the try block so the post-Imagen Veo queue can pass
@@ -196,7 +305,27 @@ export const runImagenJob = actionGeneric({
     // text-only, preserving today's behavior for the no-key case.
     let imageStorageId: string | null = null;
     try {
-      const live = await maybeRunImagen(args.prompt);
+      // Resolve references first so Gemini Flash Image has them on hand.
+      const referenceImages = args.referenceAssetIds
+        ? await loadReferenceBytes(ctx, args.referenceAssetIds)
+        : [];
+      const geminiKey = process.env.GEMINI_API_KEY;
+      let live: { bytes: string; mime: string } | null = null;
+      if (geminiKey) {
+        live = await runGeminiImage({
+          prompt: args.prompt,
+          apiKey: geminiKey,
+          ...(referenceImages.length > 0 ? { referenceImages } : {}),
+        });
+        if (!live) {
+          console.warn(
+            `[sceneMedia] Gemini Flash Image returned null (refCount=${referenceImages.length}) — falling back to Imagen`,
+          );
+        }
+      }
+      if (!live) {
+        live = await maybeRunImagen(args.prompt);
+      }
       if (live) {
         // Imagen returns ~1-2 MiB of base64 PNG — past Convex's 1 MiB
         // document field limit if stored as a data: URL. Upload bytes to
@@ -234,7 +363,18 @@ export const runImagenJob = actionGeneric({
     // Wrapped in try/catch because video is a Pro tier and a queue
     // failure must never crash the image job; the contract is still
     // "text is the contract; media is a tier."
-    if (args.accountId && args.saveId && args.sceneId) {
+    //
+    // Omni-cinematics Req 1.2: skip the per-scene Veo chain entirely when the
+    // reader's strategy retired it (endpoint_cinematic / stills_only / off). The
+    // still above still ships (it feeds the cinematic reference set). Only
+    // per_scene_legacy readers keep the i2v clip. `videoAllowed === false` from
+    // queueSceneImage suppresses the schedule; undefined (older in-flight jobs)
+    // falls through to queueSceneVideo's own strategy backstop.
+    if (args.videoAllowed === false) {
+      console.log(
+        `[sceneMedia] runImagenJob skipping per-scene Veo chain (strategy retired) scene=${args.sceneId ?? "?"}`,
+      );
+    } else if (args.accountId && args.saveId && args.sceneId) {
       try {
         await ctx.runMutation(
           ("media/sceneMedia:queueSceneVideo" as unknown) as any,
@@ -286,6 +426,35 @@ export const queueSceneVideo = internalMutationGeneric({
       if (!entitlement || entitlement.tier !== "pro" || entitlement.status !== "active") {
         return { queued: false, reason: "pro_entitlement_required" } as const;
       }
+    }
+
+    // Reader's per-modality gate from /settings ("Play scene cinematics").
+    // MUST come before the existing-asset and API-key checks so the
+    // post-Imagen chain (runImagenJob → queueSceneVideo) respects the
+    // reader's preference even when images are still enabled — see
+    // queueSceneImage's gate for the matching image side. Re-reads the
+    // account on every call so a toggle takes effect immediately, no save
+    // reload required.
+    const mediaPrefs = await getAccountMediaPrefs(ctx, args.accountId);
+    if (!mediaPrefs.videoEnabled) {
+      console.log(
+        `[sceneMedia] queueSceneVideo skipped: videoEnabled=false account=${args.accountId} scene=${args.sceneId}`,
+      );
+      return { queued: false, reason: "video_disabled_by_user" } as const;
+    }
+
+    // Media-strategy gate (omni-cinematics Req 1.2). Per-scene Veo clips are
+    // the LEGACY behavior; under any other resolved strategy the video budget
+    // moves to endpoint cinematics (endpoint_cinematic) or is off entirely
+    // (stills_only/off keep the scene STILL but no per-turn clip). Only
+    // "per_scene_legacy" keeps the Imagen→Veo i2v chain. Reads the account's
+    // effective strategy so a reader's cinematicMode takes effect immediately.
+    const strategy = await resolveMediaStrategy(ctx, args.accountId);
+    if (strategy !== "per_scene_legacy") {
+      console.log(
+        `[sceneMedia] queueSceneVideo skipped: strategy=${strategy} account=${args.accountId} scene=${args.sceneId}`,
+      );
+      return { queued: false, reason: `strategy_${strategy}` } as const;
     }
 
     // Skip if a non-failed video asset already exists for this scene.
@@ -588,6 +757,17 @@ export const queueSceneNarration = internalMutationGeneric({
       }
     }
 
+    // Reader's per-modality gate from /settings ("Play narration & ambient
+    // audio"). Skips Google Cloud TTS spend when the reader has muted the
+    // narrator — the visual stack continues unaffected.
+    const mediaPrefs = await getAccountMediaPrefs(ctx, args.accountId);
+    if (!mediaPrefs.audioEnabled) {
+      console.log(
+        `[sceneMedia] queueSceneNarration skipped: audioEnabled=false account=${args.accountId} scene=${args.sceneId}`,
+      );
+      return { queued: false, reason: "audio_disabled_by_user" } as const;
+    }
+
     // Skip if a non-failed audio asset already exists for this scene.
     const existing = await ctx.db
       .query("assets")
@@ -683,17 +863,20 @@ export const runNarrationJob = actionGeneric({
 
     try {
       const voice = mapVoiceIdToGoogleTts(args.voiceId);
-      const audio = await synthesizeGoogleTts({
-        text: args.prose,
-        voice,
-        apiKey,
-      });
-      const binary = decodeBase64ToUint8Array(audio.bytes);
+      // Chunked concurrent synthesis: Chirp 3 HD latency scales with input
+      // length, so a full scene in one call is slow. `synthesizeNarration`
+      // splits on sentence boundaries and synthesizes chunks concurrently,
+      // concatenating the MP3 parts — same output format, ~a fraction of the
+      // wall-clock. Falls back to a single call for short prose.
+      const audio = await synthesizeNarration({ text: args.prose, voice, apiKey });
+      const binary = audio.bytes;
       const blob = new Blob([binary as unknown as BlobPart], { type: audio.mime });
       const storageId = await (ctx as any).storage.store(blob);
       const rawUrl = (await (ctx as any).storage.getUrl(storageId)) as string;
       const url = rewriteToPublicOrigin(rawUrl);
-      console.log(`[sceneMedia] TTS stored bytes=${binary.length} url=${url}`);
+      console.log(
+        `[sceneMedia] TTS stored bytes=${binary.length} chunks=${audio.chunks} elapsedMs=${Date.now() - startedAt} url=${url}`,
+      );
       await ctx.runMutation(
         ("media/sceneMedia:markReady" as unknown) as any,
         { assetId: args.assetId, url, at: Date.now() },
@@ -714,8 +897,11 @@ export const runNarrationJob = actionGeneric({
 
 // Internal mutation: write the Veo operationName + attempt count onto
 // the asset's provenance so the next pollVeoJob call can pick up where
-// the prior one left off.
-export const recordVeoOperation = mutationGeneric({
+// the prior one left off. MUST stay internal — callers (`runVeoJob`,
+// `pollVeoJob`) invoke it server-side via `ctx.runMutation`. Exposing it
+// as a public mutation would let any client with an `assetId` (returned
+// by `queueSceneImage`) overwrite arbitrary asset provenance.
+export const recordVeoOperation = internalMutationGeneric({
   args: {
     assetId: v.id("assets"),
     operationName: v.string(),
@@ -805,7 +991,14 @@ export const markFailed = internalMutationGeneric({
 // helper in its own try/catch for belt-and-braces, but a swallowed
 // failure here cannot block the scene transition.
 export async function queueSceneMediaForSave(
-  ctx: { runMutation: (ref: any, args: any) => Promise<any> },
+  ctx: {
+    runMutation: (ref: any, args: any) => Promise<any>;
+    // Optional db handle — when present, the helper reads the account's
+    // mediaPrefs up-front and short-circuits each modality before paying
+    // the RPC. The inner mutations re-check the same flag (defence in
+    // depth) so callers that don't pass `db` still degrade safely.
+    db?: { get: (id: any) => Promise<unknown> };
+  },
   args: {
     accountId: string;
     saveId: string;
@@ -831,22 +1024,44 @@ export async function queueSceneMediaForSave(
     ...(args.nodeId ? { nodeId: args.nodeId } : {}),
     prompt,
   };
-  try {
-    // queueSceneImage is the single entry into the visual pipeline now:
-    // runImagenJob queues queueSceneVideo at the end with the image's
-    // storageId so Veo can use it as the first-frame reference (i2v).
-    // The old parallel queueSceneVideo call here would have raced
-    // Imagen and produced a video whose first frame doesn't match the
-    // still — that's the visible-mismatch bug the user reported. The
-    // post-Imagen chain still queues video when Imagen falls back to a
-    // placeholder (text-only Veo path), preserving the reduced-motion
-    // fallback behavior.
-    await ctx.runMutation(
-      ("media/sceneMedia:queueSceneImage" as unknown) as any,
-      { ...baseArgs, alt: args.alt ?? `Scene illustration for ${args.nodeId ?? "scene"}` },
+  // Top-level modality gate. The inner mutations re-check this from the
+  // account row themselves, but reading it once here lets us skip the
+  // wasted RPC entirely AND produces a single coherent log line per
+  // modality skip so prod operators can grep
+  //   `[sceneMedia] queueSceneMediaForSave skipped`
+  // to see which prefs are actually saving spend.
+  let prefs: MediaPrefs | null = null;
+  if (ctx.db) {
+    try {
+      prefs = await getAccountMediaPrefs(ctx as { db: { get: (id: any) => Promise<unknown> } }, args.accountId);
+    } catch {
+      // If reading the row throws we fall through to the inner gates.
+      prefs = null;
+    }
+  }
+
+  if (prefs && !prefs.imagesEnabled) {
+    console.log(
+      `[sceneMedia] queueSceneMediaForSave skipped image: imagesEnabled=false account=${args.accountId} scene=${args.sceneId}`,
     );
-  } catch {
-    // non-fatal — Pro media is a tier, text is the contract
+  } else {
+    try {
+      // queueSceneImage is the single entry into the visual pipeline now:
+      // runImagenJob queues queueSceneVideo at the end with the image's
+      // storageId so Veo can use it as the first-frame reference (i2v).
+      // The old parallel queueSceneVideo call here would have raced
+      // Imagen and produced a video whose first frame doesn't match the
+      // still — that's the visible-mismatch bug the user reported. The
+      // post-Imagen chain still queues video when Imagen falls back to a
+      // placeholder (text-only Veo path), preserving the reduced-motion
+      // fallback behavior.
+      await ctx.runMutation(
+        ("media/sceneMedia:queueSceneImage" as unknown) as any,
+        { ...baseArgs, alt: args.alt ?? `Scene illustration for ${args.nodeId ?? "scene"}` },
+      );
+    } catch {
+      // non-fatal — Pro media is a tier, text is the contract
+    }
   }
   // Only queue narration when the caller explicitly provided prose. We
   // refuse to fall back to the (truncated, visual-shaped) `prompt` here
@@ -854,21 +1069,27 @@ export async function queueSceneMediaForSave(
   // pass undefined on purpose — their narration is queued later in
   // completeSceneStream once the stream finishes.
   if (typeof args.prose === "string" && args.prose.trim().length > 0) {
-    try {
-      await ctx.runMutation(
-        ("media/sceneMedia:queueSceneNarration" as unknown) as any,
-        {
-          accountId: args.accountId,
-          saveId: args.saveId,
-          sceneId: args.sceneId,
-          ...(args.nodeId ? { nodeId: args.nodeId } : {}),
-          prose: args.prose,
-          ...(args.voiceId ? { voiceId: args.voiceId } : {}),
-          alt: args.alt ?? `Scene narration for ${args.nodeId ?? "scene"}`,
-        },
+    if (prefs && !prefs.audioEnabled) {
+      console.log(
+        `[sceneMedia] queueSceneMediaForSave skipped narration: audioEnabled=false account=${args.accountId} scene=${args.sceneId}`,
       );
-    } catch {
-      // non-fatal — narration is a Pro layer; silence still leaves the read intact
+    } else {
+      try {
+        await ctx.runMutation(
+          ("media/sceneMedia:queueSceneNarration" as unknown) as any,
+          {
+            accountId: args.accountId,
+            saveId: args.saveId,
+            sceneId: args.sceneId,
+            ...(args.nodeId ? { nodeId: args.nodeId } : {}),
+            prose: args.prose,
+            ...(args.voiceId ? { voiceId: args.voiceId } : {}),
+            alt: args.alt ?? `Scene narration for ${args.nodeId ?? "scene"}`,
+          },
+        );
+      } catch {
+        // non-fatal — narration is a Pro layer; silence still leaves the read intact
+      }
     }
   }
 }
@@ -906,7 +1127,19 @@ export const getSceneMedia = queryGeneric({
       .collect()) as AssetDoc[];
 
     const assets: AssetRecord[] = docs.map(docToRecord);
-    return projectSceneMedia({ assets, preferredKind: "video" }) ?? null;
+    const projection = projectSceneMedia({ assets, preferredKind: "video" });
+    if (!projection) return null;
+    // Surface the scene's nodeId so the client can match the media
+    // projection against its own `projection.scene.id`. Without this the
+    // reader can show prose for scene N while the narrator clip — keyed by
+    // the server's already-advanced `save.currentSceneId` — is for N+1
+    // (the "text doesn't match narration" bug after a turn).
+    const sceneDoc = await ctx.db.get(targetSceneId as any);
+    const nodeId = (sceneDoc as { nodeId?: unknown } | null)?.nodeId;
+    return {
+      ...projection,
+      ...(typeof nodeId === "string" ? { nodeId } : {}),
+    };
   },
 });
 
@@ -981,56 +1214,290 @@ function placeholderImageForPrompt(prompt: string): string {
   return `https://picsum.photos/seed/${seed}/1024/640`;
 }
 
-// Generate an Imagen image. Two routes:
-//
-//   1. GEMINI_API_KEY (preferred) — generativelanguage.googleapis.com.
-//      Same Imagen model surface, but API-key auth (no OAuth refresh).
-//      Pick a model with GEMINI_IMAGE_MODEL (defaults to
-//      imagen-3.0-generate-002).
-//   2. VERTEX_PROJECT_ID + VERTEX_ACCESS_TOKEN — Vertex AI predict.
-//      Used when you need quota / SLA / regional control beyond what
-//      the public Gemini API gives.
-//
-// Returns null when no provider is configured so the caller can fall
-// back to the Picsum placeholder.
-type ImagenBytes = { bytes: string; mime: string };
-
-async function maybeRunImagen(prompt: string): Promise<ImagenBytes | null> {
-  const geminiKey = process.env.GEMINI_API_KEY;
-  if (geminiKey) {
-    return runImagenViaGeminiApi(prompt, geminiKey);
+// Resolve anchor asset ids to in-memory reference-image bytes for the
+// Gemini Flash Image call. Race-tolerant:
+//   - asset row missing → skip (anchor never queued / since deleted).
+//   - asset.status !== "ready" → skip (still generating; scene proceeds
+//     without a reference, which is the documented fallback).
+//   - storage.get returns null → skip (transient storage hiccup).
+// All three cases are non-fatal: the caller sees fewer references than
+// requested and renders without those anchors. The fallback chain in
+// runImagenJob's handler then drops to no-reference render.
+async function loadReferenceBytes(
+  ctx: any,
+  ids: { protagonist?: string; setting?: string },
+): Promise<GeminiImageReference[]> {
+  const out: GeminiImageReference[] = [];
+  // Order matters: protagonist first so the model conditions the face
+  // ahead of the setting. Multi-image conditioning in Gemini Flash Image
+  // weights earlier parts more strongly per the AI Studio docs.
+  for (const assetIdValue of [ids.protagonist, ids.setting]) {
+    if (!assetIdValue) continue;
+    try {
+      const assetDoc = (await ctx.runQuery(
+        ("media/sceneMedia:_getAssetForReference" as unknown) as any,
+        { assetId: assetIdValue },
+      )) as { status?: string; storageId?: string; mime?: string } | null;
+      if (!assetDoc || assetDoc.status !== "ready" || !assetDoc.storageId) continue;
+      const blob = (await (ctx as any).storage.get(assetDoc.storageId)) as Blob | null;
+      if (!blob) continue;
+      const buffer = await blob.arrayBuffer();
+      out.push({
+        bytes: new Uint8Array(buffer),
+        mime: assetDoc.mime || blob.type || "image/png",
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "anchor_load_failed";
+      console.warn(`[sceneMedia] loadReferenceBytes failed asset=${assetIdValue} error=${message}`);
+    }
   }
-  const project = process.env.VERTEX_PROJECT_ID;
-  const token = process.env.VERTEX_ACCESS_TOKEN;
-  if (project && token) {
-    return runImagenViaVertex(prompt, project, token);
-  }
-  return null;
-}
-
-// Swap the scheme+host of a storage URL for the public-facing origin
-// declared by CONVEX_PUBLIC_ORIGIN (or the EXPO_PUBLIC_CONVEX_URL the
-// client uses, since they're equivalent). The /api/storage/<id> path
-// is preserved as-is. Returns the input unchanged when no public origin
-// is configured (the localhost dev case).
-function rewriteToPublicOrigin(url: string): string {
-  const publicOrigin = process.env.CONVEX_PUBLIC_ORIGIN ?? process.env.EXPO_PUBLIC_CONVEX_URL;
-  if (!publicOrigin) return url;
-  // String-replace approach: Convex's V8 runtime rejects the WHATWG URL
-  // `host` / `protocol` setters with "Not implemented". Match the
-  // scheme://host[:port] prefix and swap it for the public origin's prefix.
-  const match = /^(https?:\/\/[^/]+)(.*)$/.exec(url);
-  if (!match) return url;
-  const trimmedPublic = publicOrigin.replace(/\/+$/, "");
-  return `${trimmedPublic}${match[2]}`;
-}
-
-function decodeBase64ToUint8Array(b64: string): Uint8Array {
-  const binary = atob(b64);
-  const out = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) out[i] = binary.charCodeAt(i);
   return out;
 }
+
+// Internal query: surface just the fields the reference loader needs.
+// Returns status + storageId (pulled off provenance, where the anchor
+// job stashes it on save) + mime so the loader can request the right
+// bytes without fetching the whole asset doc shape into action memory.
+export const _getAssetForReference = queryGeneric({
+  args: { assetId: v.id("assets") },
+  handler: async (ctx, args) => {
+    const asset = (await ctx.db.get(args.assetId)) as AssetDoc | null;
+    if (!asset) return null;
+    const prov = asset.provenance as Record<string, unknown>;
+    return {
+      status: asset.status,
+      storageId: typeof prov.storageId === "string" ? prov.storageId : undefined,
+      mime: typeof prov.mime === "string" ? prov.mime : undefined,
+    };
+  },
+});
+
+// Reference-anchor pipeline: one job per anchor (protagonist + setting),
+// scheduled from `completeSceneStream` on turn 1 when the LLM emits the
+// matching anchor description. Generated WITHOUT references (the anchor
+// IS the reference; nothing to seed against on first run). Resulting
+// bytes are stored in Convex storage, the assets row carries the
+// storageId on its provenance for `loadReferenceBytes` to look up, and
+// the save row is patched via `setAnchorAssetId` so subsequent
+// `queueSceneImage` calls thread the anchor as a reference input.
+//
+// Race window: anchors and scene 2 may be queued in the same tick. The
+// anchor job typically completes in 3-5s; scene 2 fires on the next
+// user choice (always > 5s in practice). Even if the race fires, the
+// fallback in `loadReferenceBytes` simply renders scene 2 without the
+// anchor — text is still the contract.
+export const queueAnchorImage = internalMutationGeneric({
+  args: {
+    accountId,
+    saveId,
+    kind: v.union(v.literal("protagonist"), v.literal("setting")),
+    prompt: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const account = await ctx.db.get(args.accountId);
+    if (!account) throw new AppError("account_not_found");
+
+    // Pro gate (same shape as queueSceneImage). Dev override short-circuits.
+    if (!devForceProMedia()) {
+      const entitlement = await ctx.db
+        .query("entitlements")
+        .withIndex("by_accountId", (q: any) => q.eq("accountId", args.accountId))
+        .first();
+      if (!entitlement || entitlement.tier !== "pro" || entitlement.status !== "active") {
+        return { queued: false, reason: "pro_entitlement_required" } as const;
+      }
+    }
+
+    // Idempotency: each save has at most one anchor per kind. If the save
+    // row already points at an anchor asset id for this kind, bail. The
+    // pointer is the source of truth — a stray orphaned anchor row from a
+    // crashed earlier attempt is fine to leave behind.
+    const saveDoc = (await ctx.db.get(args.saveId)) as
+      | { anchorProtagonistAssetId?: string; anchorSettingAssetId?: string }
+      | null;
+    const existingPointer =
+      args.kind === "protagonist"
+        ? saveDoc?.anchorProtagonistAssetId
+        : saveDoc?.anchorSettingAssetId;
+    if (existingPointer) {
+      return { queued: false, reason: "already_anchored" } as const;
+    }
+
+    const promptHash = hashPrompt(args.prompt);
+    const now = Date.now();
+    const assetId = await ctx.db.insert("assets", {
+      accountId: args.accountId,
+      saveId: args.saveId,
+      referenceKind: args.kind,
+      kind: "image" as const,
+      // Provider is still tagged "vertex-imagen" so the existing
+      // asset-projection / billing surfaces don't have to learn a new
+      // provider literal for v0. The actual model is Gemini Flash Image
+      // (Nano Banana 2, `gemini-3.1-flash-image`) — captured on provenance
+      // below via the shared resolver so it can't drift from what's used.
+      provider: "vertex-imagen" as const,
+      url: "",
+      status: "queued" as const,
+      entitlementRequired: "pro" as const,
+      promptHash,
+      provenance: {
+        provider: "vertex-imagen",
+        model: resolveGeminiImageModel(),
+        promptHash,
+        promptRedacted: true,
+        source: "generated",
+        referenceKind: args.kind,
+        aspectRatio: args.kind === "protagonist" ? "1:1" : "16:9",
+      },
+      safety: { action: "allow", categories: [], reason: "" },
+      alt: `Anchor ${args.kind}`,
+      tags: ["anchor", `reference:${args.kind}`],
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await ctx.scheduler.runAfter(0, ("media/sceneMedia:runAnchorImageJob" as unknown) as any, {
+      assetId,
+      prompt: args.prompt,
+      saveId: args.saveId,
+      kind: args.kind,
+    });
+
+    return { queued: true, assetId } as const;
+  },
+});
+
+export const runAnchorImageJob = actionGeneric({
+  args: {
+    assetId: v.id("assets"),
+    prompt: v.string(),
+    saveId,
+    kind: v.union(v.literal("protagonist"), v.literal("setting")),
+  },
+  handler: async (ctx, args) => {
+    const startedAt = Date.now();
+    await ctx.runMutation(
+      ("media/sceneMedia:markGenerating" as unknown) as any,
+      { assetId: args.assetId, jobId: `anchor_${args.kind}_${startedAt}`, at: startedAt },
+    );
+
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      console.warn(`[sceneMedia] anchor job no GEMINI_API_KEY asset=${args.assetId}`);
+      await ctx.runMutation(
+        ("media/sceneMedia:markFailed" as unknown) as any,
+        { assetId: args.assetId, error: "gemini_no_api_key", at: Date.now() },
+      );
+      return { ready: false, error: "gemini_no_api_key" } as const;
+    }
+
+    try {
+      // Anchors generate WITHOUT references — they ARE the references.
+      const live = await runGeminiImage({ prompt: args.prompt, apiKey });
+      if (!live) {
+        // Anchor failed at the provider — mark failed so the next scene
+        // image just renders without this reference. Don't crash the save.
+        await ctx.runMutation(
+          ("media/sceneMedia:markFailed" as unknown) as any,
+          { assetId: args.assetId, error: "gemini_image_empty", at: Date.now() },
+        );
+        return { ready: false, error: "gemini_image_empty" } as const;
+      }
+      const binary = decodeBase64ToUint8Array(live.bytes);
+      const blob = new Blob([binary as unknown as BlobPart], { type: live.mime });
+      const storageId = await (ctx as any).storage.store(blob);
+      const rawUrl = (await (ctx as any).storage.getUrl(storageId)) as string;
+      const url = rewriteToPublicOrigin(rawUrl);
+      console.log(
+        `[sceneMedia] anchor ${args.kind} stored bytes=${binary.length} storageId=${storageId} url=${url}`,
+      );
+      // Stamp the storageId + mime on provenance so loadReferenceBytes can
+      // fetch the bytes back without a second call to ctx.storage.getUrl.
+      await ctx.runMutation(
+        ("media/sceneMedia:_patchAnchorProvenance" as unknown) as any,
+        {
+          assetId: args.assetId,
+          storageId: storageId as string,
+          mime: live.mime,
+          at: Date.now(),
+        },
+      );
+      await ctx.runMutation(
+        ("media/sceneMedia:markReady" as unknown) as any,
+        { assetId: args.assetId, url, at: Date.now() },
+      );
+      // Patch the save row so subsequent queueSceneImage calls find this
+      // anchor and thread it as a reference. Best-effort — a missing save
+      // (e.g. deleted mid-flight) is non-fatal.
+      try {
+        await ctx.runMutation(
+          ("media/sceneMedia:setAnchorAssetId" as unknown) as any,
+          { saveId: args.saveId, kind: args.kind, assetId: args.assetId, at: Date.now() },
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "set_anchor_failed";
+        console.warn(`[sceneMedia] setAnchorAssetId failed kind=${args.kind} error=${message}`);
+      }
+      return { ready: true, url } as const;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "anchor_failed";
+      console.warn(`[sceneMedia] anchor ${args.kind} failed asset=${args.assetId} error=${message}`);
+      await ctx.runMutation(
+        ("media/sceneMedia:markFailed" as unknown) as any,
+        { assetId: args.assetId, error: message, at: Date.now() },
+      );
+      return { ready: false, error: message } as const;
+    }
+  },
+});
+
+// Internal mutation: stamp storageId + mime onto an anchor's provenance so
+// `_getAssetForReference` (and therefore `loadReferenceBytes`) can fetch
+// the bytes back at the next scene-image call.
+export const _patchAnchorProvenance = internalMutationGeneric({
+  args: {
+    assetId: v.id("assets"),
+    storageId: v.string(),
+    mime: v.string(),
+    at: v.number(),
+  },
+  handler: async (ctx, args) => {
+    const asset = (await ctx.db.get(args.assetId)) as AssetDoc | null;
+    if (!asset) return;
+    await ctx.db.patch(args.assetId, {
+      provenance: {
+        ...asset.provenance,
+        storageId: args.storageId,
+        mime: args.mime,
+      },
+      updatedAt: args.at,
+    });
+  },
+});
+
+// Internal mutation: patch save.anchorProtagonistAssetId or
+// save.anchorSettingAssetId once the corresponding anchor job lands.
+export const setAnchorAssetId = internalMutationGeneric({
+  args: {
+    saveId,
+    kind: v.union(v.literal("protagonist"), v.literal("setting")),
+    assetId: v.id("assets"),
+    at: v.number(),
+  },
+  handler: async (ctx, args) => {
+    const save = await ctx.db.get(args.saveId);
+    if (!save) return;
+    const patch =
+      args.kind === "protagonist"
+        ? { anchorProtagonistAssetId: args.assetId, updatedAt: args.at }
+        : { anchorSettingAssetId: args.assetId, updatedAt: args.at };
+    await ctx.db.patch(args.saveId, patch);
+  },
+});
+
+// Imagen client helpers (`maybeRunImagen`, `decodeBase64ToUint8Array`,
+// `rewriteToPublicOrigin`) live in `./imagenClient` — the scene and NPC
+// portrait pipelines both import them so provider logic isn't duplicated.
 
 // Encode a Uint8Array as a base64 string. Used for the Veo i2v path,
 // which needs the Imagen still as `bytesBase64Encoded`. We chunk the
@@ -1044,35 +1511,6 @@ function encodeUint8ArrayToBase64(bytes: Uint8Array): string {
     binary += String.fromCharCode(...(chunk as unknown as number[]));
   }
   return btoa(binary);
-}
-
-async function runImagenViaGeminiApi(prompt: string, apiKey: string): Promise<ImagenBytes | null> {
-  const model = process.env.GEMINI_IMAGE_MODEL ?? "imagen-4.0-fast-generate-001";
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:predict`;
-  const body = {
-    instances: [{ prompt }],
-    parameters: { sampleCount: 1, aspectRatio: "16:9" },
-  };
-  // Diagnostic: confirm the deployment env carries the same key value we
-  // expect. Google keys are 39 chars; if length differs the env was pushed
-  // wrong (trailing whitespace / truncation / wrong key entirely).
-  console.log(
-    `[sceneMedia] Imagen model=${model} keyLen=${apiKey.length} keyPrefix=${apiKey.slice(0, 6)} keySuffix=${apiKey.slice(-4)}`,
-  );
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    const safe = text.replace(apiKey, "<redacted>").slice(0, 200);
-    throw new Error(`gemini_imagen_${res.status}: ${safe}`);
-  }
-  const data = (await res.json()) as { predictions?: Array<{ bytesBase64Encoded?: string; mimeType?: string }> };
-  const first = data.predictions?.[0];
-  if (!first?.bytesBase64Encoded) return null;
-  return { bytes: first.bytesBase64Encoded, mime: first.mimeType ?? "image/png" };
 }
 
 // Veo 3.1 lite via the public Gemini API. Two-step protocol:
@@ -1235,28 +1673,107 @@ async function synthesizeGoogleTts(input: {
   return { bytes: data.audioContent, mime: "audio/mpeg" };
 }
 
-async function runImagenViaVertex(prompt: string, project: string, token: string): Promise<ImagenBytes | null> {
-  const location = process.env.VERTEX_LOCATION ?? "us-central1";
-  const model = "imagen-4.0-fast-generate-001";
-  const url = `https://${location}-aiplatform.googleapis.com/v1/projects/${project}/locations/${location}/publishers/google/models/${model}:predict`;
-  const body = {
-    instances: [{ prompt }],
-    parameters: { sampleCount: 1, aspectRatio: "16:9" },
+// --- Chunked narration synthesis (latency) -----------------------------------
+// Chirp 3 HD synthesis latency scales with input length, so one call on a full
+// ~1.5k-char scene is slow (batch synthesis, not streaming). Splitting the prose
+// into sentence-boundary chunks and synthesizing them CONCURRENTLY collapses the
+// wall-clock to ~the slowest chunk. The MP3 parts are concatenated in order;
+// Google returns constant-bitrate MP3 frames and the joins land on sentence
+// pauses, so the seam is inaudible. Total characters (and cost) are unchanged.
+//
+// (True streaming synthesis — `streamingSynthesize` — is designed for real-time
+// text-in/audio-out agents; our scene text is already fully generated and we
+// store to Convex storage for the client to play, so concurrent chunking is the
+// technique that fits this pipeline.)
+
+const NARRATION_CHUNK_CHARS = 280;
+const NARRATION_MAX_CONCURRENCY = 8;
+
+/**
+ * Split narration prose into ordered chunks of <= `maxChars`, breaking on
+ * sentence/paragraph boundaries so a synthesized chunk always ends on a natural
+ * pause. A single runaway sentence longer than the limit is hard-wrapped on
+ * spaces. Exported for unit testing.
+ */
+export function chunkNarrationText(text: string, maxChars: number = NARRATION_CHUNK_CHARS): string[] {
+  const trimmed = text.trim();
+  if (!trimmed) return [];
+  if (trimmed.length <= maxChars) return [trimmed];
+  const pieces = trimmed.match(/[^.!?\n]+[.!?]*\s*|\n+/g) ?? [trimmed];
+  const chunks: string[] = [];
+  let current = "";
+  const flush = () => {
+    const c = current.trim();
+    if (c) chunks.push(c);
+    current = "";
   };
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${token}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`vertex_imagen_${res.status}: ${text.slice(0, 120)}`);
+  for (const piece of pieces) {
+    if (piece.length > maxChars) {
+      // A single sentence longer than the limit: hard-wrap on spaces.
+      flush();
+      let rest = piece.trim();
+      while (rest.length > maxChars) {
+        let cut = rest.lastIndexOf(" ", maxChars);
+        if (cut <= 0) cut = maxChars;
+        chunks.push(rest.slice(0, cut).trim());
+        rest = rest.slice(cut).trim();
+      }
+      current = rest;
+      continue;
+    }
+    if (current.length + piece.length > maxChars) flush();
+    current += piece;
   }
-  const data = (await res.json()) as { predictions?: Array<{ bytesBase64Encoded?: string; mimeType?: string }> };
-  const first = data.predictions?.[0];
-  if (!first?.bytesBase64Encoded) return null;
-  return { bytes: first.bytesBase64Encoded, mime: first.mimeType ?? "image/png" };
+  flush();
+  return chunks;
 }
+
+/** Run async tasks with bounded concurrency, preserving input order. */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const worker = async () => {
+    for (;;) {
+      const i = cursor++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i]!, i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
+  return results;
+}
+
+/**
+ * Synthesize prose as concurrent sentence-chunks and concatenate the MP3 bytes
+ * in order. Returns a single audio buffer identical in format to a one-shot
+ * synthesis, so storage + client playback are unchanged. Short prose takes the
+ * single-call fast path.
+ */
+async function synthesizeNarration(input: {
+  text: string;
+  voice: { languageCode: string; name: string };
+  apiKey: string;
+}): Promise<{ bytes: Uint8Array; mime: string; chunks: number }> {
+  const chunks = chunkNarrationText(input.text);
+  if (chunks.length <= 1) {
+    const audio = await synthesizeGoogleTts({ text: input.text, voice: input.voice, apiKey: input.apiKey });
+    return { bytes: decodeBase64ToUint8Array(audio.bytes), mime: audio.mime, chunks: Math.max(chunks.length, 1) };
+  }
+  const parts = await mapWithConcurrency(chunks, NARRATION_MAX_CONCURRENCY, (text) =>
+    synthesizeGoogleTts({ text, voice: input.voice, apiKey: input.apiKey }),
+  );
+  const buffers = parts.map((p) => decodeBase64ToUint8Array(p.bytes));
+  const total = buffers.reduce((sum, b) => sum + b.length, 0);
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const b of buffers) {
+    merged.set(b, offset);
+    offset += b.length;
+  }
+  return { bytes: merged, mime: parts[0]?.mime ?? "audio/mpeg", chunks: chunks.length };
+}
+

@@ -163,7 +163,8 @@ export function FreeformChoice({
           returnKeyType="send"
           style={{
             color: tokens.colors.text,
-            fontSize: 16,
+            fontFamily: tokens.typography.families.body,
+            fontSize: tokens.typography.body,
             minHeight: 56,
             paddingHorizontal: tokens.spacing.sm,
             paddingVertical: tokens.spacing.xs,

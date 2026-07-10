@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { getLocalStorage as getStorage } from "../lib/storage";
+import { createId } from "../lib/ids";
+
 import { listStarterStories, type StorySummary } from "@cyoa/stories";
 
 import { createRemoteSave, hasRemoteGameApi, listRemoteLibrary } from "../lib/gameApi";
@@ -68,7 +71,22 @@ export function useLibrary(session: GuestSession | null) {
       mode: "story" | "hardcore" = "story",
       titleOverride?: string,
       voiceId?: string,
-      seed?: { premise?: string; title?: string; tone?: string },
+      seed?: {
+        premise?: string;
+        title?: string;
+        tone?: string;
+        /**
+         * Reader-authored cast (0–4 NPCs) captured during the Seed flow.
+         * Forwarded to the backend as `seedNpcs`; the backend agent uses
+         * this to seed `Story.initialNpcs` for the new save so the NPC
+         * roster + portrait pipeline have data on turn 0.
+         */
+        npcs?: Array<{
+          name: string;
+          role: "companion" | "ally" | "rival" | "neutral" | "antagonist";
+          description: string;
+        }>;
+      },
     ) => {
       if (!session) {
         throw new Error("guest_session_required");
@@ -85,11 +103,18 @@ export function useLibrary(session: GuestSession | null) {
 
       const now = Date.now();
       const existing = readSaves(session.accountId);
-      const existingActiveSave = existing.find(
-        (save) => save.storyId === storyId && save.status === "active",
-      );
-      if (existingActiveSave) {
-        return existingActiveSave;
+      // Reuse an existing active save only for non-seeded launches. Every
+      // reader-authored seed must create a NEW save — otherwise launching
+      // a second seeded adventure (which shares the OPEN_STARTER_ID
+      // "open-canvas" storyId with prior seeded saves) would hijack the
+      // first one and reopen its premise instead of starting fresh.
+      if (!seed?.premise) {
+        const existingActiveSave = existing.find(
+          (save) => save.storyId === storyId && save.status === "active",
+        );
+        if (existingActiveSave) {
+          return existingActiveSave;
+        }
       }
 
       const save: LibrarySave = {
@@ -123,6 +148,11 @@ export function useLibrary(session: GuestSession | null) {
             ...(seed?.premise ? { seedPremise: seed.premise } : {}),
             ...(seed?.title ? { seedTitle: seed.title } : {}),
             ...(seed?.tone ? { seedTone: seed.tone } : {}),
+            // Pass the authored cast only when non-empty so we don't
+            // bloat the request body with a [] for every save and so
+            // the backend can use field-presence as a quick "did the
+            // reader bring NPCs?" check.
+            ...(seed?.npcs && seed.npcs.length > 0 ? { seedNpcs: seed.npcs } : {}),
           })
         : null;
       if (remote) {
@@ -196,16 +226,4 @@ function isLibrarySave(value: Partial<LibrarySave>): value is LibrarySave {
   );
 }
 
-function getStorage(): Pick<Storage, "getItem" | "setItem" | "removeItem"> | null {
-  if (typeof globalThis === "undefined") return null;
-  const maybeStorage = (globalThis as { localStorage?: Storage }).localStorage;
-  return maybeStorage ?? null;
-}
 
-function createId(prefix: string): string {
-  const random =
-    typeof globalThis.crypto?.randomUUID === "function"
-      ? globalThis.crypto.randomUUID()
-      : Math.random().toString(36).slice(2);
-  return `${prefix}_${random}`;
-}

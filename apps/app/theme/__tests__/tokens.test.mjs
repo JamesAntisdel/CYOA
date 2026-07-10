@@ -84,7 +84,7 @@ test("color scales declare exactly the documented ramps", () => {
   );
   assert.deepEqual(Object.keys(json.color.ember).sort(), ["300", "400", "500", "600", "700"]);
   assert.deepEqual(Object.keys(json.color.candle).sort(), ["300", "400", "500", "600", "700"]);
-  assert.deepEqual(Object.keys(json.color.night).sort(), ["600", "700", "800", "900"]);
+  assert.deepEqual(Object.keys(json.color.night).sort(), ["500", "600", "700", "800", "900"]);
 });
 
 test("every color value is a 6-digit hex", () => {

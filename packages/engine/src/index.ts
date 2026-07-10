@@ -7,6 +7,7 @@ export * from "./inventory";
 export * from "./llm";
 export * from "./migrations";
 export * from "./modes";
+export * from "./npcs";
 export * from "./state";
 export * from "./stats";
 export * from "./types";

@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQuery } from "convex/react";
+
+import { api } from "../../../convex/_generated/api";
 
 import {
   applyChoiceAndEnterNode,
@@ -6,10 +9,12 @@ import {
   evaluateNodeChoices,
   resolveTerminal,
   type EngineDiff,
+  type NpcState,
   type PlayerState,
   type Story,
 } from "@cyoa/engine";
-import { getStory } from "@cyoa/stories";
+import { getStory, tryGetStory, OPEN_STARTER_ID } from "@cyoa/stories";
+import { createId } from "../lib/ids";
 
 import { getStoryCoverSource } from "../lib/designAssets";
 import { storyForCreatorSeedSave } from "../lib/localCreatorSeeds";
@@ -21,7 +26,8 @@ import {
   streamRemoteScene,
   type RemoteScene,
 } from "../lib/gameApi";
-import { guestAuthArgs, useGuestSession } from "./useGuestSession";
+import { getGuestTokenHash, guestAuthArgs, useGuestSession } from "./useGuestSession";
+import { StreamLock } from "./streamLock";
 import type { StreamingScene } from "./useStreamingScene";
 
 type SceneMediaStatus = NonNullable<StreamingScene["media"]>["status"];
@@ -60,6 +66,18 @@ export type ReaderProjection = {
   choices: ChoiceProjection[];
   stats: ReaderStats;
   inventory: ReaderInventoryItem[];
+  /**
+   * NPC roster surfaced on the Character Sheet (Requirement 31). Optional —
+   * older projections that haven't yet plumbed `state.npcs` through the scene
+   * payload leave this undefined and the FullSheet omits the roster section.
+   *
+   * NOTE (cross-agent coordination): the prompt-builder agent is extending
+   * `convex/saves.ts:projectCurrentScene` / `projectLlmDrivenScene` to copy
+   * `state.npcs` onto the projection. This client-side field mirrors that
+   * server addition; if it lands first the FullSheet just renders nothing
+   * until the server populates the field.
+   */
+  npcs?: Record<string, NpcState>;
   ending?: {
     kind: "safe" | "death" | "escape";
     title: string;
@@ -159,6 +177,76 @@ export function useTurn(saveId: string) {
   // same frame is correctly suppressed.
   const freeformInFlightRef = useRef(false);
 
+  // Per-saveId in-flight SSE guard. Two callers can race to open a stream
+  // for the same save: (a) the mount-effect when a `pending`/`streaming`
+  // scene loads, and (b) `submitChoice` after `beginRemoteStreamingChoice`
+  // resolves. When both fire, the browser cancels the earlier connection,
+  // Vertex aborts mid-flight (`AbortError`), and the LLM router falls back
+  // to the deterministic provider — which echoes the reader's premise as
+  // the scene's prose. Every entry-point into `streamRemoteScene` calls
+  // `streamLock.acquire(saveId)` first and bails when the lock is held.
+  // Stored as a ref (not state) so the value is synchronously visible
+  // across closures in the same render cycle. See `streamLock.ts` for
+  // the unit-tested invariants.
+  const streamLockRef = useRef<StreamLock>(new StreamLock());
+
+  // The session reference can change across renders even when its contents
+  // are identical (useGuestSession re-runs setState after the server-issued
+  // account resolves). Effects below depend on the primitive `accountId`
+  // so that a content-equal session swap doesn't re-trigger the mount-
+  // effect and open a second SSE stream — see the streamInFlightRef
+  // comment above for the failure mode this avoids.
+  const accountId = guest.session?.accountId ?? null;
+
+  // Reactive subscription to the scene record. Convex pushes updates over
+  // WebSocket when `completeSceneStream` (or any other writer) patches the
+  // scene's prose / streamStatus, so the reader sees content land without
+  // any client-side polling.
+  //
+  // The HTTP-only path that the rest of `gameApi.ts` uses exists because
+  // the anonymous local backend's WS handshake was historically flaky on
+  // mutations. Reads (`getCurrentScene`) appear to handshake cleanly, so
+  // we opt into the WS subscription here while leaving the mount-effect
+  // HTTP fetch + polling in place as a defense-in-depth fallback. If WS
+  // never delivers (offline, handshake fails), the polling carries.
+  const guestTokenHash = guest.session ? getGuestTokenHash() : null;
+  const liveScene = useQuery(
+    api.game.getCurrentScene,
+    accountId && !isLocalDemoSave(saveId)
+      ? ({
+          // Cast through unknown — the runtime contract is string ids, but
+          // Convex's generated types brand them as `Id<"accounts">` /
+          // `Id<"saves">`. The HTTP path (`getRemoteCurrentScene`) already
+          // does the same string→string conversion under the hood; the
+          // server-side argValidator (`v.id(...)`) is what actually
+          // enforces shape on the wire.
+          accountId: accountId as unknown as never,
+          saveId: saveId as unknown as never,
+          ...(guestTokenHash ? { guestTokenHash } : {}),
+        } as Parameters<typeof useQuery<typeof api.game.getCurrentScene>>[1])
+      : "skip",
+  );
+
+  useEffect(() => {
+    if (!liveScene) return;
+    // Don't override active streaming with a stale empty scene. When
+    // `beginStreamingChoice` just patched the scene to "pending" with
+    // prose: "", the WS subscription delivers that empty stub before
+    // the SSE has emitted its first token — we'd flicker the reader's
+    // already-displayed "candle is being lit…" placeholder to nothing.
+    // Only adopt the live scene when it's terminal or carries non-empty
+    // prose (the canonical scene-is-ready signal).
+    const hasProse =
+      typeof liveScene.prose === "string" && liveScene.prose.length > 0;
+    const terminal =
+      liveScene.streamStatus === "complete" ||
+      liveScene.streamStatus === "blocked" ||
+      liveScene.streamStatus === "failed";
+    if (hasProse || terminal) {
+      setProjection(projectRemoteScene(saveId, liveScene));
+    }
+  }, [liveScene, saveId]);
+
   useEffect(() => {
     let cancelled = false;
     const nextState = story
@@ -176,9 +264,9 @@ export function useTurn(saveId: string) {
     freeformInFlightRef.current = false;
     setChoiceHistory([]);
     setAcknowledgedChapter(0);
-    if (guest.session && hasRemoteGameApi() && !isLocalDemoSave(saveId)) {
+    if (accountId && hasRemoteGameApi() && !isLocalDemoSave(saveId)) {
       void getRemoteCurrentScene({
-        accountId: guest.session.accountId,
+        accountId,
         ...guestAuthArgs(),
         saveId,
       }).then(async (remoteScene) => {
@@ -192,40 +280,95 @@ export function useTurn(saveId: string) {
         // doesn't sit on an empty placeholder waiting for the user to
         // click something that doesn't exist.
         if (remoteScene.streamStatus === "pending" || remoteScene.streamStatus === "streaming") {
-          if (!guest.session) return;
-          let streamedProse = "";
-          setProjection(projectRemoteScene(saveId, remoteScene, "The candle is being lit..."));
-          const streamed = await streamRemoteScene({
-            accountId: guest.session.accountId,
-            ...guestAuthArgs(),
-            saveId,
-            onToken: (text) => {
-              if (cancelled) return;
-              streamedProse += text;
-              setProjection(projectRemoteScene(saveId, remoteScene, streamedProse, true));
-            },
-          });
-          if (cancelled) return;
-          // Re-fetch the now-complete scene to pick up choices + final prose.
-          const refreshed = await getRemoteCurrentScene({
-            accountId: guest.session.accountId,
-            ...guestAuthArgs(),
-            saveId,
-          });
-          if (cancelled || !refreshed) {
-            if (!streamed) {
-              setProjection(projectRemoteScene(saveId, remoteScene, "(the candle guttered out)"));
+          // Dedup against a sibling stream that may already be running for
+          // this save — typically `submitChoice` after the user picked a
+          // choice. If we proceed, we cancel the in-flight Vertex call and
+          // get the deterministic-fallback premise echo instead of real
+          // prose. The other caller is also re-fetching the scene on
+          // completion, so skipping here doesn't strand the reader.
+          if (!streamLockRef.current.acquire(saveId)) return;
+          try {
+            let streamedProse = "";
+            setProjection(projectRemoteScene(saveId, remoteScene, "The candle is being lit..."));
+            const streamed = await streamRemoteScene({
+              accountId,
+              ...guestAuthArgs(),
+              saveId,
+              onToken: (text) => {
+                if (cancelled) return;
+                streamedProse += text;
+                setProjection(projectRemoteScene(saveId, remoteScene, streamedProse, true));
+              },
+            });
+            if (cancelled) return;
+            // Re-fetch the now-complete scene to pick up choices + final prose.
+            const refreshed = await getRemoteCurrentScene({
+              accountId,
+              ...guestAuthArgs(),
+              saveId,
+            });
+            if (cancelled) return;
+            if (
+              refreshed &&
+              typeof refreshed.prose === "string" &&
+              refreshed.prose.length > 0
+            ) {
+              setProjection(projectRemoteScene(saveId, refreshed));
+              return;
             }
-            return;
+            // SSE returned without delivering prose to the projection — a
+            // known failure mode on first cross-origin mobile load where
+            // the SSE response is silently swallowed by CORS preflight
+            // latency, cloudflared buffering, or the browser's first-
+            // request cookie handshake. The user reported needing TWO
+            // page loads to see content; this poll closes that gap by
+            // re-checking the scene every few seconds until the server-
+            // side LLM call lands. The check is cheap (HTTP query) and
+            // bounded by a 60-second timeout so a real long-tail stall
+            // doesn't pin the loop forever.
+            const startedAt = Date.now();
+            const POLL_INTERVAL_MS = 3500;
+            const POLL_TIMEOUT_MS = 60_000;
+            while (!cancelled && Date.now() - startedAt < POLL_TIMEOUT_MS) {
+              await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+              if (cancelled) return;
+              const polled = await getRemoteCurrentScene({
+                accountId,
+                ...guestAuthArgs(),
+                saveId,
+              });
+              if (cancelled) return;
+              if (!polled) continue;
+              const hasProse =
+                typeof polled.prose === "string" && polled.prose.length > 0;
+              const terminal =
+                polled.streamStatus === "blocked" ||
+                polled.streamStatus === "failed" ||
+                polled.streamStatus === "complete";
+              if (hasProse || terminal) {
+                setProjection(projectRemoteScene(saveId, polled));
+                return;
+              }
+            }
+            // Timeout — surface whatever the latest known state is so
+            // the reader can at least see the choice/refresh option.
+            if (!streamed && !refreshed) {
+              setProjection(
+                projectRemoteScene(saveId, remoteScene, "(the candle guttered out)"),
+              );
+              return;
+            }
+            setProjection(projectRemoteScene(saveId, refreshed ?? remoteScene));
+          } finally {
+            streamLockRef.current.release(saveId);
           }
-          setProjection(projectRemoteScene(saveId, refreshed));
         }
       });
     }
     return () => {
       cancelled = true;
     };
-  }, [guest.session, saveId, story]);
+  }, [accountId, saveId, story]);
 
   const submitChoice = useCallback(async (choice: ChoiceProjection) => {
     if (choice.locked || pendingChoiceId) return;
@@ -239,9 +382,25 @@ export function useTurn(saveId: string) {
           ...guestAuthArgs(),
           saveId,
           choiceId: choice.id,
-          requestId: createRequestId(),
+          requestId: createId("turn"),
         });
-        if (remote) {
+        // For remote LLM-driven saves the local engine has no record of the
+        // LLM-proposed choice ids, so we must NOT fall through to
+        // applyChoiceAndEnterNode on failure (it would throw
+        // `choice_not_found:<id>`). Distinguish the cause so the reader sees an
+        // accurate note rather than always being told to check their allowance.
+        if (remote === null) {
+          // Transport failure: offline, timeout, or a non-2xx with no code.
+          setFreeformError("The story couldn't be reached just now. Check your connection and try again.");
+          return;
+        }
+        if (remote.ok === false) {
+          // Genuine server rejection — map the code to reader-safe copy
+          // (daily_turns_exhausted, turn_in_progress, safety, …).
+          setFreeformError(freeformBookCopyForError(remote.errorCode));
+          return;
+        }
+        {
           if (!remote.stream) {
             const nextProjection = projectRemoteScene(saveId, remote.scene);
             setProjection(nextProjection);
@@ -254,17 +413,49 @@ export function useTurn(saveId: string) {
             });
             return;
           }
+          // Claim the per-save SSE lock so the mount-effect (or any
+          // sibling caller that observes the new pending scene) doesn't
+          // race us with a second `/llm/scene-stream` POST. Both streams
+          // hitting the same scene would cancel each other browser-side,
+          // Vertex would abort, and we'd fall back to the deterministic
+          // provider — which echoes the reader's premise as the prose.
           let streamedProse = "";
-          setProjection(projectRemoteScene(saveId, remote.scene, "The candle is being lit..."));
-          const streamed = await streamRemoteScene({
-            accountId: guest.session.accountId,
-            ...guestAuthArgs(),
-            saveId,
-            onToken: (text) => {
-              streamedProse += text;
-              setProjection(projectRemoteScene(saveId, remote.scene, streamedProse, true));
-            },
-          });
+          let streamed = false;
+          if (!streamLockRef.current.acquire(saveId)) {
+            // Another caller (mount-effect) already owns the stream for
+            // this save. Wait for it: re-fetch the canonical scene so
+            // the reader still lands on the persisted prose + choices.
+            const refreshed = await getRemoteCurrentScene({
+              accountId: guest.session.accountId,
+              ...guestAuthArgs(),
+              saveId,
+            });
+            const canonicalScene = refreshed ?? remote.scene;
+            const finalProjection = projectRemoteScene(saveId, canonicalScene);
+            setProjection(finalProjection);
+            appendChoiceHistory(setChoiceHistory, {
+              choiceLabel: choice.label,
+              fromSceneTitle,
+              toSceneTitle: finalProjection.scene.title,
+              tone: "neutral",
+              echo: deriveRemoteEcho(canonicalScene),
+            });
+            return;
+          }
+          try {
+            setProjection(projectRemoteScene(saveId, remote.scene, "The candle is being lit..."));
+            streamed = await streamRemoteScene({
+              accountId: guest.session.accountId,
+              ...guestAuthArgs(),
+              saveId,
+              onToken: (text) => {
+                streamedProse += text;
+                setProjection(projectRemoteScene(saveId, remote.scene, streamedProse, true));
+              },
+            });
+          } finally {
+            streamLockRef.current.release(saveId);
+          }
           // After the stream completes, refetch the scene so the freshly
           // persisted choices and terminal flags from completeSceneStream
           // replace beginStreamingChoice's empty-choice stub. Without this,
@@ -389,7 +580,7 @@ export function useTurn(saveId: string) {
     setFreeformError(null);
     setFreeformPending(true);
     const fromSceneTitle = projection.scene.title;
-    const requestId = createRequestId();
+    const requestId = createId("turn");
     const choiceId = `freeform:${requestId}`;
     setPendingChoiceId(choiceId);
 
@@ -414,17 +605,43 @@ export function useTurn(saveId: string) {
 
       // Success — mirror submitChoice's streaming + refresh path so the
       // reader sees the same prose-streaming UX they get for A/B/C choices.
+      // Claim the per-save SSE lock (see submitChoice) so the mount-effect
+      // doesn't double-open the stream and trigger a deterministic-fallback
+      // premise echo.
       let streamedProse = "";
-      setProjection(projectRemoteScene(saveId, result.scene, "The candle is being lit..."));
-      const streamed = await streamRemoteScene({
-        accountId: guest.session.accountId,
-        ...guestAuthArgs(),
-        saveId,
-        onToken: (text) => {
-          streamedProse += text;
-          setProjection(projectRemoteScene(saveId, result.scene, streamedProse, true));
-        },
-      });
+      let streamed = false;
+      if (!streamLockRef.current.acquire(saveId)) {
+        const refreshedDedup = await getRemoteCurrentScene({
+          accountId: guest.session.accountId,
+          ...guestAuthArgs(),
+          saveId,
+        });
+        const canonicalScene = refreshedDedup ?? result.scene;
+        const finalProjection = projectRemoteScene(saveId, canonicalScene);
+        setProjection(finalProjection);
+        appendChoiceHistory(setChoiceHistory, {
+          choiceLabel: trimmed,
+          fromSceneTitle,
+          toSceneTitle: finalProjection.scene.title,
+          tone: "neutral",
+          echo: deriveRemoteEcho(canonicalScene),
+        });
+        return;
+      }
+      try {
+        setProjection(projectRemoteScene(saveId, result.scene, "The candle is being lit..."));
+        streamed = await streamRemoteScene({
+          accountId: guest.session.accountId,
+          ...guestAuthArgs(),
+          saveId,
+          onToken: (text) => {
+            streamedProse += text;
+            setProjection(projectRemoteScene(saveId, result.scene, streamedProse, true));
+          },
+        });
+      } finally {
+        streamLockRef.current.release(saveId);
+      }
       const refreshed = await getRemoteCurrentScene({
         accountId: guest.session.accountId,
         ...guestAuthArgs(),
@@ -466,6 +683,83 @@ export function useTurn(saveId: string) {
     supportsFreeform,
   ]);
 
+  // Retry path for the deterministic-fallback sentinel. When the server-side
+  // LLM call aborts mid-stream and the router falls back to the deterministic
+  // provider, the scene record lands with `isFallback: true` and a placeholder
+  // prose. The reader-facing FallbackTurnPanel (owned by the sentinel agent)
+  // surfaces a "Try again" button that calls back into this method.
+  //
+  // The retry just re-opens `/llm/scene-stream` for the same save. The
+  // server-side dedup guard (`getAuthorizedSceneStreamRequest`) allows the
+  // call when the previous stream is terminal (complete/failed/blocked), which
+  // is exactly the state a deterministic fallback leaves the scene in. If the
+  // sentinel agent later adds an explicit `game:retryCurrentScene` mutation to
+  // reset the scene back to `pending`, this method can call that first — the
+  // shape stays the same.
+  const retryCurrentTurn = useCallback(async () => {
+    if (!guest.session || !hasRemoteGameApi() || isLocalDemoSave(saveId)) return;
+    // Per-save SSE lock — bail if another caller is already streaming for
+    // this save (e.g. the mount-effect just picked up the new pending state).
+    if (!streamLockRef.current.acquire(saveId)) return;
+    try {
+      // Reset the projection's prose to the lit-candle placeholder so the
+      // reader sees an immediate visual cue that something is happening,
+      // exactly the same UX the mount-effect uses on a fresh pending scene.
+      setProjection((current) => ({
+        ...current,
+        scene: {
+          ...current.scene,
+          prose: "The candle is being lit...",
+          revealMode: "instant" as const,
+        },
+      }));
+      let streamedProse = "";
+      const streamed = await streamRemoteScene({
+        accountId: guest.session.accountId,
+        ...guestAuthArgs(),
+        saveId,
+        onToken: (text) => {
+          streamedProse += text;
+          setProjection((current) => ({
+            ...current,
+            scene: {
+              ...current.scene,
+              prose: streamedProse,
+              revealMode: "instant" as const,
+            },
+          }));
+        },
+      });
+      // Refetch the canonical scene so we pick up the freshly-persisted
+      // choices, terminal flags, and a cleared `isFallback` sentinel. The
+      // WS subscription will also push the same value, but the HTTP fetch
+      // here gives us a guaranteed result before we release the lock.
+      const refreshed = await getRemoteCurrentScene({
+        accountId: guest.session.accountId,
+        ...guestAuthArgs(),
+        saveId,
+      });
+      if (refreshed) {
+        setProjection(projectRemoteScene(saveId, refreshed));
+        return;
+      }
+      if (!streamed) {
+        // SSE silently dropped and the scene record wasn't readable.
+        // Surface the buffered prose so the reader isn't stuck on the
+        // placeholder — at minimum they'll see what we received.
+        setProjection((current) => ({
+          ...current,
+          scene: {
+            ...current.scene,
+            prose: streamedProse || "(the candle guttered out)",
+          },
+        }));
+      }
+    } finally {
+      streamLockRef.current.release(saveId);
+    }
+  }, [guest.session, saveId]);
+
   const completedChapters = Math.floor(choiceHistory.length / CHAPTER_TURNS);
   const chapterBoundary =
     completedChapters > acknowledgedChapter && !projection.ending
@@ -482,6 +776,15 @@ export function useTurn(saveId: string) {
     setAcknowledgedChapter((current) => Math.max(current, completedChapters));
   }, [completedChapters]);
 
+  // Most-recent visible choice the reader made — i.e. what brought them to
+  // the current scene. Surfaced on the layouts as an inline EffectBadge so
+  // the reader can connect the dot between their pick and the stat / item /
+  // currency change that just happened. Null on the first turn (no prior
+  // choice yet) and whenever the history is empty.
+  const recentChoiceEcho = choiceHistory.length > 0
+    ? choiceHistory[choiceHistory.length - 1] ?? null
+    : null;
+
   return useMemo(
     () => ({
       projection,
@@ -492,9 +795,11 @@ export function useTurn(saveId: string) {
       freeformPending,
       freeformError,
       choiceHistory,
+      recentChoiceEcho,
       chapterIndex: completedChapters,
       chapterBoundary,
       acknowledgeChapter,
+      retryCurrentTurn,
     }),
     [
       acknowledgeChapter,
@@ -505,6 +810,8 @@ export function useTurn(saveId: string) {
       freeformPending,
       pendingChoiceId,
       projection,
+      recentChoiceEcho,
+      retryCurrentTurn,
       submitChoice,
       submitFreeformChoice,
       supportsFreeform,
@@ -513,10 +820,11 @@ export function useTurn(saveId: string) {
 }
 
 /**
- * Map a server-side AppError code from the free-form mutation to copy in
- * the in-book voice. We intentionally avoid surfacing the raw code or any
- * stack trace — the reader sees a short narrator-style note that explains
- * what to try next.
+ * Map a server-side AppError code from the streaming-turn mutation
+ * (`game:beginStreamingChoice`, shared by the tapped-choice and free-form
+ * paths) to copy in the in-book voice. We intentionally avoid surfacing the
+ * raw code or any stack trace — the reader sees a short narrator-style note
+ * that explains what to try next.
  */
 function freeformBookCopyForError(code: string): string {
   switch (code) {
@@ -530,6 +838,8 @@ function freeformBookCopyForError(code: string): string {
       return "This tale only follows the offered paths.";
     case "turn_in_progress":
       return "Another action is still resolving. Try again in a moment.";
+    case "daily_turns_exhausted":
+      return "You've used today's turns. They refresh tomorrow — or upgrade for unlimited.";
     default:
       return "The story couldn't take that action. Try again in a moment.";
   }
@@ -592,7 +902,12 @@ function projectRemoteScene(
   generatedProse?: string,
   liveStreaming = false,
 ): ReaderProjection {
-  const story = getStory(scene.storyId);
+  // Creator-seed saves carry a server-only `authored_seed:<id>` storyId that
+  // `getStory` can't resolve and would throw on — crashing this render (it runs
+  // inside a useEffect/`.then`). Fall back to the open-canvas shell: the remote
+  // scene already supplies prose, choices, title, and terminal, so the shell is
+  // only a structural placeholder for node/ending lookups.
+  const story = tryGetStory(scene.storyId) ?? getStory(OPEN_STARTER_ID);
   const node = story.nodes[scene.nodeId];
   const terminal = scene.terminal;
   const ending = terminal ? story.endings[terminal.endingId] : null;
@@ -602,19 +917,32 @@ function projectRemoteScene(
   return {
     saveId,
     storyId: scene.storyId,
-    storyTitle: story.title,
+    // Seed-an-Adventure saves (open-canvas + reader-authored title) carry
+    // the title on the projection; prefer it over the engine story's title
+    // so the reader sees their own title, not "Open Canvas".
+    storyTitle: scene.seedTitle ?? story.title,
     ...(tone ? { storyTone: tone } : {}),
     mode: "story",
     scene: {
       id: scene.nodeId,
-      title: node?.title ?? story.title,
+      // Synthetic LLM-driven node ids (open-canvas:llm:N) have no node.title,
+      // so the fallback used to land on story.title = "Open Canvas". Prefer
+      // the reader-authored seedTitle (when present) before the engine title.
+      title: node?.title ?? scene.seedTitle ?? story.title,
       prose: generatedProse || scene.prose || node?.seed || "",
       ...(liveStreaming ? { revealMode: "instant" as const } : {}),
+      // Forward the deterministic-fallback sentinel verbatim. Layouts read
+      // `projection.scene.isFallback` to swap the prose surface + choices
+      // for the FallbackTurnPanel; mid-stream re-renders (liveStreaming)
+      // never set this because the deterministic provider's "stream" is a
+      // single batch — the WS subscription delivers it only after the
+      // canonical write lands.
+      ...(scene.isFallback === true ? { isFallback: true } : {}),
       media: {
         status: scene.streamStatus === "blocked" || scene.streamStatus === "failed" ? "blocked" : "ready",
         kind: "image",
         source: coverSource,
-        alt: `${node?.title ?? story.title} illustration.`,
+        alt: `${node?.title ?? scene.seedTitle ?? story.title} illustration.`,
       },
     },
     choices: scene.choices
@@ -647,6 +975,7 @@ function projectRemoteScene(
       insight: clampStat(findVisibleStat(scene.visibleStats, ["insight"]) ?? 0, 0, 5),
     },
     inventory: remoteInventoryItems(scene),
+    ...(scene.npcs ? { npcs: scene.npcs } : {}),
     ...(terminal && ending
       ? {
           ending: {
@@ -748,6 +1077,11 @@ function projectEngineState(
       insight: clampStat(state.attributes.insight?.value ?? 0, 0, 5),
     },
     inventory: state.inventory.map((item) => ({ id: item.id, label: item.label })),
+    // Forward the engine's `state.npcs` straight to the projection — every
+    // PlayerState has a (possibly empty) record post-migration, so empty
+    // saves project as `npcs: {}` and the FullSheet roster section omits
+    // itself via its own empty-state guard.
+    npcs: state.npcs,
     ...(terminal && ending
       ? {
           ending: {
@@ -813,14 +1147,6 @@ function initialProjection(saveId: string): ReaderProjection {
     ...tutorialProjection,
     saveId,
   };
-}
-
-function createRequestId(): string {
-  const random =
-    typeof globalThis.crypto?.randomUUID === "function"
-      ? globalThis.crypto.randomUUID()
-      : Math.random().toString(36).slice(2);
-  return `turn_${random}`;
 }
 
 type ChoiceHistoryDraft = Omit<ChoiceHistoryEntry, "turnNumber">;

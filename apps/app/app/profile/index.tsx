@@ -3,10 +3,12 @@ import { ScrollView, View } from "react-native";
 import { ProfileArchetypes } from "../../components/auth/ProfileArchetypes";
 import { Stamp, Surface, Text } from "../../components/primitives";
 import { useAccountProfile } from "../../hooks/useAccountProfile";
+import { useBreakpoint } from "../../lib/responsive";
 import { useAppTheme } from "../../theme";
 
 export default function ProfileRoute() {
   const { tokens } = useAppTheme();
+  const { isPhone } = useBreakpoint();
   const {
     archetypes,
     profile,
@@ -23,7 +25,7 @@ export default function ProfileRoute() {
         backgroundColor: tokens.colors.background,
         flexGrow: 1,
         gap: tokens.spacing.lg,
-        padding: tokens.spacing.lg,
+        padding: isPhone ? tokens.spacing.md : tokens.spacing.lg,
       }}
     >
       <Surface padded style={{ gap: tokens.spacing.sm, maxWidth: 640, width: "100%" }}>

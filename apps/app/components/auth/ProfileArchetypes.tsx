@@ -1,9 +1,10 @@
 import { useState } from "react";
-import { Pressable, TextInput, View } from "react-native";
+import { Pressable, View } from "react-native";
 
 import type { ArchetypeTag } from "../../hooks/useAccountProfile";
+import { useBreakpoint } from "../../lib/responsive";
 import { useAppTheme } from "../../theme";
-import { Button, Stamp, Surface, Text } from "../primitives";
+import { Button, Field, Stamp, Surface, Text } from "../primitives";
 
 type ProfileArchetypesProps = {
   archetypes: ArchetypeTag[];
@@ -21,6 +22,7 @@ export function ProfileArchetypes({
   onReset,
 }: ProfileArchetypesProps) {
   const { tokens } = useAppTheme();
+  const { isPhone } = useBreakpoint();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftLabel, setDraftLabel] = useState("");
 
@@ -76,25 +78,16 @@ export function ProfileArchetypes({
                 }}
               >
                 {isEditing ? (
-                  <TextInput
+                  // Inline rename: Field's containerStyle lets us shrink the
+                  // outer column to fit beside the action buttons while the
+                  // input itself keeps the canonical border / focus / typography.
+                  <Field
                     accessibilityLabel={`Rename archetype ${tag.label}`}
                     autoFocus
+                    containerStyle={{ flex: 1, minWidth: 160 }}
                     onChangeText={setDraftLabel}
                     onSubmitEditing={commitEdit}
                     placeholder="Archetype name"
-                    placeholderTextColor={tokens.colors.textFaint}
-                    style={{
-                      backgroundColor: tokens.colors.background,
-                      borderColor: tokens.colors.border,
-                      borderRadius: tokens.radii.xs,
-                      borderWidth: tokens.borderWidths.hairline,
-                      color: tokens.colors.text,
-                      flex: 1,
-                      fontSize: tokens.typography.body,
-                      minHeight: 36,
-                      minWidth: 160,
-                      paddingHorizontal: tokens.spacing.sm,
-                    }}
                     value={draftLabel}
                   />
                 ) : (
@@ -109,7 +102,13 @@ export function ProfileArchetypes({
                       borderRadius: tokens.radii.pill,
                       borderWidth: tokens.borderWidths.regular,
                       flex: 1,
-                      minHeight: 28,
+                      justifyContent: "center",
+                      // Bump tap area to 44 on phone so the pill clears the
+                      // WCAG/HIG touch minimum even though the visual height
+                      // (caption text + xs padding) is closer to 28px on
+                      // desktop. Centering vertically keeps the pill looking
+                      // visually short on phone too.
+                      minHeight: isPhone ? 44 : 28,
                       minWidth: 160,
                       paddingHorizontal: tokens.spacing.sm,
                       paddingVertical: tokens.spacing.xs,
@@ -127,7 +126,21 @@ export function ProfileArchetypes({
                   </Pressable>
                 )}
 
-                <View style={{ flexDirection: "row", gap: tokens.spacing.xs }}>
+                {/*
+                 * Per-archetype action row. On phone, stack so the Mute /
+                 * Rename / Remove buttons each get their own full-width
+                 * row underneath the tag pill — three sub-44px pills
+                 * crammed under a narrow tag pill is unreadable at 375px.
+                 * Desktop+ keeps the inline row.
+                 */}
+                <View
+                  style={{
+                    flexDirection: isPhone ? "column" : "row",
+                    flexWrap: "wrap",
+                    gap: tokens.spacing.xs,
+                    width: isPhone ? "100%" : undefined,
+                  }}
+                >
                   {isEditing ? (
                     <>
                       <Button accessibilityLabel="Save name" onPress={commitEdit} variant="primary">

@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { getLocalStorage as getStorage } from "../lib/storage";
+import { createId } from "../lib/ids";
+
 import type { AgeBand } from "@cyoa/shared";
 
 import { createRemoteGuestAccount, hasRemoteGameApi } from "../lib/gameApi";
@@ -60,7 +63,28 @@ export function useGuestSession() {
         lastActiveAt: Date.now(),
       };
       writeStoredSession(session);
-      setState({ status: "ready", session, blocked: false, error: null });
+      // Avoid a redundant setState when the server-issued session is content-
+      // equal to what we just restored from localStorage. Each setState
+      // produces a new `state` object whose `session` reference differs even
+      // when its fields match — downstream effects (notably `useTurn`'s
+      // mount-effect, keyed on `guest.session`) then re-run, opening a
+      // second SSE stream that races the first and pollutes the scene with
+      // the deterministic-fallback premise echo. Only ignore identity
+      // changes here; meaningful diffs (a new accountId, an age-band swap)
+      // still flow through.
+      setState((current) => {
+        const prev = current.session;
+        if (
+          current.status === "ready" &&
+          prev &&
+          prev.accountId === session.accountId &&
+          prev.ageBand === session.ageBand &&
+          prev.kind === session.kind
+        ) {
+          return current;
+        }
+        return { status: "ready", session, blocked: false, error: null };
+      });
     });
 
     return () => {
@@ -95,7 +119,7 @@ export function useGuestSession() {
       });
       if (!remote) {
         setState({
-          status: "ready",
+          status: "error",
           session: null,
           blocked: false,
           error: "Could not reach the server. Try again in a moment.",
@@ -198,16 +222,4 @@ function getOrCreateGuestToken(): string {
   return token;
 }
 
-function getStorage(): Pick<Storage, "getItem" | "setItem" | "removeItem"> | null {
-  if (typeof globalThis === "undefined") return null;
-  const maybeStorage = (globalThis as { localStorage?: Storage }).localStorage;
-  return maybeStorage ?? null;
-}
 
-function createId(prefix: string): string {
-  const random =
-    typeof globalThis.crypto?.randomUUID === "function"
-      ? globalThis.crypto.randomUUID()
-      : Math.random().toString(36).slice(2);
-  return `${prefix}_${random}`;
-}

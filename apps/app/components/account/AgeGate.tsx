@@ -115,7 +115,7 @@ export function AgeGate({
             padding: tokens.spacing.md,
           }}
         >
-          <Text style={{ color: tokens.colors.danger }} variant="bodySmall">
+          <Text tone="danger" variant="bodySmall">
             {blockedMessage}
           </Text>
         </View>

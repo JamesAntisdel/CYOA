@@ -3,6 +3,8 @@ import { View } from "react-native";
 import { Button, Stamp, Surface, Text } from "../primitives";
 import { useAppTheme } from "../../theme";
 import type { ChoiceHistoryEntry } from "../../hooks/useTurn";
+import type { RemoteCinematicView } from "../../lib/cinematicApi";
+import { CinematicMoment } from "../media/CinematicMoment";
 import { ConsequenceReel } from "./ConsequenceReel";
 
 type ChapterEndProps = {
@@ -12,6 +14,11 @@ type ChapterEndProps = {
   nextChapterHint?: string | undefined;
   onContinue: () => void;
   onSaveAndClose?: () => void;
+  /** The Omni chapter-stinger cinematic, if one was generated for this save. */
+  cinematic?: RemoteCinematicView;
+  reducedMotion?: boolean;
+  muted?: boolean;
+  audioEnabled?: boolean;
 };
 
 const ROMAN_NUMERALS = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"];
@@ -38,6 +45,10 @@ export function ChapterEnd({
   nextChapterHint,
   onContinue,
   onSaveAndClose,
+  cinematic,
+  reducedMotion = false,
+  muted = false,
+  audioEnabled = true,
 }: ChapterEndProps) {
   const { tokens } = useAppTheme();
   const chapterLabel = `Chapter ${romanize(chapterIndex)}`;
@@ -49,6 +60,17 @@ export function ChapterEnd({
       style={{ gap: tokens.spacing.lg }}
       variant="muted"
     >
+      {/* Omni chapter-stinger cinematic — a short "movie of this chapter" above
+          the consequence reel. Absent ⇒ the reel carries the interstitial. */}
+      {cinematic ? (
+        <CinematicMoment
+          cinematic={cinematic}
+          reducedMotion={reducedMotion}
+          muted={muted}
+          audioEnabled={audioEnabled}
+        />
+      ) : null}
+
       <View style={{ gap: tokens.spacing.xs }}>
         <Stamp>End of {chapterLabel.toLowerCase()}</Stamp>
         <Text

@@ -1,9 +1,11 @@
 import Stripe from "stripe";
-import { actionGeneric, mutationGeneric, queryGeneric } from "convex/server";
+
+import { cleanDoc } from "./lib/docs";
+import { actionGeneric, makeFunctionReference, mutationGeneric, queryGeneric } from "convex/server";
 import { v } from "convex/values";
 
 import { readStripePriceConfig, requireStripeSecretKey } from "./billing/config";
-import { applyStripeWebhook, previewPlanChange } from "./billing/stripe";
+import { applyStripeWebhook, buildCustomerPortalParams, previewPlanChange } from "./billing/stripe";
 import { assertStripeEventNotProcessed, normalizeStripeWebhookEvent, verifyStripeWebhookPayload } from "./billing/webhook";
 import { AppError } from "./lib/errors";
 import { buildCheckoutStartPlan } from "./liveCore";
@@ -41,6 +43,55 @@ export const createCheckoutSession = actionGeneric({
     return {
       url: session.url,
       clientReferenceId: plan.request.clientReferenceId,
+    };
+  },
+});
+
+export const createCustomerPortalSession = actionGeneric({
+  args: {
+    accountId,
+    returnUrl: v.string(),
+  },
+  handler: async (ctx, args): Promise<{ url: string }> => {
+    // Look up the entitlement to recover the Stripe customer id we persisted
+    // via `applyStripeWebhook` on checkout completion. Without a customer id
+    // the portal session can't be created — the reader hasn't subscribed
+    // (or our webhook hasn't run yet for a freshly-completed checkout).
+    const entitlement = await ctx.runQuery(
+      makeFunctionReference<"query">("billingFunctions:readEntitlementByAccountId"),
+      { accountId: args.accountId },
+    );
+    if (!entitlement || !entitlement.stripeCustomerId) {
+      throw new AppError("stripe_customer_missing");
+    }
+    const params = buildCustomerPortalParams({
+      customerId: entitlement.stripeCustomerId,
+      returnUrl: args.returnUrl,
+    });
+    const stripe = new Stripe(requireStripeSecretKey());
+    const session = await stripe.billingPortal.sessions.create(params);
+    if (!session.url) throw new AppError("stripe_portal_url_missing");
+    return { url: session.url };
+  },
+});
+
+/**
+ * Internal helper query used by `createCustomerPortalSession` to read the
+ * entitlement row off the actions runtime. Keeping it co-located here means
+ * we don't need to plumb a sibling module just for this one read.
+ */
+export const readEntitlementByAccountId = queryGeneric({
+  args: { accountId },
+  handler: async (ctx, args) => {
+    const row = await ctx.db
+      .query("entitlements")
+      .withIndex("by_accountId", (q) => q.eq("accountId", args.accountId))
+      .first();
+    if (!row) return null;
+    return {
+      stripeCustomerId: row.stripeCustomerId,
+      tier: row.tier,
+      status: row.status,
     };
   },
 });
@@ -88,6 +139,3 @@ export async function handleStripeWebhookForTest(input: {
   return { ignored: false, result: await input.applyEvent(normalized) };
 }
 
-function cleanDoc<T extends Record<string, unknown>>(doc: T): T {
-  return Object.fromEntries(Object.entries(doc).filter(([, value]) => value !== undefined)) as T;
-}

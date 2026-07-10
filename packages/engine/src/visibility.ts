@@ -9,6 +9,16 @@ export function evaluateConditions(state: PlayerState, choice: Choice): ChoiceEv
     return { choice, visibility: "hidden" };
   }
 
+  // Requirement 31.4: `requiresNpc` gates the choice on whether the named NPC
+  // is co-located with the player in the current scene. Evaluated BEFORE the
+  // condition loop because a missing NPC short-circuits the choice to
+  // `hidden` (not `locked`) — locked-with-hint is for state-resource gating
+  // ("not enough resolve"); requiresNpc is for narrative presence and should
+  // disappear from the UI entirely when the NPC isn't around.
+  if (choice.requiresNpc !== undefined && !isNpcInCurrentScene(state, choice.requiresNpc)) {
+    return { choice, visibility: "hidden" };
+  }
+
   for (const condition of choice.conditions ?? []) {
     if (!conditionPasses(state, condition)) {
       const lockedHint = conditionHint(condition) ?? defaultHint(condition);
@@ -21,6 +31,17 @@ export function evaluateConditions(state: PlayerState, choice: Choice): ChoiceEv
   }
 
   return { choice, visibility: "visible" };
+}
+
+function isNpcInCurrentScene(state: PlayerState, npcId: string): boolean {
+  // Defensive against legacy/in-flight saves: a v1 snapshot that hasn't been
+  // round-tripped through `migrateEngineState` will lack `npcs` entirely.
+  // Treat the roster as empty rather than crashing on undefined.
+  const roster = state.npcs;
+  if (!roster) return false;
+  const npc = roster[npcId];
+  if (!npc) return false;
+  return npc.location !== undefined && npc.location === state.currentNodeId;
 }
 
 function conditionHint(condition: Condition): string | undefined {

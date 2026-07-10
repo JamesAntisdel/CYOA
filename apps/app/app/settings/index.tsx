@@ -9,13 +9,17 @@ import { Button, Divider, Stamp, Surface, Text } from "../../components/primitiv
 import { useAccountProfile } from "../../hooks/useAccountProfile";
 import { useMatureOptIn } from "../../hooks/useMatureOptIn";
 import { useNarratorVoice } from "../../hooks/useNarratorVoice";
+import { markLayoutAsExplicitlyChosen } from "../../components/reading/ReaderScreen";
 import { useReaderSettings } from "../../hooks/useReaderSettings";
+import { useBreakpoint } from "../../lib/responsive";
 import { useAppTheme } from "../../theme";
 
-// Settings is account-scoped, but the narrator picker is per-save. Until a
-// real "active save" context is wired, pin the picker to the tutorial save
-// id so a reader can preview the picker from settings.
-const SETTINGS_PREVIEW_SAVE_ID = "training-room-demo";
+// Settings is account-scoped. The narrator picker on this surface edits the
+// reader's last-used voice (the seed for every NEW save). It must NOT pin to
+// a per-save key, because picking from settings is meant to influence the
+// next save created from /library, /creator, or the cover screen — those
+// surfaces also call useNarratorVoice(null) and read the same last-used
+// value at mount. Mid-tale per-save changes happen on the read screen.
 
 type Option<T extends string | boolean | number> = {
   label: string;
@@ -25,20 +29,22 @@ type Option<T extends string | boolean | number> = {
 export default function SettingsRoute() {
   const { resetSettings, settings, updateSettings } = useReaderSettings();
   const { tokens } = useAppTheme();
+  const { isPhone } = useBreakpoint();
   const mature = useMatureOptIn();
   const account = useAccountProfile();
   const [showMatureFlow, setShowMatureFlow] = useState(false);
   const [matureError, setMatureError] = useState<string | null>(null);
-  const narratorController = useNarratorVoice(SETTINGS_PREVIEW_SAVE_ID);
+  const narratorController = useNarratorVoice(null);
 
   return (
     <SafeAreaView style={{ backgroundColor: tokens.colors.background, flex: 1 }}>
       <ScrollView
         contentContainerStyle={{
-          gap: tokens.spacing.xl,
+          // Tighter outer padding on phone — see Account route for rationale.
+          gap: isPhone ? tokens.spacing.lg : tokens.spacing.xl,
           marginHorizontal: "auto",
           maxWidth: 980,
-          padding: tokens.spacing.xl,
+          padding: isPhone ? tokens.spacing.lg : tokens.spacing.xl,
           width: "100%",
         }}
       >
@@ -52,8 +58,21 @@ export default function SettingsRoute() {
           </Text>
         </View>
 
+        {/*
+         * Main settings column + "Reading feel" muted hint card. On phone we
+         * force each Surface to claim 100% of the row so the muted info card
+         * flows below the controls instead of trying to fit beside them in a
+         * 300px sliver. flexBasis 100% guarantees the wrap even when flex 1
+         * + minWidth would technically squeeze the layout to a single column
+         * on its own; relying on intrinsic wrap can produce awkward
+         * half-column reflow at exactly 375px. See `lib/responsive.ts` for
+         * the breakpoint definition.
+         */}
         <View style={{ alignItems: "flex-start", flexDirection: "row", flexWrap: "wrap", gap: tokens.spacing.lg }}>
-          <Surface padded style={{ flex: 1, minWidth: 320 }}>
+          <Surface
+            padded
+            style={isPhone ? { flexBasis: "100%", minWidth: "100%", width: "100%" } : { flex: 1, minWidth: 320 }}
+          >
             <View style={{ gap: tokens.spacing.lg }}>
               <SettingGroup
                 label="Theme"
@@ -109,7 +128,15 @@ export default function SettingsRoute() {
                   { label: "Mobile", value: "mobile" },
                 ]}
                 selected={settings.layout}
-                onSelect={(layout) => updateSettings({ layout })}
+                onSelect={(layout) => {
+                  // Mark this as an explicit user choice so ReaderScreen's
+                  // phone-aware default no longer overrides the stored
+                  // value. Without this flag a desktop reader who picks
+                  // "Book" then loads on a phone would still see Mobile —
+                  // exactly the opposite of what the picker promises.
+                  markLayoutAsExplicitlyChosen();
+                  updateSettings({ layout });
+                }}
               />
 
               <SettingGroup
@@ -140,7 +167,16 @@ export default function SettingsRoute() {
                   { label: "Off", value: false },
                 ]}
                 selected={settings.imagesEnabled}
-                onSelect={(imagesEnabled) => updateSettings({ imagesEnabled })}
+                onSelect={(imagesEnabled) => {
+                  // Sync server prefs from the post-merge snapshot
+                  // (`next`) — NOT from the closed-over `settings`. Two
+                  // rapid toggles in the same frame would otherwise each
+                  // see the pre-toggle `settings` and the second one
+                  // would clobber the first sibling's change server-side.
+                  updateSettings({ imagesEnabled }, (next) => {
+                    void syncMediaPrefs(account, pickMediaPrefs(next));
+                  });
+                }}
               />
 
               <SettingGroup
@@ -151,7 +187,11 @@ export default function SettingsRoute() {
                   { label: "Off", value: false },
                 ]}
                 selected={settings.audioEnabled}
-                onSelect={(audioEnabled) => updateSettings({ audioEnabled })}
+                onSelect={(audioEnabled) => {
+                  updateSettings({ audioEnabled }, (next) => {
+                    void syncMediaPrefs(account, pickMediaPrefs(next));
+                  });
+                }}
               />
 
               <SettingGroup
@@ -175,7 +215,42 @@ export default function SettingsRoute() {
                   { label: "Off", value: false },
                 ]}
                 selected={settings.videoEnabled}
-                onSelect={(videoEnabled) => updateSettings({ videoEnabled })}
+                onSelect={(videoEnabled) => {
+                  updateSettings({ videoEnabled }, (next) => {
+                    void syncMediaPrefs(account, pickMediaPrefs(next));
+                  });
+                }}
+              />
+
+              <SettingGroup
+                label="Cinematic mode"
+                helpText="How much generated media a run produces. Endpoint cinematics need Pro; your plan may cap the effective setting."
+                options={[
+                  { label: "Off", value: "off" },
+                  { label: "Stills only", value: "stills_only" },
+                  { label: "Endpoint cinematics", value: "endpoint_cinematic" },
+                  { label: "Per-scene", value: "per_scene_legacy" },
+                ]}
+                selected={settings.cinematicMode}
+                onSelect={(cinematicMode) => {
+                  // Persist locally (authoritative client cache) and echo to
+                  // the server through the mediaPrefs path from the post-merge
+                  // snapshot — same discipline as the imagesEnabled toggle.
+                  updateSettings({ cinematicMode }, (next) => {
+                    void syncMediaPrefs(account, pickMediaPrefs(next));
+                  });
+                }}
+              />
+
+              <SettingGroup
+                label="Dialog blocks"
+                helpText="Render quoted speech as indented blocks with the speaker's name."
+                options={[
+                  { label: "On", value: true },
+                  { label: "Off", value: false },
+                ]}
+                selected={settings.dialogBlocksEnabled}
+                onSelect={(dialogBlocksEnabled) => updateSettings({ dialogBlocksEnabled })}
               />
 
               <Divider />
@@ -246,7 +321,11 @@ export default function SettingsRoute() {
 
               <View style={{ gap: tokens.spacing.md }}>
                 <Text style={{ fontWeight: "800" }} variant="subtitle">Narrator</Text>
-                <VoicePicker controller={narratorController} />
+                <VoicePicker
+                  controller={narratorController}
+                  subtitle="Picks the narrator voice for new adventures. Each save also locks its own narrator from the read screen."
+                  title="Default narrator"
+                />
                 <NarratorContinuity />
               </View>
 
@@ -255,7 +334,11 @@ export default function SettingsRoute() {
             </View>
           </Surface>
 
-          <Surface padded style={{ flex: 1, minWidth: 300 }} variant="muted">
+          <Surface
+            padded
+            style={isPhone ? { flexBasis: "100%", minWidth: "100%", width: "100%" } : { flex: 1, minWidth: 300 }}
+            variant="muted"
+          >
             <View style={{ gap: tokens.spacing.md }}>
               <Text variant="subtitle">Reading feel</Text>
               <Text muted>
@@ -267,6 +350,49 @@ export default function SettingsRoute() {
       </ScrollView>
     </SafeAreaView>
   );
+}
+
+// Best-effort wrapper around useAccountProfile().setMediaPrefs. The toggle
+// UI is driven by localStorage (already written before this fires) so the
+// network call is purely a cross-device sync — a failure here must NEVER
+// surface to the reader. Returning the promise lets the void in the
+// onSelect handler stay explicit while still swallowing rejections.
+// Pick the three media-gate fields off a ReaderSettings snapshot. Kept
+// as a top-level helper so the toggle handlers and a future bulk-sync
+// path can share it without re-spelling the field list.
+function pickMediaPrefs(
+  next: import("../../hooks/useReaderSettings").ReaderSettings,
+): {
+  imagesEnabled: boolean;
+  audioEnabled: boolean;
+  videoEnabled: boolean;
+  cinematicMode: string;
+} {
+  return {
+    imagesEnabled: next.imagesEnabled,
+    audioEnabled: next.audioEnabled,
+    videoEnabled: next.videoEnabled,
+    cinematicMode: next.cinematicMode,
+  };
+}
+
+async function syncMediaPrefs(
+  account: ReturnType<typeof useAccountProfile>,
+  prefs: {
+    imagesEnabled: boolean;
+    audioEnabled: boolean;
+    videoEnabled: boolean;
+    cinematicMode?: string;
+  },
+): Promise<void> {
+  if (!account.profile) return;
+  try {
+    await account.setMediaPrefs(prefs);
+  } catch {
+    // localStorage already holds the new value; the next hydrate from a
+    // device where the network worked will reconcile through the
+    // useAccountProfile hydrate path.
+  }
 }
 
 function SettingGroup<T extends string | boolean | number>({

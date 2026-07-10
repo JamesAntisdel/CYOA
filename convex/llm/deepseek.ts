@@ -19,7 +19,7 @@ export function createDeepSeekProvider(available = defaultDeepSeekAvailable(), c
       available,
       ...(available ? {} : { degradedReason: "deepseek_not_configured" }),
     }),
-    generate: async (request: SceneGenerationRequest): Promise<ProviderGeneration> => {
+    generate: async (request: SceneGenerationRequest, signal?: AbortSignal): Promise<ProviderGeneration> => {
       if (!available) throw new Error("deepseek_not_configured");
       const prompt = buildProviderPrompt(request);
       const response = await postJson({
@@ -40,6 +40,7 @@ export function createDeepSeekProvider(available = defaultDeepSeekAvailable(), c
             { role: "user", content: prompt },
           ],
         },
+        ...(signal ? { signal } : {}),
       });
       const text = extractDeepSeekText(response);
       const usage = (response as { usage?: { prompt_tokens?: number; completion_tokens?: number } }).usage;

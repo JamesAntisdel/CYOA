@@ -3,12 +3,14 @@ import { useRouter } from "expo-router";
 import { ScrollView, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { Story } from "@cyoa/engine";
+import { OPEN_STARTER_ID } from "@cyoa/stories";
 
 import { SeedStoryFlow } from "../../components/creator";
 import { AppNav } from "../../components/navigation";
 import { Button, Chip, Divider, Stamp, Surface, Text } from "../../components/primitives";
 import { createRemoteCreatorDraft, publishRemoteCreatorSeed } from "../../lib/gameApi";
 import { saveLocalCreatorSeed } from "../../lib/localCreatorSeeds";
+import { useBreakpoint } from "../../lib/responsive";
 import { guestAuthArgs, useGuestSession } from "../../hooks/useGuestSession";
 import { useLibrary } from "../../hooks/useLibrary";
 import { useNarratorVoice } from "../../hooks/useNarratorVoice";
@@ -22,6 +24,11 @@ export default function CreatorRoute() {
   // reader's pinned voice so the save record gets a voiceId at create time.
   const narrator = useNarratorVoice(null);
   const { tokens } = useAppTheme();
+  // Phone shrinks the page-edge padding so the form gets the full viewport.
+  // Default ScrollView padding (spacing.xl ≈ 24) is generous on desktop but
+  // wastes ~48px on phones, cramping inputs that already have their own
+  // borderWidth + padding.
+  const { isPhone } = useBreakpoint();
   const [title, setTitle] = useState("Lantern Market");
   const [opening, setOpening] = useState(
     "A midnight market opens under glass lanterns, and every stall asks for a different kind of courage.",
@@ -160,7 +167,7 @@ export default function CreatorRoute() {
 
   return (
     <SafeAreaView style={{ backgroundColor: tokens.colors.background, flex: 1 }}>
-      <ScrollView contentContainerStyle={{ marginHorizontal: "auto", maxWidth: 940, padding: tokens.spacing.xl, width: "100%" }}>
+      <ScrollView contentContainerStyle={{ marginHorizontal: "auto", maxWidth: 940, padding: isPhone ? tokens.spacing.md : tokens.spacing.xl, width: "100%" }}>
         <View style={{ gap: tokens.spacing.lg }}>
           <AppNav current="creator" />
           <View style={{ gap: tokens.spacing.sm, maxWidth: 680 }}>
@@ -170,12 +177,19 @@ export default function CreatorRoute() {
           </View>
 
           <SeedStoryFlow
-            starters={library.starterStories}
-            onLaunchStarter={({ starterId, title, premise, tone }) =>
-              // Pass title as both titleOverride (so the library row shows
-              // the reader-authored title) and inside the seed object (so
-              // the backend persists it as the LLM `storyTitle` field).
-              library.createSave(starterId, "story", title, narrator.voiceId, { premise, title, tone })
+            onLaunchSeed={({ title, premise, tone, npcCast }) =>
+              // Reader-authored open seeds always launch from the open-canvas
+              // starter shell. Pass title as both titleOverride (so the
+              // library row shows the reader-authored title) and inside the
+              // seed object (so the backend persists it as the LLM
+              // `storyTitle` field). The optional cast is forwarded to the
+              // backend as `seedNpcs` via useLibrary → gameApi.
+              library.createSave(OPEN_STARTER_ID, "story", title, narrator.voiceId, {
+                premise,
+                title,
+                tone,
+                npcs: npcCast,
+              })
             }
             onSeedLaunched={(save) => router.push(`/read/${save.saveId}`)}
           />
@@ -191,8 +205,8 @@ export default function CreatorRoute() {
               </Button>
             ) : null}
           </View>
-          <View style={{ alignItems: "flex-start", flexDirection: "row", flexWrap: "wrap", gap: tokens.spacing.lg }}>
-          <Surface padded style={{ flex: 1, minWidth: 320 }}>
+          <View style={{ alignItems: "stretch", flexDirection: isPhone ? "column" : "row", flexWrap: "wrap", gap: tokens.spacing.lg }}>
+          <Surface padded style={{ flex: 1, minWidth: isPhone ? undefined : 320, width: "100%" }}>
             <View style={{ gap: tokens.spacing.md }}>
               <TextInput
                 accessibilityLabel="Seed title"
@@ -282,7 +296,7 @@ export default function CreatorRoute() {
               <Text accessibilityLabel="Creator status" muted>{status}</Text>
             </View>
           </Surface>
-          <Surface padded style={{ flex: 1, minWidth: 280 }} variant="muted">
+          <Surface padded style={{ flex: 1, minWidth: isPhone ? undefined : 280, width: "100%" }} variant="muted">
             <View style={{ gap: tokens.spacing.md }}>
               <Text variant="subtitle">After publishing</Text>
               <Text muted>

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { getLocalStorage as getStorage } from "../lib/storage";
+
 const MATURE_OPT_IN_KEY = "cyoa.matureOptIn.v1";
 const UNDER_13_BLOCK_KEY = "cyoa.under13Block.v1";
 
@@ -96,7 +98,3 @@ function writeUnder13Block(): void {
   getStorage()?.setItem(UNDER_13_BLOCK_KEY, "true");
 }
 
-function getStorage(): Pick<Storage, "getItem" | "setItem"> | null {
-  if (typeof globalThis === "undefined") return null;
-  return (globalThis as { localStorage?: Storage }).localStorage ?? null;
-}

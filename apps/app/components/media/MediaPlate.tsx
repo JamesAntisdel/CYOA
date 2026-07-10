@@ -38,10 +38,12 @@ export function MediaPlate({ media, reducedMotion }: MediaPlateProps) {
   }
 
   if (plate.state === "image") {
-    if (!plate.posterUri) {
-      // Defensive — useMediaPlate guarantees a posterUri before entering
-      // `image`, but if it ever lands here without one, fall back to the
-      // skeleton frame.
+    // Defensive — useMediaPlate guarantees a posterUri before entering
+    // `image`, but if it ever lands here without one (or with an empty
+    // string from an upstream projection bug), fall back to the skeleton
+    // frame. An empty <Image source={{uri:""}}> trips the browser's
+    // "Invalid URI" error on web.
+    if (!plate.posterUri || plate.posterUri.length === 0) {
       return <MediaPlateSkeleton label={plate.label} />;
     }
     return (

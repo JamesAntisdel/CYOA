@@ -1,4 +1,5 @@
-import { forbidden } from "./errors";
+import { accountFromDoc } from "./docs";
+import { AppError, forbidden } from "./errors";
 
 export type AccountLike = {
   _id?: string;
@@ -41,7 +42,40 @@ export async function assertAccountSessionAccess(
   }
 
   const identity = await ctx.auth.getUserIdentity();
-  if (!identity?.subject || identity.subject !== account.userId) {
-    throw forbidden("resource_not_owned");
+  if (identity?.subject && identity.subject === account.userId) {
+    return;
   }
+  // Claimed-but-not-yet-authenticated fallback. `claimGuest` upgrades a guest
+  // to `kind: "user"` (recording the email as userId) but does NOT delete the
+  // guest token, because SSO / magic-link sign-in isn't wired yet — there is
+  // no real auth identity for the client to present. Without this fallback the
+  // claim would permanently lock the reader out of their own saves (client
+  // calls carry the guest token, never a bearer identity). Accept the matching
+  // guest token here; once real sign-in lands it clears guestTokenHash and the
+  // identity check above becomes the sole gate.
+  if (account.guestTokenHash && guestTokenHash === account.guestTokenHash) {
+    return;
+  }
+  throw forbidden("resource_not_owned");
+}
+
+/**
+ * Load an account by id and assert the caller owns the session, in one step.
+ * Replaces the get → `account_not_found` → `assertAccountSessionAccess` preamble
+ * that was copy-pasted across ~20 mutation/query handlers. Returns the raw
+ * account doc (callers that need the AccountRecord shape still `accountFromDoc`
+ * it for other helpers).
+ */
+export async function loadAndAuthorizeAccount(
+  ctx: {
+    db: { get: (id: any) => Promise<any> };
+    auth: { getUserIdentity: () => Promise<{ subject?: string } | null> };
+  },
+  accountId: unknown,
+  guestTokenHash?: string,
+): Promise<Record<string, unknown>> {
+  const account = await ctx.db.get(accountId);
+  if (!account) throw new AppError("account_not_found");
+  await assertAccountSessionAccess(ctx, accountFromDoc(account), guestTokenHash);
+  return account;
 }

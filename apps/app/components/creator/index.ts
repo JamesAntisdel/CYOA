@@ -1,3 +1,11 @@
+export {
+  isNpcCastValid,
+  NpcCastEditor,
+  validateNpcCast,
+  type NpcCastEditorProps,
+  type NpcCastValidationResult,
+  type SeedNpcDraft,
+} from "./NpcCastEditor";
 export { SeedPremiseInput } from "./SeedPremiseInput";
 export type { SeedPremiseInputProps } from "./SeedPremiseInput";
 export {

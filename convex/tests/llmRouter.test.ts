@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildMemoryWindow,
   buildScenePrompt,
+  ClientDisconnectedError,
   collectSceneStream,
   createAnthropicProvider,
   createDeepSeekProvider,
@@ -44,10 +45,19 @@ describe("llm router", () => {
   });
 
   it("routes low-risk non-mature prose to DeepSeek when available", async () => {
+    const deepseek = {
+      ...createDeepSeekProvider(true),
+      name: "deepseek" as const,
+      generate: async () => ({
+        provider: "deepseek" as const,
+        text: "A quiet room waits in silence.",
+        tokenUsage: { input: 1, output: 1 },
+      }),
+    };
     const router = new LlmRouter([
       createAnthropicProvider(true),
       createVertexProvider(true),
-      createDeepSeekProvider(true),
+      deepseek,
       createDeterministicProvider(),
     ]);
 
@@ -58,9 +68,18 @@ describe("llm router", () => {
   });
 
   it("routes sensitive turns to quality/fallback providers, not DeepSeek", async () => {
+    const vertex = {
+      ...createVertexProvider(true),
+      name: "vertex" as const,
+      generate: async () => ({
+        provider: "vertex" as const,
+        text: "A quiet room waits.",
+        tokenUsage: { input: 1, output: 1 },
+      }),
+    };
     const router = new LlmRouter([
       createAnthropicProvider(false),
-      createVertexProvider(true),
+      vertex,
       createDeepSeekProvider(true),
       createDeterministicProvider(),
     ]);
@@ -178,6 +197,134 @@ describe("llm router", () => {
 
     expect(result.generation.provider).toBe("deterministic");
     expect(result.safetyAction).toBe("fallback");
+  });
+
+  it("stamps isFallback=true on the deterministic provider's generation", async () => {
+    // Regression guard for the "press on into the story" bug: when the
+    // router falls through to the deterministic provider, the scene must
+    // carry the isFallback sentinel so the reader UI renders the
+    // FallbackTurnPanel instead of the placeholder prose + choices.
+    const failingProvider = {
+      ...createAnthropicProvider(true),
+      name: "anthropic" as const,
+      generate: async () => {
+        throw new Error("provider_down");
+      },
+    };
+    const router = new LlmRouter([failingProvider, createDeterministicProvider()]);
+    const result = await router.generateScene(request({ risk: "sensitive" }));
+    expect(result.generation.provider).toBe("deterministic");
+    expect(result.generation.isFallback).toBe(true);
+  });
+
+  it("does NOT stamp isFallback on a successful real-provider generation", async () => {
+    // The sentinel must be reserved for the last-resort path. A healthy
+    // DeepSeek (or any real provider) generation must leave the flag
+    // absent so the reader gets the real scene rendered, not the
+    // FallbackTurnPanel.
+    const deepseek = {
+      ...createDeepSeekProvider(true),
+      name: "deepseek" as const,
+      generate: async () => ({
+        provider: "deepseek" as const,
+        text: "A quiet room waits in silence.",
+        tokenUsage: { input: 1, output: 1 },
+      }),
+    };
+    const router = new LlmRouter([deepseek, createDeterministicProvider()]);
+    const result = await router.generateScene(request());
+    expect(result.generation.provider).toBe("deepseek");
+    expect(result.generation.isFallback).toBeUndefined();
+  });
+
+  it("stamps isFallback=true when policy forces a safe-end through the deterministic path", async () => {
+    // The policy-block path also routes through generateDeterministicFallback,
+    // so a content-classifier rewrite must produce a fallback-marked scene
+    // for the same UI reason — the reader shouldn't see the deterministic
+    // placeholder prose as if it were a curated safe-ending.
+    const unsafeProvider = {
+      ...createAnthropicProvider(true),
+      name: "anthropic" as const,
+      generate: async () => ({
+        provider: "anthropic" as const,
+        text: "The narration says you are worthless.",
+        tokenUsage: { input: 1, output: 1 },
+      }),
+    };
+    const router = new LlmRouter([unsafeProvider, createDeterministicProvider()]);
+    const result = await router.generateScene(request({ risk: "normal" }));
+    expect(result.generation.provider).toBe("deterministic");
+    expect(result.generation.isFallback).toBe(true);
+  });
+
+  it("does NOT fall back to deterministic when the abort comes from client disconnect", async () => {
+    // Simulates the SSE client closing the connection mid-call: the
+    // provider's fetch throws an AbortError, and the router must NOT
+    // walk the candidate list or persist the deterministic provider's
+    // generic "press on into the story" prose as the canonical result.
+    const controller = new AbortController();
+    const deterministicGenerate = vi.fn(createDeterministicProvider().generate);
+    const deterministic = {
+      ...createDeterministicProvider(),
+      generate: deterministicGenerate,
+    };
+    const abortingProvider = {
+      ...createAnthropicProvider(true),
+      name: "anthropic" as const,
+      generate: async () => {
+        // Fire the signal first to mirror "client closed the SSE while
+        // we were waiting on the provider"; then throw AbortError as
+        // the underlying fetch would.
+        controller.abort();
+        const err = new Error("The user aborted a request.");
+        err.name = "AbortError";
+        throw err;
+      },
+    };
+    const router = new LlmRouter([abortingProvider, createVertexProvider(false), deterministic]);
+
+    await expect(
+      router.generateScene(request({ risk: "sensitive" }), controller.signal),
+    ).rejects.toBeInstanceOf(ClientDisconnectedError);
+    expect(deterministicGenerate).not.toHaveBeenCalled();
+  });
+
+  it("client-disconnect during SSE stream does not invoke onComplete and does call onError", async () => {
+    // End-to-end-ish: the SSE wrapper sees a ClientDisconnectedError and
+    // routes to the `failSceneStream` (onError) callback, skipping the
+    // `completeSceneStream` (onComplete) callback that would otherwise
+    // persist deterministic prose on the scene record.
+    const abortingRouter = {
+      streamSceneWithResult: async () => {
+        throw new ClientDisconnectedError();
+      },
+      streamScene: async function* () {
+        throw new ClientDisconnectedError();
+      },
+    } as unknown as LlmRouter;
+
+    const completions: unknown[] = [];
+    const errors: unknown[] = [];
+
+    const response = sceneStreamResponse(
+      request(),
+      abortingRouter,
+      async (result) => {
+        completions.push(result);
+      },
+      async () => {
+        errors.push("fail");
+      },
+    );
+    const text = await response.text();
+
+    expect(completions).toEqual([]);
+    expect(errors).toEqual(["fail"]);
+    // Client is gone — we MUST NOT emit a fake error event "to" them
+    // either; that would be a noop at best and an exception (enqueue on
+    // a cancelled controller) at worst.
+    expect(text).not.toContain("llm_stream_failed");
+    expect(text).not.toContain("event: done");
   });
 
   it("validates scene generation requests with Zod", () => {

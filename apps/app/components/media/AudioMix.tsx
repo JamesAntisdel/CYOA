@@ -105,7 +105,10 @@ function useLayerPlayback({ active, id, loop, uri, volume }: LayerPlaybackArgs):
   useEffect(() => {
     if (Platform.OS !== "web") return;
     if (typeof Audio === "undefined") return;
-    if (!uri) {
+    // Treat empty strings the same as undefined — `new Audio("")` mounts an
+    // element whose subsequent .play() trips the browser's "Invalid URI"
+    // error and pollutes the console on every scene transition.
+    if (!uri || uri.length === 0) {
       if (audioRef.current) {
         audioRef.current.pause();
         audioRef.current.src = "";

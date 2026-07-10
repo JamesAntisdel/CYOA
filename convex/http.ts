@@ -5,7 +5,7 @@ import { authComponent, createAuth } from "./betterAuth/auth";
 import { requireStripeWebhookSecret } from "./billing/config";
 import { handleStripeWebhookForTest } from "./billingFunctions";
 import { sceneGenerationRequestSchema, type SceneGenerationRequest, type TokenChunk } from "./llm/types";
-import { LlmRouter } from "./llm/router";
+import { ClientDisconnectedError, LlmRouter } from "./llm/router";
 
 const legacySceneStreamHttpRequestSchema = sceneGenerationRequestSchema.extend({
   accountId: z.string().min(1),
@@ -100,19 +100,35 @@ http.route({
 
     let sceneRequest: SceneGenerationRequest;
     try {
-      sceneRequest = await ctx.runQuery(makeFunctionReference<"query">("game:getAuthorizedSceneStreamRequest"), {
+      // `getAuthorizedSceneStreamRequest` is now a mutation (used to be a
+      // query): it both validates the caller AND claims the scene's
+      // "streaming" lock with a TTL so a duplicate concurrent open is
+      // rejected here rather than racing the first stream and tripping
+      // the deterministic-fallback premise-echo bug.
+      sceneRequest = await ctx.runMutation(makeFunctionReference<"mutation">("game:getAuthorizedSceneStreamRequest"), {
         accountId: streamRequest.accountId,
         saveId: streamRequest.saveId,
         ...(streamRequest.guestTokenHash ? { guestTokenHash: streamRequest.guestTokenHash } : {}),
       });
-    } catch {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "llm_stream_forbidden";
+      // Surface the dedup-lock rejection with a distinct status so the
+      // client can recognise it and back off cleanly — the other in-flight
+      // stream is what's going to deliver the prose. 403 is reserved for
+      // ownership/auth failures.
+      if (message.includes("scene_stream_in_progress")) {
+        return Response.json(
+          { error: "scene_stream_in_progress" },
+          { status: 409, headers: cors },
+        );
+      }
       return Response.json({ error: "llm_stream_forbidden" }, { status: 403, headers: cors });
     }
 
     return sceneStreamResponse(
       sceneRequest,
       new LlmRouter(),
-      async ({ prose, provider, proposal, terminal }) => {
+      async ({ prose, provider, proposal, terminal, isFallback, tokenUsage }) => {
         await ctx.runMutation(makeFunctionReference<"mutation">("game:completeSceneStream"), {
           accountId: streamRequest.accountId,
           saveId: streamRequest.saveId,
@@ -121,6 +137,8 @@ http.route({
           ...(streamRequest.guestTokenHash ? { guestTokenHash: streamRequest.guestTokenHash } : {}),
           ...(proposal ? { proposal } : {}),
           ...(terminal ? { terminal } : {}),
+          ...(isFallback ? { isFallback: true } : {}),
+          ...(tokenUsage ? { tokenUsage } : {}),
         });
       },
       async () => {
@@ -171,6 +189,21 @@ export type SceneStreamCompleteResult = {
   provider: string;
   proposal: unknown;
   terminal: unknown;
+  /**
+   * The provider's reported token usage for this generation. Forwarded to
+   * `completeSceneStream` so turn_history records real input/output counts
+   * instead of estimating input from an empty string (which reported 0 input
+   * tokens and zeroed the operator cost dashboard's spend column).
+   */
+  tokenUsage?: { input: number; output: number };
+  /**
+   * True when the router served this scene from the deterministic fallback
+   * provider (every real provider failed or was ineligible). Forwarded to
+   * `completeSceneStream` as `isFallback: true` so the scene record carries
+   * the sentinel and the reader UI renders the FallbackTurnPanel instead of
+   * the placeholder prose / choices.
+   */
+  isFallback?: boolean;
 };
 
 export function sceneStreamResponse(
@@ -181,16 +214,44 @@ export function sceneStreamResponse(
   extraHeaders: Record<string, string> = {},
 ): Response {
   const encoder = new TextEncoder();
+  // Bridges the ReadableStream's `cancel` callback (fires when the SSE
+  // client disconnects) into an AbortSignal the router/providers can
+  // observe mid-call. Without this we'd keep paying for the in-flight
+  // provider call AND fall through to the deterministic provider on the
+  // resulting AbortError, persisting a generic "press on into the story"
+  // scene as if it were the real result.
+  const abortController = new AbortController();
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
+      // SSE heartbeat: emit a comment line every 5s so intermediaries
+      // (mobile Chrome, cloudflared, etc.) don't close the connection while
+      // the LLM call is in flight. Lines starting with `:` are spec-defined
+      // comments — clients silently ignore them, so this doesn't pollute
+      // the token/choices/done event stream. Must start BEFORE the LLM
+      // call begins; cleared in `finally` so error paths also clean up.
+      let alive = true;
+      const heartbeat: ReturnType<typeof setInterval> = setInterval(() => {
+        if (!alive) return;
+        try {
+          controller.enqueue(encoder.encode(": keep-alive\n\n"));
+        } catch {
+          // Controller closed beneath us; stop the interval defensively.
+          alive = false;
+          clearInterval(heartbeat);
+        }
+      }, 5000);
       try {
         let prose = "";
         let provider = "deterministic";
-        const result = await router.streamSceneWithResult(request, (chunk) => {
-          prose += chunk.text;
-          provider = chunk.provider;
-          controller.enqueue(encoder.encode(`event: token\ndata: ${JSON.stringify(chunk)}\n\n`));
-        });
+        const result = await router.streamSceneWithResult(
+          request,
+          (chunk) => {
+            prose += chunk.text;
+            provider = chunk.provider;
+            controller.enqueue(encoder.encode(`event: token\ndata: ${JSON.stringify(chunk)}\n\n`));
+          },
+          abortController.signal,
+        );
         // Diagnostic: when llm-driven runs lose the proposal, we need to know
         // WHY (parser failed? provider returned non-JSON?). Logs the first 200
         // chars of the raw provider output so operators can spot the bug.
@@ -216,20 +277,62 @@ export function sceneStreamResponse(
             ),
           );
         }
-        if (onComplete) await onComplete({ prose, provider, proposal, terminal });
+        // Forward the deterministic-fallback sentinel out of band. The
+        // router stamps `isFallback: true` on the ProviderGeneration when
+        // the deterministic provider had to serve (every real provider
+        // failed / was ineligible). `completeSceneStream` persists this
+        // flag on the scene record so the reader UI renders the
+        // FallbackTurnPanel instead of the placeholder prose + choices.
+        const isFallback = result.generation.isFallback === true;
+        const tokenUsage = result.generation.tokenUsage;
+        if (onComplete)
+          await onComplete({ prose, provider, proposal, terminal, isFallback, tokenUsage });
         controller.enqueue(encoder.encode("event: done\ndata: {}\n\n"));
         controller.close();
       } catch (error) {
+        // Client-disconnect path: the SSE consumer is gone. Patch the
+        // scene's streamStatus so the next request can retry, but skip
+        // the `event: error` / `event: done` enqueues — there's nobody
+        // on the other end of the controller and enqueueing on a cancelled
+        // stream throws. We still call `onError` (which runs the
+        // `failSceneStream` mutation) so we don't leave the scene record
+        // stuck in "streaming" until the lock TTL expires.
+        const disconnected =
+          error instanceof ClientDisconnectedError || abortController.signal.aborted;
         if (onError) await onError();
-        controller.enqueue(
-          encoder.encode(
-            `event: error\ndata: ${JSON.stringify({
-              error: "llm_stream_failed",
-            })}\n\n`,
-          ),
-        );
-        controller.close();
+        if (!disconnected) {
+          try {
+            controller.enqueue(
+              encoder.encode(
+                `event: error\ndata: ${JSON.stringify({
+                  error: "llm_stream_failed",
+                })}\n\n`,
+              ),
+            );
+          } catch {
+            // Controller already closed (client raced us); ignore.
+          }
+        }
+        try {
+          controller.close();
+        } catch {
+          // Already closed via `cancel` callback below; safe to ignore.
+        }
+      } finally {
+        // Always stop the heartbeat — success path, error path, or
+        // controller-already-closed path. Without this, the interval
+        // would keep firing after the stream resolves and leak.
+        alive = false;
+        clearInterval(heartbeat);
       }
+    },
+    cancel(reason) {
+      // Fires when the SSE client closes the connection (browser tab
+      // closed, fetch AbortController on the client, network drop). The
+      // router observes this signal between provider attempts and bails
+      // out with a ClientDisconnectedError instead of falling through to
+      // the deterministic provider.
+      abortController.abort(reason);
     },
   });
 

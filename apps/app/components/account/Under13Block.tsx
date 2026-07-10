@@ -1,5 +1,6 @@
 import { View } from "react-native";
 
+import { useBreakpoint } from "../../lib/responsive";
 import { Stamp, Surface, Text } from "../primitives";
 import { useAppTheme } from "../../theme";
 
@@ -9,14 +10,20 @@ import { useAppTheme } from "../../theme";
  */
 export function Under13Block() {
   const { tokens } = useAppTheme();
+  const { isPhone } = useBreakpoint();
 
   return (
+    // Mirror MatureOptIn's phone behavior — drop the 520 max so the block
+    // claims the full content column at 375px viewport. The Surface is
+    // alignSelf-centered by its host route (`alignItems: "center"` on the
+    // ScrollView contentContainer), so removing the cap doesn't push it
+    // off-axis. Keeps the danger frame symmetric on phone.
     <Surface
       padded
       style={{
         borderColor: tokens.colors.danger,
         gap: tokens.spacing.md,
-        maxWidth: 520,
+        maxWidth: isPhone ? "100%" : 520,
         width: "100%",
       }}
     >

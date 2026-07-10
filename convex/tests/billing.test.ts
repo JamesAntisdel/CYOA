@@ -8,6 +8,7 @@ import {
   assertStripeEventNotProcessed,
   buildCheckoutSessionRequest,
   buildCheckoutSessionCreateParams,
+  buildCustomerPortalParams,
   calculateOverageCents,
   dailyAllowance,
   enableOverage,
@@ -51,6 +52,21 @@ describe("billing", () => {
     expect(() => buildCheckoutSessionRequest({ ...plan, successUrl: "http://app/success" })).toThrow(
       "checkout_urls_must_be_https",
     );
+  });
+
+  it("builds Stripe customer portal params with https return URL", () => {
+    expect(
+      buildCustomerPortalParams({ customerId: "cus_123", returnUrl: "https://app/account" }),
+    ).toEqual({
+      customer: "cus_123",
+      return_url: "https://app/account",
+    });
+    expect(() =>
+      buildCustomerPortalParams({ customerId: "cus_123", returnUrl: "http://app/account" }),
+    ).toThrow("portal_return_url_must_be_https");
+    expect(() =>
+      buildCustomerPortalParams({ customerId: "", returnUrl: "https://app/account" }),
+    ).toThrow("stripe_customer_missing");
   });
 
   it("reads required Stripe billing environment", () => {
@@ -615,7 +631,33 @@ describe("billing", () => {
     expect(planAllowance("unlimited")).toMatchObject({ includedPremiumTokens: 25_000 });
     expect(hasPaidEntitlement({ tier: "pro", status: "active" })).toBe(true);
     expect(hasPaidEntitlement({ tier: "pro", status: "grace" })).toBe(false);
-    expect(dailyAllowance({ ...freeEntitlement("acct", 1), includedTurnsPerDay: undefined })).toBe(0);
+    // A tier with no explicit includedTurnsPerDay falls back to the free daily
+    // floor (10), never 0 — a lapsed subscriber must not end up worse off than
+    // a free guest.
+    expect(dailyAllowance({ ...freeEntitlement("acct", 1), includedTurnsPerDay: undefined })).toBe(10);
+    // A paid tier in the Stripe grace window (past_due/unpaid) must fail CLOSED
+    // to the free daily floor — not unlimited. Grace is an already-failed
+    // payment with no expiry/cron to downgrade it, so unlimited-in-grace would
+    // let a dropped cancellation webhook mint free unlimited access forever.
+    // The floor is still non-zero so a transient card retry doesn't lock the
+    // customer out.
+    expect(
+      dailyAllowance({
+        ...freeEntitlement("acct", 1),
+        tier: "pro",
+        status: "grace",
+        includedTurnsPerDay: undefined,
+      }),
+    ).toBe(10);
+    // A paid tier whose status has fully lapsed drops to the free floor, not 0.
+    expect(
+      dailyAllowance({
+        ...freeEntitlement("acct", 1),
+        tier: "pro",
+        status: "expired",
+        includedTurnsPerDay: undefined,
+      }),
+    ).toBe(10);
     expect(previewPlanChange({ currentTier: "unlimited", targetTier: "pro", unusedCreditCents: 500 })).toEqual({
       immediateChargeCents: 1000,
       creditAppliedCents: 500,

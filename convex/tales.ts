@@ -20,6 +20,18 @@ export type TaleTurnSnapshot = {
   engineEvents: unknown[];
   stateAfter: unknown;
   createdAt: number;
+  /**
+   * Minimal source-scene fields needed to mirror a fork's starting scene
+   * WITHOUT re-reading the live `scenes` row (which rewind/purge may have
+   * deleted). Persisted with the snapshot so a published tale is fully
+   * source-independent for both read and fork.
+   */
+  sceneMirror?: {
+    choiceViews?: unknown[];
+    safety?: unknown;
+    provider?: string;
+    proposal?: unknown;
+  };
 };
 
 export type PublishedTaleRecord = {
@@ -209,6 +221,7 @@ export function snapshotTurn(input: {
   prose: string;
   choices: Array<{ choiceId: string; label: string }>;
   stateAfter: unknown;
+  sceneMirror?: TaleTurnSnapshot["sceneMirror"];
 }): TaleTurnSnapshot {
   return {
     sourceTurnId: input.sourceTurnId,
@@ -221,6 +234,7 @@ export function snapshotTurn(input: {
     engineEvents: cloneJson(input.history.engineEvents),
     stateAfter: cloneJson(input.stateAfter),
     createdAt: input.history.createdAt,
+    ...(input.sceneMirror ? { sceneMirror: cloneJson(input.sceneMirror) } : {}),
   };
 }
 
@@ -284,6 +298,7 @@ function cloneTurnSnapshot(turn: TaleTurnSnapshot): TaleTurnSnapshot {
     engineDiffs: cloneJson(turn.engineDiffs),
     engineEvents: cloneJson(turn.engineEvents),
     stateAfter: cloneJson(turn.stateAfter),
+    ...(turn.sceneMirror ? { sceneMirror: cloneJson(turn.sceneMirror) } : {}),
   };
 }
 

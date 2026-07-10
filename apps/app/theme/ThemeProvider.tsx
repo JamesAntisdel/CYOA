@@ -9,6 +9,7 @@ import {
 } from "react";
 import { AccessibilityInfo, ColorSchemeName, useColorScheme } from "react-native";
 
+import { getLocalStorage as getStorage } from "../lib/storage";
 import {
   READER_SETTINGS_CHANGED_EVENT,
   READER_SETTINGS_KEY,
@@ -159,10 +160,6 @@ function isFontScale(value: unknown): value is FontScale {
   return value === "compact" || value === "default" || value === "large";
 }
 
-function getStorage(): Pick<Storage, "getItem"> | null {
-  if (typeof globalThis === "undefined") return null;
-  return (globalThis as { localStorage?: Storage }).localStorage ?? null;
-}
 
 function getEventTarget(): Pick<EventTarget, "addEventListener" | "removeEventListener"> | null {
   if (

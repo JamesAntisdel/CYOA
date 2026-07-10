@@ -4,6 +4,27 @@ import { AppError } from "./lib/errors";
 
 export type AgeSelection = AgeBand | "under_13";
 
+export type CinematicMode = "off" | "stills_only" | "endpoint_cinematic" | "per_scene_legacy";
+
+export type MediaPrefs = {
+  imagesEnabled: boolean;
+  audioEnabled: boolean;
+  videoEnabled: boolean;
+  // omni-cinematics media-strategy switch. Absent = legacy per-scene behavior;
+  // the server `resolveMediaStrategy` composes it with the per-modality
+  // booleans + Pro gate.
+  cinematicMode?: CinematicMode;
+};
+
+// Default when a row has no mediaPrefs object: all media on. Existing accounts
+// pre-date the field and must keep generating media until the reader explicitly
+// toggles a modality off.
+export const DEFAULT_MEDIA_PREFS: MediaPrefs = {
+  imagesEnabled: true,
+  audioEnabled: true,
+  videoEnabled: true,
+};
+
 export type AccountRecord = {
   _id?: string;
   kind: "guest" | "user";
@@ -16,6 +37,7 @@ export type AccountRecord = {
   lastActiveAt: number;
   ttlExpiresAt?: number;
   isAdmin?: boolean;
+  mediaPrefs?: MediaPrefs;
 };
 
 export type GuestAccountInput = {
@@ -31,6 +53,13 @@ export type AccountProjection = {
   ageBand: AgeBand;
   matureContentEnabled: boolean;
   isAdmin?: boolean;
+  /**
+   * Always populated — even when the underlying row has no `mediaPrefs`
+   * field — so clients hydrate from a known shape. Absent rows surface as
+   * `DEFAULT_MEDIA_PREFS` (all true) to match the "absence means enabled"
+   * behavior the server uses when gating media generation.
+   */
+  mediaPrefs: MediaPrefs;
 };
 
 export type ClaimGuestPlan = {
@@ -39,7 +68,6 @@ export type ClaimGuestPlan = {
   updates: {
     kind: "user";
     userId: string;
-    guestTokenHash: undefined;
     ttlExpiresAt: undefined;
     lastActiveAt: number;
   };
@@ -78,6 +106,44 @@ export function projectAccount(account: AccountRecord): AccountProjection {
     ageBand: account.ageBand,
     matureContentEnabled: account.matureContentEnabled,
     ...(account.isAdmin === undefined ? {} : { isAdmin: account.isAdmin }),
+    mediaPrefs: account.mediaPrefs ?? DEFAULT_MEDIA_PREFS,
+  };
+}
+
+/**
+ * Coerce the optional `mediaPrefs` field into a fully-populated MediaPrefs
+ * object. Centralised so the queue mutations don't each have to repeat the
+ * "absent means enabled" defaulting rule. Validates each field is strictly
+ * boolean — a malformed partial row reverts to all-enabled rather than
+ * silently treating undefined as "disabled" (which would block media for
+ * every legacy reader).
+ */
+export function resolveMediaPrefs(account: Pick<AccountRecord, "mediaPrefs">): MediaPrefs {
+  const prefs = account.mediaPrefs;
+  if (!prefs) return DEFAULT_MEDIA_PREFS;
+  return {
+    imagesEnabled: typeof prefs.imagesEnabled === "boolean" ? prefs.imagesEnabled : true,
+    audioEnabled: typeof prefs.audioEnabled === "boolean" ? prefs.audioEnabled : true,
+    videoEnabled: typeof prefs.videoEnabled === "boolean" ? prefs.videoEnabled : true,
+    ...(prefs.cinematicMode ? { cinematicMode: prefs.cinematicMode } : {}),
+  };
+}
+
+/**
+ * Build the patch the `setMediaPrefs` mutation writes to the account row.
+ * Pure for testability — the mutation just unwraps the Convex auth + db
+ * fetch and hands off to this. All three modality booleans are required so
+ * the row always carries a fully-formed pref object (the optional schema
+ * field is for backwards compatibility, not partial writes).
+ */
+export function buildMediaPrefsUpdate(prefs: MediaPrefs): { mediaPrefs: MediaPrefs } {
+  return {
+    mediaPrefs: {
+      imagesEnabled: prefs.imagesEnabled === true,
+      audioEnabled: prefs.audioEnabled === true,
+      videoEnabled: prefs.videoEnabled === true,
+      ...(prefs.cinematicMode ? { cinematicMode: prefs.cinematicMode } : {}),
+    },
   };
 }
 
@@ -99,7 +165,24 @@ export function buildClaimGuestPlan(
     updates: {
       kind: "user",
       userId,
-      guestTokenHash: undefined,
+      // Intentionally PRESERVE guestTokenHash. SSO / magic-link sign-in isn't
+      // wired yet, so the client has no bearer identity to present after the
+      // claim — the guest token is still the reader's only credential. Deleting
+      // it here (the pre-fix behaviour) permanently locked claimed accounts out
+      // of their saves. assertAccountSessionAccess accepts the matching guest
+      // token as a fallback for a claimed-but-unauthenticated user account.
+      //
+      // SECURITY FOLLOW-UP (required before SSO ships): the guest token remains
+      // a full-access credential on the claiming device until real auth exists.
+      // When the BetterAuth sign-in/linking flow lands it MUST, in one mutation:
+      //   (1) set `userId` to the real identity subject (NOT the email stored
+      //       here — an OAuth subject never equals the email), and
+      //   (2) clear `guestTokenHash` (set to undefined and let the patch remove
+      //       it — note cleanDoc strips undefined, so pass an explicit clear).
+      // After that, assertAccountSessionAccess's identity branch becomes the
+      // sole gate and the old device token stops working. A token-revocation
+      // hook cannot be added earlier: with userId == email, no real identity can
+      // match, so any opportunistic clear would be dead code.
       ttlExpiresAt: undefined,
       lastActiveAt: now,
     },

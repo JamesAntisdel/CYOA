@@ -9,6 +9,11 @@ type ChoiceProps = PropsWithChildren<PressableProps> & {
   locked?: boolean | undefined;
 };
 
+// Minimum tappable height (logical px) — same WCAG 2.5.5 floor used by Button.
+const MIN_TAPPABLE_HEIGHT = 48;
+const DISABLED_OPACITY = 0.6;
+const PRESSED_OPACITY = 0.76;
+
 export function Choice({
   children,
   hint,
@@ -33,8 +38,8 @@ export function Choice({
           borderWidth: tokens.borderWidths.regular,
           flexDirection: "row",
           gap: tokens.spacing.sm,
-          minHeight: 48,
-          opacity: locked ? 0.55 : pressed ? 0.76 : 1,
+          minHeight: MIN_TAPPABLE_HEIGHT,
+          opacity: locked ? DISABLED_OPACITY : pressed ? PRESSED_OPACITY : 1,
           paddingHorizontal: tokens.spacing.md,
           paddingVertical: tokens.spacing.sm,
         } satisfies ViewStyle,
@@ -42,14 +47,14 @@ export function Choice({
       ]}
       {...props}
     >
-      <Text aria-hidden style={{ color: tokens.colors.accent, fontWeight: "700" }}>
+      <Text aria-hidden style={{ fontWeight: "700" }} tone="accent">
         {"->"}
       </Text>
       <View style={{ flex: 1 }}>
         <Text>{children}</Text>
       </View>
       {hint ? (
-        <Text muted variant="caption">
+        <Text tone="muted" variant="caption">
           {hint}
         </Text>
       ) : null}

@@ -1,20 +1,70 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import type { AdminAccount, AdminDashboardData } from "../components/admin";
+import { getRemoteOperatorDashboard } from "../lib/adminApi";
+import { guestAuthArgs, useGuestSession } from "./useGuestSession";
 
 const HOUR_MS = 60 * 60 * 1000;
 
+/**
+ * Feeds the operator dashboard (Requirement 27).
+ *
+ * Fetches the real admin-gated `operatorDashboardFunctions:getOperatorDashboard`
+ * query for the current session account. The server verifies the caller owns
+ * the account AND holds an admin claim before returning any data, so a non-null
+ * result is itself proof of admin — we flip `account.isAdmin` on only when the
+ * server answers, which is what `AdminGate` keys off.
+ *
+ * Graceful fallback: while loading, when unauthorized, or when the backend is
+ * unavailable, `account` stays non-admin (so the gate keeps the dashboard
+ * closed) and `dashboard` holds a harmless in-memory preview so the boards have
+ * a valid shape to render behind the gate.
+ */
 export function useAdminAnalytics(viewer?: AdminAccount | null): {
   account: AdminAccount | null;
   dashboard: AdminDashboardData;
 } {
+  const guest = useGuestSession();
+  const accountId = guest.session?.accountId ?? null;
+
+  const [remote, setRemote] = useState<{ accountId: string; dashboard: AdminDashboardData } | null>(
+    null,
+  );
+
+  useEffect(() => {
+    if (!accountId) {
+      setRemote(null);
+      return undefined;
+    }
+    let cancelled = false;
+    void getRemoteOperatorDashboard({
+      accountId,
+      ...guestAuthArgs(),
+    }).then((dashboard) => {
+      if (cancelled) return;
+      // null → not an admin / unavailable: leave the gate closed.
+      setRemote(dashboard ? { accountId, dashboard } : null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [accountId]);
+
   return useMemo(() => {
     const now = Date.now();
+    if (remote && remote.accountId === accountId) {
+      // Server confirmed admin (it refused otherwise) — open the gate and show
+      // real metrics.
+      return {
+        account: { accountId: remote.accountId, isAdmin: true },
+        dashboard: remote.dashboard,
+      };
+    }
     return {
       account: viewer ?? null,
       dashboard: buildPreviewDashboard(now),
     };
-  }, [viewer]);
+  }, [accountId, remote, viewer]);
 }
 
 function buildPreviewDashboard(now: number): AdminDashboardData {

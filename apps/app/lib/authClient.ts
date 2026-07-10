@@ -1,4 +1,5 @@
 import { authBaseUrl } from "./authConfig";
+import { getErrorMessage, readJson } from "./authHttp";
 
 type BetterAuthUser = {
   id: string;
@@ -70,18 +71,3 @@ async function authFetch<T>(
   }
 }
 
-async function readJson(response: Response): Promise<unknown> {
-  const text = await response.text();
-  if (!text) return null;
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    return null;
-  }
-}
-
-function getErrorMessage(data: unknown): string | undefined {
-  if (!data || typeof data !== "object") return undefined;
-  const message = (data as { message?: unknown; error?: unknown }).message ?? (data as { error?: unknown }).error;
-  return typeof message === "string" ? message : undefined;
-}

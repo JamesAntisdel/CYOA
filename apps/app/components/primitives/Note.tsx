@@ -1,21 +1,13 @@
 import { PropsWithChildren } from "react";
 import { TextProps } from "react-native";
 
-import { useAppTheme } from "../../theme";
 import { Text } from "./Text";
 
 export function Note({ children, style, ...props }: PropsWithChildren<TextProps>) {
-  const { tokens } = useAppTheme();
-
   return (
     <Text
-      style={[
-        {
-          color: tokens.colors.accent,
-          fontStyle: "italic",
-        },
-        style,
-      ]}
+      style={[{ fontStyle: "italic" }, style]}
+      tone="accent"
       variant="bodySmall"
       {...props}
     >

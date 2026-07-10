@@ -1,5 +1,7 @@
 import type { Story } from "@cyoa/engine";
 
+import { getLocalStorage as getStorage } from "./storage";
+
 export type LocalCreatorSeed = {
   seedId: string;
   title: string;
@@ -63,7 +65,3 @@ function isStory(value: unknown): value is Story {
   );
 }
 
-function getStorage(): Pick<Storage, "getItem" | "setItem"> | null {
-  if (typeof globalThis === "undefined") return null;
-  return (globalThis as { localStorage?: Storage }).localStorage ?? null;
-}

@@ -28,6 +28,14 @@ export type StreamingScene = {
   id: string;
   title: string;
   prose: string;
+  /**
+   * Deterministic-fallback sentinel mirrored from the server projection's
+   * `isFallback`. When true the reader UI renders `<FallbackTurnPanel />`
+   * (mounted by the layouts) in place of the prose surface + choices —
+   * the deterministic placeholder text should NEVER be shown as if it
+   * were a real scene. Optional / absent on every real-provider scene.
+   */
+  isFallback?: boolean;
   revealMode?: "typewriter" | "instant";
   media?: {
     status: "idle" | "queued" | "generating" | "ready" | "blocked" | "failed";

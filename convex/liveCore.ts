@@ -191,7 +191,12 @@ export function buildLibraryItems(input: {
       return {
         saveId: save._id,
         storyId: save.storyId,
-        title: input.storyTitles.get(save.storyId) ?? save.storyId,
+        // Reader-authored seed (createSave's "Seed an adventure" flow) takes
+        // precedence over the starter-story title. Every seeded save lives
+        // under the same synthetic `storyId === "open-canvas"`, so without
+        // this fall-through the library would render every seeded save as
+        // "Open Canvas" and the reader couldn't tell them apart.
+        title: save.seedTitle ?? input.storyTitles.get(save.storyId) ?? save.storyId,
         mode: save.mode,
         status: save.status,
         currentNodeId: save.currentNodeId,

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { View } from "react-native";
 
+import type { NpcState } from "@cyoa/engine";
+
 import type { ReaderInventoryItem, ReaderStats } from "../../hooks/useTurn";
 import { useReaderSettings } from "../../hooks/useReaderSettings";
 import { useAppTheme } from "../../theme";
@@ -29,6 +31,20 @@ type StatsHudProps = {
   characterName?: string;
   /** Turn number for header context. */
   turnNumber?: number;
+  /**
+   * Cast roster for the FullSheet's "Companions and Cast" section. Forwarded
+   * to whichever mode surfaces the character sheet; the persistent/peek/
+   * contextual modes ignore it.
+   */
+  npcs?: Record<string, NpcState>;
+  /**
+   * Account + save identity, forwarded to `<FullSheetMode>` so the cast
+   * roster can resolve live portrait URLs via the convex query
+   * `media/npcMedia:getNpcPortraitUrl`. Both required for live lookup;
+   * omitting either silently falls back to the initials placeholder.
+   */
+  accountId?: string;
+  saveId?: string;
 };
 
 /**
@@ -45,10 +61,13 @@ type StatsHudProps = {
  * already places the HUD beneath the prose surface.
  */
 export function StatsHud({
+  accountId,
   characterName,
   hiddenStatIds,
   inventory,
   mode,
+  npcs,
+  saveId,
   stats,
   turnNumber,
 }: StatsHudProps) {
@@ -93,13 +112,19 @@ export function StatsHud({
         hiddenStatIds?: ReadonlyArray<string>;
         characterName?: string;
         turnNumber?: number;
+        npcs?: Record<string, NpcState>;
+        accountId?: string;
+        saveId?: string;
       } = {};
       if (hiddenStatIds !== undefined) extras.hiddenStatIds = hiddenStatIds;
       if (characterName !== undefined) extras.characterName = characterName;
       if (turnNumber !== undefined) extras.turnNumber = turnNumber;
+      if (npcs !== undefined) extras.npcs = npcs;
+      if (accountId !== undefined) extras.accountId = accountId;
+      if (saveId !== undefined) extras.saveId = saveId;
       return { ...base, ...extras };
     },
-    [characterName, hiddenStatIds, inventory, stats, turnNumber],
+    [accountId, characterName, hiddenStatIds, inventory, npcs, saveId, stats, turnNumber],
   );
 
   return (

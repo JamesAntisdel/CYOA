@@ -9,8 +9,10 @@ import {
   ShareModal,
   type ShareEligibility,
 } from "../../components/discovery/ShareModal";
+import { AppNav } from "../../components/navigation";
 import { useAccountProfile } from "../../hooks/useAccountProfile";
 import { useToast } from "../../hooks/useToast";
+import { useBreakpoint } from "../../lib/responsive";
 import { useAppTheme } from "../../theme";
 import { Button, Stamp, Text } from "../../components/primitives";
 
@@ -26,6 +28,9 @@ export default function DiscoverRoute() {
   const { tokens } = useAppTheme();
   const { profile } = useAccountProfile();
   const { push } = useToast();
+  // Phone reduces the page padding so the synopsis text gets a wider line
+  // length on a 375px viewport. Desktop keeps the original spacing.xl gutter.
+  const { isPhone } = useBreakpoint();
   const [activeShareTale, setActiveShareTale] = useState<DiscoverTale | null>(null);
 
   // No public-tale Convex query exists yet; the shelf is empty by design.
@@ -52,12 +57,15 @@ export default function DiscoverRoute() {
     <SafeAreaView style={{ backgroundColor: tokens.colors.background, flex: 1 }}>
       <ScrollView
         contentContainerStyle={{
+          gap: isPhone ? tokens.spacing.lg : tokens.spacing.xl,
           marginHorizontal: "auto",
           maxWidth: 720,
-          padding: tokens.spacing.xl,
+          padding: isPhone ? tokens.spacing.md : tokens.spacing.xl,
           width: "100%",
         }}
       >
+        <AppNav current="discover" />
+
         <View style={{ gap: tokens.spacing.lg }}>
           <View style={{ gap: tokens.spacing.sm }}>
             <Stamp>the archive</Stamp>

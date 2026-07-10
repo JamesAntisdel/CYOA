@@ -29,10 +29,29 @@ export async function postJson(input: {
   headers: Record<string, string>;
   body: unknown;
   timeoutMs: number;
+  /**
+   * Outer abort signal (from the SSE handler's AbortController). When fired
+   * — browser disconnect, navigation away, retry — the fetch aborts
+   * immediately rather than waiting on the internal `timeoutMs`. Internal
+   * timeout still fires independently as the upper bound; the two are
+   * combined via the `abort` event listener below.
+   */
+  signal?: AbortSignal;
 }): Promise<unknown> {
   assertSafeProviderUrl(input.url, input.headers);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), input.timeoutMs);
+  // Bridge the outer signal into the local controller. If the outer is
+  // already aborted, fire immediately so we never make the fetch call.
+  let outerListener: (() => void) | null = null;
+  if (input.signal) {
+    if (input.signal.aborted) {
+      controller.abort();
+    } else {
+      outerListener = () => controller.abort();
+      input.signal.addEventListener("abort", outerListener);
+    }
+  }
   try {
     const response = await fetch(input.url, {
       method: "POST",
@@ -51,6 +70,9 @@ export async function postJson(input: {
     return body;
   } finally {
     clearTimeout(timeout);
+    if (input.signal && outerListener) {
+      input.signal.removeEventListener("abort", outerListener);
+    }
   }
 }
 
@@ -79,8 +101,18 @@ export function readEnv(key: string): string | undefined {
 
 export function readTimeoutMs(): number {
   const raw = readEnv("LLM_TIMEOUT_MS");
-  const parsed = raw ? Number(raw) : 15_000;
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 15_000;
+  // Default 180s (was 90s). Real Vertex calls with grammar-constrained
+  // structured output + 32K maxOutputTokens sometimes run 90-150s under
+  // load (Gemini 3 Flash is fast on average but tail latency drags
+  // when their inference cluster is busy). The previous 90s default
+  // was tripping a single AbortError on the user's reads, the router
+  // then fell through to the deterministic provider and wrote
+  // "Press on into the story" placeholder prose to the scene record.
+  // 180s comfortably covers the p99 even on bad-load days; the SSE
+  // client keep-alive heartbeat (convex/http.ts:201) keeps the
+  // browser-side connection healthy during the wait.
+  const parsed = raw ? Number(raw) : 180_000;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 180_000;
 }
 
 export function isLocalProviderUrl(url: string): boolean {
