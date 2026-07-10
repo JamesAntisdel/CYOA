@@ -335,10 +335,17 @@ function outcomeCost(
 
   if (outcome === "partial") {
     if (state.clock) return { engineEffects: [], clockAdvance: PARTIAL_CLOCK_COST };
-    return {
-      engineEffects: [{ kind: "stat", statId: "vitality", delta: -PARTIAL_VITALITY_COST }],
-      clockAdvance: 0,
-    };
+    // A partial is a middling, non-failing result — it must never be lethal.
+    // Afford-guard the vitality tax the same way the fail path does, and drop
+    // it entirely when the reader can't absorb it (they keep the choice's own
+    // effects; a partial simply costs nothing rather than killing).
+    if (state.vitality > PARTIAL_VITALITY_COST) {
+      return {
+        engineEffects: [{ kind: "stat", statId: "vitality", delta: -PARTIAL_VITALITY_COST }],
+        clockAdvance: 0,
+      };
+    }
+    return { engineEffects: [], clockAdvance: 0 };
   }
 
   // fail — afford order: vitality → currency → clock.

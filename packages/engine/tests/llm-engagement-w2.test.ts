@@ -294,6 +294,20 @@ describe("resolveChoiceCheck (W2-E2)", () => {
         expect(r2.engineEffects).toEqual([{ kind: "stat", statId: "vitality", delta: -1 }]);
       }
     });
+
+    it("a clock-less partial never charges lethal vitality (afford-guarded)", () => {
+      // A partial is a middling, non-failing result — at vitality 1 it must not
+      // apply the −1 tax that would floor vitality to 0 and force a death.
+      const s = baseState({ vitality: 1 });
+      const partialSeed = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n"].find(
+        (seed) => resolveChoiceCheck(s, { statId: "nerve", difficulty: "risky" }, seed).outcome === "partial",
+      );
+      if (partialSeed) {
+        const r = resolveChoiceCheck(s, { statId: "nerve", difficulty: "risky" }, partialSeed);
+        expect(r.engineEffects).toEqual([]);
+        expect(r.clockAdvance).toBe(0);
+      }
+    });
   });
 
   it("odds phrase shifts one band by difficulty", () => {

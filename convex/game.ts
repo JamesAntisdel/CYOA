@@ -2652,7 +2652,11 @@ function applyResolvedCheck(
       diffs.push({
         kind: "currency",
         target: "currency",
-        delta: effect.delta,
+        // Record the ACTUAL applied change, not the intended delta — currency
+        // floors at 0, so a −5 cost against 2 coins only removes 2. The signed
+        // echo / consequence reel reads this delta and would otherwise report a
+        // loss the reader never took.
+        delta: next.currency - before,
         before,
         after: next.currency,
       });
@@ -3801,18 +3805,25 @@ async function runLlmDrivenSubmitChoice(
       });
     }
   }
-  // W1-S6: chapter cinematic on an act boundary (arc saves); the arc-less turn
-  // cadence isn't wired on this non-streaming fallback path (rare) — the
-  // streaming path carries it.
-  if (!terminal) {
+  // W1-S6: chapter cinematic. PRIMARY: an `act_advanced` diff (force). FALLBACK:
+  // the turn-number cadence for ALL saves. This must stay in lockstep with the
+  // streaming path (completeSceneStream) — act advances are sparse, so gating on
+  // them alone left the reader with only the opening cinematic.
+  if (!terminal && ctx.scheduler) {
     const actAdvanced = recorded.diffs.some(
       (diff) => (diff as { kind?: unknown }).kind === "act_advanced",
     );
-    if (actAdvanced && ctx.scheduler) {
+    if (actAdvanced) {
       await maybeScheduleChapterCinematic(ctx as { db: any; scheduler: any }, {
         accountId: input.accountId,
         saveId: input.saveIdValue,
         force: true,
+      });
+    } else if (input.save.turnNumber > 0) {
+      await maybeScheduleChapterCinematic(ctx as { db: any; scheduler: any }, {
+        accountId: input.accountId,
+        saveId: input.saveIdValue,
+        turnNumber: input.save.turnNumber,
       });
     }
   }
