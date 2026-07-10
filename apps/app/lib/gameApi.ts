@@ -53,6 +53,29 @@ export type RemoteChoice = {
    */
   state?: "visible" | "locked" | null;
   lockedHint?: string | null;
+  /**
+   * Story-engagement Wave 2 (design §7 / R7.4): when a choice carries a
+   * skill check, the server projects the pre-computed ODDS PHRASE only —
+   * never the raw threshold/roll math (BC10). The client renders a CheckChip
+   * (`⚄ Nerve — risky`) from `label` + `odds`. Server emits null-for-absent →
+   * optional here (BC2/BC4). Mutually exclusive with a locked `state` on the
+   * server side (conditions win, per W2-E1) but the client tolerates either.
+   */
+  check?: RemoteCheck | null;
+};
+
+/**
+ * Story-engagement Wave 2 skill-check descriptor projected onto a choice
+ * (design §7). `odds` is the server-computed phrase (BC10 — the client is
+ * NEVER given the stat total, roll, or threshold). `difficulty` is surfaced
+ * for the a11y label / future styling; `label` is the human stat name.
+ */
+export type OddsPhrase = "likely" | "even" | "risky" | "desperate";
+export type RemoteCheck = {
+  statId: string;
+  label: string;
+  difficulty: "easy" | "risky" | "desperate";
+  odds: OddsPhrase;
 };
 
 /**
@@ -101,10 +124,22 @@ export type RemoteRecentDiff =
   | { kind: "thread"; op: "set" | "fired"; note: string | null }
   | { kind: "beat"; label: string }
   | { kind: "act"; act: number }
-  // --- W2 forward-compat (design §7) ---
-  | { kind: "clock"; amount: number; reason: string }
-  | { kind: "npc"; npcId: string; name: string; deltaBand: "up" | "down"; fact: string | null }
+  // --- W2 (design §7); shapes match convex/saves.ts VisibleDiff exactly ---
+  // NOTE (SERVER-reconciled): the server types `clock.reason` as string|null
+  // (null on a reason-less advance) and `npc.deltaBand` as OPTIONAL (absent on
+  // a fact-only diff). Matched here so `liveScene` (SceneProjection) assigns to
+  // RemoteScene cleanly (BC2). `fact` is string|null (null on a pure shift).
+  | { kind: "clock"; amount: number; reason: string | null }
+  | { kind: "npc"; npcId: string; name: string; deltaBand?: "up" | "down"; fact: string | null }
   | { kind: "check"; outcome: "success" | "partial" | "fail"; statId: string; margin: number };
+
+/**
+ * Story-engagement Wave 2 codex entry (design §7 / R11.2). Each is a
+ * string-valued flag the LLM set as a recorded "truth", surfaced newest-first
+ * in the Codex tab. `turnNumber` is when the truth was recorded. Server emits
+ * `codex: null` for absent (legacy / arc-less saves) → optional client-side.
+ */
+export type RemoteCodexEntry = { flag: string; text: string; turnNumber: number };
 
 export type RemoteScene = {
   saveId?: string;
@@ -174,6 +209,12 @@ export type RemoteScene = {
    * turns predating diff persistence → the echo falls back to a stat snapshot.
    */
   recentDiffs?: RemoteRecentDiff[] | null;
+  /**
+   * Story-engagement Wave 2 codex (design §7). The reader-visible list of
+   * recorded truths, surfaced in the Codex tab. Absent (null/undefined) on
+   * legacy saves and turns predating codex projection → the tab hides (BC9).
+   */
+  codex?: RemoteCodexEntry[] | null;
 };
 
 export function hasRemoteGameApi() {

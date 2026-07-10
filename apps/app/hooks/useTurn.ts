@@ -25,14 +25,19 @@ import {
   hasRemoteGameApi,
   streamRemoteScene,
   type RemoteArc,
+  type RemoteCheck,
+  type RemoteCodexEntry,
   type RemoteRecentDiff,
   type RemoteScene,
 } from "../lib/gameApi";
 import {
   adaptArc,
+  adaptCodex,
   adaptRecentDiffs,
   adaptRemoteChoice,
+  checkResultFromDiffs,
   deriveSignedEcho,
+  type CheckOutcome,
   type DerivedEcho,
 } from "../lib/storyEngagement";
 import { useToast } from "./useToast";
@@ -47,6 +52,12 @@ export type ChoiceProjection = {
   label: string;
   locked?: boolean;
   hint?: string;
+  /**
+   * Story-engagement Wave 2 skill-check descriptor (odds phrase only — BC10).
+   * Present when picking this choice triggers a check; drives the CheckChip in
+   * ChoiceList. Absent on plain choices and legacy saves.
+   */
+  check?: RemoteCheck;
 };
 
 export type ReaderStats = {
@@ -100,6 +111,18 @@ export type ReaderProjection = {
    * ChapterEnd act stamp; the echo derivation consumes them per-choice.
    */
   recentDiffs?: RemoteRecentDiff[];
+  /**
+   * Story-engagement Wave 2 codex — recorded "truths" (design §7 / R11.2).
+   * Surfaced in the FullSheet Codex tab. Absent on legacy / arc-less saves.
+   */
+  codex?: RemoteCodexEntry[];
+  /**
+   * Current turn number (from the remote scene). Threaded to the StatsHud so
+   * the FullSheet Codex can fire its "✒️ New truth recorded" pip when the
+   * newest codex entry was recorded on this turn (W2-C4). Absent on local /
+   * legacy projections.
+   */
+  turnNumber?: number;
   ending?: {
     kind: "safe" | "death" | "escape";
     title: string;
@@ -130,6 +153,12 @@ export type ChoiceHistoryEntry = {
   choiceLabel: string;
   echo: string;
   tone: "positive" | "neutral" | "negative";
+  /**
+   * Story-engagement Wave 2 (W2-C1): when the turn that produced this scene
+   * resolved a skill check, its outcome + margin ride here so the inline
+   * EffectBadge can raise a CheckBanner. Absent when no check resolved.
+   */
+  check?: { outcome: CheckOutcome; statId: string; margin: number };
 };
 
 const tutorialProjection: ReaderProjection = {
@@ -981,6 +1010,7 @@ function projectRemoteScene(
           label: model.label,
           locked: model.locked,
           ...(model.hint ? { hint: model.hint } : {}),
+          ...(model.check ? { check: model.check } : {}),
         };
       }),
     stats: {
@@ -1013,6 +1043,8 @@ function projectRemoteScene(
     ...(adaptRecentDiffs(scene.recentDiffs)
       ? { recentDiffs: adaptRecentDiffs(scene.recentDiffs)! }
       : {}),
+    ...(adaptCodex(scene.codex) ? { codex: adaptCodex(scene.codex)! } : {}),
+    ...(typeof scene.turnNumber === "number" ? { turnNumber: scene.turnNumber } : {}),
     ...(terminal && ending
       ? {
           ending: {
@@ -1259,14 +1291,21 @@ function deriveRemoteEcho(scene: RemoteScene): DerivedEcho {
 }
 
 /**
- * Spread-ready `{ echo, tone }` fields for `appendChoiceHistory` so a remote
- * turn's signed echo and its aggregate tone land on the ChoiceHistoryEntry in
- * one shot (replacing the old hardcoded `tone: "neutral"`).
+ * Spread-ready echo fields for `appendChoiceHistory` so a remote turn's signed
+ * echo, its aggregate tone, and any resolved skill-check (W2-C1) land on the
+ * ChoiceHistoryEntry in one shot. The `check` field is conditionally spread so
+ * `exactOptionalPropertyTypes` stays happy (BC4) and non-check turns omit it.
  */
 function remoteEchoFields(scene: RemoteScene): {
   echo: string;
   tone: ChoiceHistoryEntry["tone"];
+  check?: { outcome: CheckOutcome; statId: string; margin: number };
 } {
   const derived = deriveRemoteEcho(scene);
-  return { echo: derived.text, tone: derived.tone };
+  const check = checkResultFromDiffs(adaptRecentDiffs(scene.recentDiffs));
+  return {
+    echo: derived.text,
+    tone: derived.tone,
+    ...(check ? { check } : {}),
+  };
 }

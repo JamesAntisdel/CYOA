@@ -3,14 +3,22 @@ import { accountFromDoc, cleanDoc } from "./lib/docs";
 import {
   advanceLlmTurnCursor,
   applyChoiceAndEnterNode,
+  applyClockAdvance,
+  applyStatDelta,
+  clockDirective,
+  cloneState,
+  createClock,
   evaluateLlmSceneChoices,
   findArcBeat,
   llmSceneOutputSchema,
   nextTargetBeat,
   recordLlmProposalTerminal,
+  resolveChoiceCheck,
   resolveTerminal,
   synthesizeFallbackArc,
   validateProposedArc,
+  type ChoiceCheckResult,
+  type EngineDiff,
   type LlmSceneChoiceVisibility,
   type LlmSceneProposal,
   type NpcRole,
@@ -46,7 +54,7 @@ import { AppError } from "./lib/errors";
 import { makeDayKey } from "./lib/ids";
 import { buildNpcSheets } from "./llm/prompts/scene";
 import { guardPromptText } from "./llm/promptGuards";
-import type { NpcSheetSnapshot } from "./llm/types";
+import type { CheckOutcomePromptContext, NpcSheetSnapshot } from "./llm/types";
 import { buildMemoryWindow, type MemoryBeat } from "./memory";
 import {
   authoredSeedStoryId,
@@ -68,6 +76,7 @@ import {
   assertCanAccessSave,
   applySaveState,
   buildVisibleDiffs,
+  hasHiddenStateShift,
   migrateSaveIfNeeded,
   projectCurrentScene,
   projectLlmDrivenScene,
@@ -1473,6 +1482,10 @@ export const getAuthorizedSceneStreamRequest = mutationGeneric({
       const threadFires = await loadThreadFires(ctx, args.saveId, save.turnNumber);
       const pursuit = buildPursuitContext(save.state, save.turnNumber, threadFires);
       const produceArc = save.turnNumber === 0 && save.state.arc === undefined;
+      // W2-S1: surface the resolved skill-check outcome stashed by
+      // `beginStreamingChoice` so the prompt narrates a result it cannot
+      // overrule. Absent unless the reader's last choice carried a check.
+      const checkOutcome = readPendingCheckOutcome(save.state);
       return {
         saveId: args.saveId,
         storyId: story.id,
@@ -1497,6 +1510,7 @@ export const getAuthorizedSceneStreamRequest = mutationGeneric({
         ...(save.storySummary ? { storySummary: save.storySummary } : {}),
         ...(pursuit ? { pursuit } : {}),
         ...(produceArc ? { produceArc: true } : {}),
+        ...(checkOutcome ? { checkOutcome } : {}),
       };
     }
 
@@ -1700,10 +1714,15 @@ export const completeSceneStream = mutationGeneric({
           })
         : null;
       // Stash (or clear) the one-shot terminal directive the gate handed back
-      // (R2) on the save-state blob so the next prompt build surfaces it.
-      const nextState: PlayerState = applyPendingDirective(
-        recorded?.state ?? baseState,
-        recorded?.directive ?? null,
+      // (R2) on the save-state blob so the next prompt build surfaces it. W2:
+      // also CLEAR the pending skill-check outcome — this scene just narrated
+      // it (R7.2), so it must not leak into the following turn's prompt.
+      const nextState: PlayerState = applyPendingCheckOutcome(
+        applyPendingDirective(
+          recorded?.state ?? baseState,
+          recorded?.directive ?? null,
+        ),
+        null,
       );
       llmPhaseBDiffs = recorded?.diffs ?? [];
       llmPostTurnState = nextState;
@@ -1908,7 +1927,12 @@ export const completeSceneStream = mutationGeneric({
             saveId: args.saveId,
             force: true,
           });
-        } else if (!arcSave && save.turnNumber > 0) {
+        } else if (save.turnNumber > 0) {
+          // Turn-number cadence for ALL saves (arc + legacy). Act advances are
+          // sparse (~2/run), so gating arc saves on them alone left the reader
+          // with only the opening cinematic; the cadence gives a reliable
+          // rhythm between acts. The queue mutation's per-run cap + dedupe still
+          // bound the total.
           await maybeScheduleChapterCinematic(ctx, {
             accountId: args.accountId,
             saveId: args.saveId,
@@ -2067,14 +2091,28 @@ export const completeSceneStream = mutationGeneric({
       )
         ? ((history as { engineDiffs?: unknown[] }).engineDiffs as unknown[])
         : [];
+      // W2-S2: neutralise any LLM-authored clock `reason` before it reaches the
+      // reader echo (R9.2 / R16.2).
+      const rawDiffs = sanitizeClockReasons(
+        [...phaseADiffs, ...llmPhaseBDiffs] as ReadonlyArray<Record<string, unknown>>,
+        policyContext,
+      );
+      const typedRawDiffs = rawDiffs as unknown as ReadonlyArray<
+        { kind: string } & Record<string, unknown>
+      >;
       const visibleDiffs = llmPostTurnState
-        ? buildVisibleDiffs(
-            [...phaseADiffs, ...llmPhaseBDiffs] as ReadonlyArray<
-              { kind: string } & Record<string, unknown>
-            >,
-            llmPostTurnState,
-          )
+        ? buildVisibleDiffs(typedRawDiffs, llmPostTurnState)
         : [];
+      // W1 polish B (R5.2): on a hidden-only turn (state changed but nothing
+      // reader-visible) persist an empty `[]` sentinel so the "something
+      // shifted…" echo still fires. Turns with only bookkeeping diffs persist
+      // nothing (column absent → echo silent).
+      const persistDiffs =
+        visibleDiffs.length > 0
+          ? visibleDiffs
+          : hasHiddenStateShift(typedRawDiffs)
+            ? []
+            : undefined;
       await ctx.db.patch(history._id, {
         provider: args.provider,
         // Prefer the provider's real token usage (forwarded from the SSE
@@ -2083,7 +2121,16 @@ export const completeSceneStream = mutationGeneric({
         tokenUsage: args.tokenUsage ?? estimateTokenUsage("", args.prose),
         latency: { ...(history.latency as Record<string, unknown>), llmMs: Math.max(0, now - history.createdAt) },
         ...(npcMentions ? { mentionsExtracted: npcMentions } : {}),
-        ...(visibleDiffs.length > 0 ? { visibleDiffs } : {}),
+        ...(persistDiffs !== undefined ? { visibleDiffs: persistDiffs } : {}),
+      });
+      // W2-S2 analytics: clock advanced / expired (fire-and-forget).
+      await insertClockAnalytics(ctx, {
+        diffs: rawDiffs,
+        accountId: args.accountId,
+        saveId: args.saveId,
+        storyId: save.storyId,
+        turnNumber: save.turnNumber,
+        now,
       });
     }
 
@@ -2524,6 +2571,222 @@ export function applyPendingDirective(
     : (rest as PlayerState);
 }
 
+// ===========================================================================
+// Story-engagement W2 helpers: skill-check submission, clock reasons, freeform
+// mention scan. All best-effort + tolerant (BC5/BC9): non-arc / no-check saves
+// flow through untouched. State-blob storage only — NO schema change (BC7).
+// ===========================================================================
+
+type PendingCheckState = PlayerState & { pendingCheckOutcome?: CheckOutcomePromptContext };
+
+/** Read the one-shot resolved skill-check outcome stashed on the save (R7.2). */
+function readPendingCheckOutcome(state: PlayerState): CheckOutcomePromptContext | null {
+  const value = (state as PendingCheckState).pendingCheckOutcome;
+  return value && typeof value === "object" ? value : null;
+}
+
+/**
+ * Set (or clear) the pending skill-check outcome on the save-state blob (R7.2).
+ * Stored in `state` (opaque json) so there is NO schema change. Set by
+ * `beginStreamingChoice` when a checked choice is submitted; consumed by the
+ * next prompt build (injected as `request.checkOutcome`) and cleared by the
+ * completion that narrated it.
+ */
+export function applyPendingCheckOutcome(
+  state: PlayerState,
+  outcome: CheckOutcomePromptContext | null,
+): PlayerState {
+  const { pendingCheckOutcome: _drop, ...rest } = state as PendingCheckState;
+  void _drop;
+  return outcome
+    ? ({ ...rest, pendingCheckOutcome: outcome } as PlayerState)
+    : (rest as PlayerState);
+}
+
+/**
+ * Resolve the skill check the reader's chosen choice carries (R7.2, design §5),
+ * if any. Delegates to the engine's pure `resolveChoiceCheck` (seeded per-turn
+ * for deterministic replay). Returns null for freeform turns, arc-less saves,
+ * or choices with no `skillCheck`. The caller applies the result via
+ * `applyResolvedCheck` and threads `result.applyChoiceEffects` into
+ * `advanceLlmTurnCursor` so the choice's own effects apply only on success.
+ */
+function resolveSubmittedCheck(
+  state: PlayerState,
+  choice: LlmSceneProposal["choices"][number] | undefined,
+  rngSeed: string,
+): ChoiceCheckResult | null {
+  const check = (choice as { skillCheck?: unknown } | undefined)?.skillCheck;
+  if (!check || typeof check !== "object") return null;
+  try {
+    return resolveChoiceCheck(state, check as never, rngSeed);
+  } catch {
+    // Tolerant-drop: a check the engine can't resolve (unknown stat, bad shape)
+    // simply doesn't fire — the turn proceeds with the choice's own effects.
+    return null;
+  }
+}
+
+/**
+ * Apply a resolved skill check's ENGINE-authored outcome to state immediately
+ * at submission (R7.2–R7.3, design §2.5): the boon/cost `engineEffects` (stat /
+ * currency) and the afford-aware `clockAdvance`. Returns the mutated state plus
+ * the diffs (engine-effect diffs + a `clock_advanced`/`clock_expired` pair when
+ * the clock moved + the engine's `check_resolved` diff) so the caller folds
+ * them into the turn's `engineDiffs` for the echo + analytics. The choice's OWN
+ * effects are NOT applied here — that gating rides `result.applyChoiceEffects`
+ * on `advanceLlmTurnCursor`.
+ */
+function applyResolvedCheck(
+  state: PlayerState,
+  result: ChoiceCheckResult,
+): { state: PlayerState; diffs: EngineDiff[] } {
+  const next = cloneState(state);
+  const diffs: EngineDiff[] = [];
+  for (const effect of result.engineEffects) {
+    if (effect.kind === "stat") {
+      applyStatDelta(next, effect.statId, effect.delta, diffs);
+    } else if (effect.kind === "currency") {
+      const before = next.currency;
+      next.currency = Math.max(0, before + effect.delta);
+      diffs.push({
+        kind: "currency",
+        target: "currency",
+        delta: effect.delta,
+        before,
+        after: next.currency,
+      });
+    }
+    // Any other engine-authored kind is ignored (the outcome table only ever
+    // emits stat/currency today; tolerant to a future addition).
+  }
+  if (result.clockAdvance > 0 && next.clock) {
+    const before = next.clock;
+    next.clock = applyClockAdvance(before, result.clockAdvance);
+    if (next.clock.value !== before.value) {
+      diffs.push({
+        kind: "clock_advanced",
+        target: "clock",
+        amount: next.clock.value - before.value,
+        reason: null,
+        visibility: "visible",
+      });
+    }
+    if (next.clock.expired && !before.expired) {
+      diffs.push({ kind: "clock_expired", target: "clock", visibility: "visible" });
+    }
+  }
+  diffs.push(result.diff);
+  return { state: next, diffs };
+}
+
+/**
+ * Translate an engine `ChoiceCheckResult` into the prompt-facing outcome
+ * context (R7.2) — pulling the success/fail flavor note off the chosen choice.
+ */
+function checkOutcomeForPrompt(
+  result: ChoiceCheckResult,
+  choice: LlmSceneProposal["choices"][number] | undefined,
+): CheckOutcomePromptContext {
+  const raw = (choice as { skillCheck?: { successNote?: unknown; failNote?: unknown } } | undefined)
+    ?.skillCheck;
+  const note =
+    result.outcome === "success"
+      ? typeof raw?.successNote === "string"
+        ? raw.successNote
+        : undefined
+      : typeof raw?.failNote === "string"
+        ? raw.failNote
+        : undefined;
+  return {
+    outcome: result.outcome,
+    statId: result.statId,
+    margin: result.margin,
+    ...(note ? { note } : {}),
+  };
+}
+
+/**
+ * Cheap freeform name-scan fallback (core-read-loop task 57, R8.4). When the
+ * reader typed their own action, scan it for the names / ids of NPCs already on
+ * the roster and return the matched ids so they stay in the recent-mentions
+ * window (the freeform path has no `npcMentions` proposal to lean on). Case-
+ * insensitive substring match on the NPC name — dumb + deterministic.
+ */
+function scanFreeformMentions(
+  userText: string | undefined,
+  npcs: Record<string, NpcState> | undefined,
+): string[] {
+  if (!userText || !npcs) return [];
+  const haystack = userText.toLowerCase();
+  const out: string[] = [];
+  for (const npc of Object.values(npcs)) {
+    const name = (npc.name ?? "").toLowerCase();
+    if (name.length >= 3 && haystack.includes(name)) out.push(npc.id);
+  }
+  return out;
+}
+
+/**
+ * Run each `clock_advanced` diff's `reason` string through the content policy
+ * before it is persisted / surfaced (R9.2, R16.2). A blocked reason becomes a
+ * neutral placeholder — never a turn failure. Returns a fresh diff array; other
+ * diffs pass through untouched.
+ */
+function sanitizeClockReasons(
+  diffs: ReadonlyArray<Record<string, unknown>>,
+  context: ContentPolicyContext,
+): Array<Record<string, unknown>> {
+  return diffs.map((diff) => {
+    if (diff.kind !== "clock_advanced") return diff;
+    const reason = typeof diff.reason === "string" ? diff.reason.trim() : "";
+    if (reason.length === 0) return diff;
+    const policy = evaluateTextPolicy({ text: reason, context });
+    return policy.action === "allow"
+      ? diff
+      : { ...diff, reason: "the hour grows late" };
+  });
+}
+
+/**
+ * Fire `clock.advanced` / `clock.expired` analytics from a turn's diffs (R16.1,
+ * fire-and-forget). Best-effort — never blocks a turn.
+ */
+async function insertClockAnalytics(
+  ctx: { db: { insert: (table: string, doc: any) => Promise<any> } },
+  input: {
+    diffs: ReadonlyArray<Record<string, unknown>>;
+    accountId: string;
+    saveId: string;
+    storyId: string;
+    turnNumber: number;
+    now: number;
+  },
+): Promise<void> {
+  for (const diff of input.diffs) {
+    if (diff.kind === "clock_advanced") {
+      await insertStoryAnalytics(ctx, {
+        eventName: "clock.advanced",
+        accountId: input.accountId,
+        saveId: input.saveId,
+        storyId: input.storyId,
+        turnNumber: input.turnNumber,
+        payload: { amount: typeof diff.amount === "number" ? diff.amount : 1 },
+        now: input.now,
+      });
+    } else if (diff.kind === "clock_expired") {
+      await insertStoryAnalytics(ctx, {
+        eventName: "clock.expired",
+        accountId: input.accountId,
+        saveId: input.saveId,
+        storyId: input.storyId,
+        turnNumber: input.turnNumber,
+        now: input.now,
+      });
+    }
+  }
+}
+
 /**
  * Run each arc string through the content classifier and neutralise blocked
  * text (R16.2) — same pattern as the cinematic beat timeline. Never fails the
@@ -2573,7 +2836,12 @@ export function createArcForOpeningTurn(input: {
   const rawArc =
     proposed ?? synthesizeFallbackArc(input.save.seedPremise ?? "", input.save.seedTitle);
   const arc = sanitizeArcStrings(rawArc, input.context);
-  return { state: { ...input.state, arc }, source };
+  // W2 (R9.1): seed the doom clock alongside the arc via the engine's
+  // `createClock` (themed label from `arc.clockLabel`, default max, hardcore
+  // reduction hook reserved for W3). The engine auto-advances it +1 every 3rd
+  // turn inside `advanceLlmTurnCursor` and honors LLM `clock_advance` effects.
+  const clock = createClock(arc.clockLabel);
+  return { state: { ...input.state, arc, clock }, source };
 }
 
 /**
@@ -2618,6 +2886,26 @@ export function buildPursuitContext(
     ...(directive ? { directive } : {}),
     ...(surfaceBeatLabel ? { surfaceBeatLabel } : {}),
     threadFires,
+    ...(clockContext(state) ? { clock: clockContext(state)! } : {}),
+  };
+}
+
+/**
+ * Build the prompt-facing clock context (R9.3, W2) from `state.clock`. The
+ * escalation `directive` is computed by the engine's `clockDirective` (50%/75%
+ * bands, `climax_now` at expiry). Returns undefined when the save has no clock
+ * (legacy / arc-less / pre-clock saves) so the prompt skips escalation copy.
+ */
+function clockContext(
+  state: PlayerState,
+): NonNullable<PursuitPromptContext["clock"]> | undefined {
+  const clock = state.clock;
+  if (!clock) return undefined;
+  return {
+    label: clock.label,
+    value: clock.value,
+    max: clock.max,
+    directive: clockDirective(clock),
   };
 }
 
@@ -3005,7 +3293,10 @@ async function projectLlmSceneFromRecord(
       | "failed"
       | "blocked",
     choiceVisibilities,
-    ...(recentDiffs.length > 0 ? { recentDiffs } : {}),
+    // W1 polish B: pass through even an EMPTY persisted array (the hidden-only
+    // "something shifted…" sentinel); only omit when the column is truly absent
+    // (legacy turns → undefined).
+    ...(recentDiffs !== undefined ? { recentDiffs } : {}),
     terminal: terminal
       ? { endingId: terminal.endingId, kind: terminal.kind }
       : null,
@@ -3020,12 +3311,14 @@ async function projectLlmSceneFromRecord(
  * Load the redacted visible-tier diffs persisted for the save's CURRENT turn
  * (R5.1). Read straight off `turn_history.visibleDiffs` — already
  * client-shaped by `buildVisibleDiffs` at write time — so the read path does
- * no re-derivation. Returns [] when the column is absent (legacy turns).
+ * no re-derivation. Returns `undefined` when the column is ABSENT (legacy
+ * turns → the echo stays silent); returns `[]` when the column is present but
+ * empty (W1 polish B hidden-only sentinel → the "something shifted…" echo).
  */
 async function loadVisibleDiffsForTurn(
   ctx: { db: any },
   save: SaveRecord,
-): Promise<VisibleDiff[]> {
+): Promise<VisibleDiff[] | undefined> {
   try {
     const row = await ctx.db
       .query("turn_history")
@@ -3033,9 +3326,9 @@ async function loadVisibleDiffsForTurn(
       .filter((q: any) => q.eq(q.field("turnNumber"), save.turnNumber))
       .first();
     const diffs = (row as { visibleDiffs?: unknown } | null)?.visibleDiffs;
-    return Array.isArray(diffs) ? (diffs as VisibleDiff[]) : [];
+    return Array.isArray(diffs) ? (diffs as VisibleDiff[]) : undefined;
   } catch {
-    return [];
+    return undefined;
   }
 }
 
@@ -3075,21 +3368,49 @@ async function runLlmDrivenBeginStreaming(
   // but keeping the read keeps the failure surface — missing-scene bugs —
   // consistent across both paths).
   if (!prior) throw new AppError("llm_prior_proposal_missing");
-  if (!isFreeform) {
-    const choice = prior.choices.find((candidate) => candidate.id === input.choiceId);
-    if (!choice) throw new AppError("llm_choice_not_found");
-  }
+  const chosenChoice = isFreeform
+    ? undefined
+    : prior.choices.find((candidate) => candidate.id === input.choiceId);
+  if (!isFreeform && !chosenChoice) throw new AppError("llm_choice_not_found");
+
+  // W2-S1: resolve the chosen choice's skill check BEFORE the LLM call (R7.2).
+  // Apply the engine-authored outcome (boon/cost + clock) to state immediately;
+  // thread `applyChoiceEffects` so the choice's OWN effects apply only on
+  // success; stash the outcome for the prompt; fire analytics below.
+  const checkResult = resolveSubmittedCheck(input.save.state, chosenChoice, input.requestId);
+  const checkApplied = checkResult ? applyResolvedCheck(input.save.state, checkResult) : null;
+  const preState = checkApplied ? checkApplied.state : input.save.state;
+  const checkDiffs = checkApplied ? checkApplied.diffs : [];
 
   const advanced = advanceLlmTurnCursor({
-    state: input.save.state,
+    state: preState,
     story: input.story,
     priorProposal: isFreeform ? null : prior,
     choiceId: input.choiceId,
     ctx: { now: input.now, rngSeed: input.requestId },
     freeform: isFreeform,
+    ...(checkResult ? { applyChoiceEffects: checkResult.applyChoiceEffects } : {}),
   });
 
-  const nextSave: SaveRecord = applySaveState(input.save, advanced.state, input.now);
+  // Stash the resolved outcome on the advanced state so the NEXT prompt build
+  // (getAuthorizedSceneStreamRequest) injects it as `request.checkOutcome`.
+  const stashedState = checkResult
+    ? applyPendingCheckOutcome(advanced.state, checkOutcomeForPrompt(checkResult, chosenChoice))
+    : advanced.state;
+  // The check's engine diffs precede the cursor-advance diffs in this turn's
+  // record so the echo shows the roll's cost/boon alongside the choice effects.
+  const turnDiffs = [...checkDiffs, ...advanced.diffs];
+
+  const nextSave: SaveRecord = applySaveState(input.save, stashedState, input.now);
+  // W2-S5 (task 57): freeform turns have no `npcMentions` proposal; scan the
+  // reader's typed action for on-roster NPC names so the recent-mentions
+  // window doesn't go blank when they typed "ask Mira about the key".
+  const freeformMentions = isFreeform
+    ? scanFreeformMentions(input.userText, input.save.state.npcs)
+    : [];
+  const mentionsForTurn = Array.from(
+    new Set([...(prior?.npcMentions ?? []), ...freeformMentions]),
+  );
   const sceneRecord = {
     saveId: input.saveIdValue,
     nodeId: nextSave.currentNodeId,
@@ -3136,8 +3457,13 @@ async function runLlmDrivenBeginStreaming(
     // in the next prompt-builder pass (Requirement 31.3 / 31.4). The streaming
     // path's NEW proposal arrives via `completeSceneStream`; that handler
     // patches the field again if the streamed proposal carries one of its own.
-    ...(prior?.npcMentions ? { mentionsExtracted: prior.npcMentions } : {}),
-    engineDiffs: advanced.diffs,
+    // W2-S5: for freeform turns (no proposal) merge a cheap name-scan of the
+    // reader's typed text (task 57) so NPCs they named stay in the window.
+    ...(mentionsForTurn.length > 0 ? { mentionsExtracted: mentionsForTurn } : {}),
+    // W2-S1: include the check's engine diffs (cost/boon + clock + resolved)
+    // ahead of the cursor-advance diffs so completeSceneStream's echo picks them
+    // up (it reads this row's engineDiffs as phase-A).
+    engineDiffs: turnDiffs,
     engineEvents: advanced.events,
     provider: "deterministic",
     latency: { engineMs: 0, llmMs: 0 },
@@ -3145,6 +3471,24 @@ async function runLlmDrivenBeginStreaming(
   }));
   const sceneId = await ctx.db.insert("scenes", cleanDoc(sceneRecord));
   await ctx.db.patch(input.saveIdValue, { currentSceneId: sceneId });
+
+  // W2-S1 analytics: `check.resolved` (fire-and-forget) when a skill check
+  // fired this submission. Payload carries the outcome + margin only.
+  if (checkResult) {
+    await insertStoryAnalytics(ctx, {
+      eventName: "check.resolved",
+      accountId: input.accountId,
+      saveId: input.saveIdValue,
+      storyId: input.story.id,
+      turnNumber: nextSave.turnNumber,
+      payload: {
+        outcome: checkResult.outcome,
+        statId: checkResult.statId,
+        margin: checkResult.margin,
+      },
+      now: input.now,
+    });
+  }
 
   return {
     saveId: input.saveIdValue,
@@ -3205,12 +3549,23 @@ async function runLlmDrivenSubmitChoice(
     allowance: input.dailyAllowanceCount,
   });
 
+  // W2-S1 (non-streaming mirror): resolve the chosen choice's skill check
+  // BEFORE generation (R7.2). Apply the engine-authored outcome to state, gate
+  // the choice's own effects on success, and feed the outcome into THIS turn's
+  // prompt inline (no stashing — the scene is generated right here).
+  const checkResult = resolveSubmittedCheck(input.save.state, choice, input.requestId);
+  const checkOutcome = checkResult ? checkOutcomeForPrompt(checkResult, choice) : null;
+  const checkApplied = checkResult ? applyResolvedCheck(input.save.state, checkResult) : null;
+  const preState = checkApplied ? checkApplied.state : input.save.state;
+  const checkDiffs = checkApplied ? checkApplied.diffs : [];
+
   const advanced = advanceLlmTurnCursor({
-    state: input.save.state,
+    state: preState,
     story: input.story,
     priorProposal: prior,
     choiceId: input.choiceId,
     ctx: { now: input.now, rngSeed: input.requestId },
+    ...(checkResult ? { applyChoiceEffects: checkResult.applyChoiceEffects } : {}),
   });
 
   // Inline LLM generation. Lazy import to keep test paths happy.
@@ -3269,6 +3624,7 @@ async function runLlmDrivenSubmitChoice(
     ...(input.save.storySummary ? { storySummary: input.save.storySummary } : {}),
     ...(pursuit ? { pursuit } : {}),
     ...(produceArc ? { produceArc: true } : {}),
+    ...(checkOutcome ? { checkOutcome } : {}),
   });
 
   const rawProposal: LlmSceneProposal | null = generated.parsed.proposal ?? null;
@@ -3356,8 +3712,12 @@ async function runLlmDrivenSubmitChoice(
     proposal,
     ctx: { now: input.now, rngSeed: input.requestId },
   });
-  // Stash / clear the one-shot terminal directive from the gate (R2).
-  const gatedState = applyPendingDirective(recorded.state, recorded.directive ?? null);
+  // Stash / clear the one-shot terminal directive from the gate (R2). W2: this
+  // scene narrated any resolved check inline, so clear the pending outcome too.
+  const gatedState = applyPendingCheckOutcome(
+    applyPendingDirective(recorded.state, recorded.directive ?? null),
+    null,
+  );
   const nextSave = applySaveState(input.save, gatedState, input.now);
   // safe_end / safe_redirect: persist the scene but mark the save terminal
   // with kind=safe so the reader hits the safe ending panel.
@@ -3372,13 +3732,23 @@ async function runLlmDrivenSubmitChoice(
         ? "ended_safely"
         : "ended"
     : nextSave.status;
-  // W1-S4: redacted visible-tier diffs for this turn (phase A + phase B).
-  const visibleDiffs = buildVisibleDiffs(
-    [...advanced.diffs, ...recorded.diffs] as ReadonlyArray<
-      { kind: string } & Record<string, unknown>
-    >,
-    nextSave.state,
+  // W1-S4: redacted visible-tier diffs for this turn (check + phase A + phase
+  // B). W2: sanitise clock reasons first (R9.2), compute the hidden-only
+  // sentinel.
+  const rawDiffs = sanitizeClockReasons(
+    [...checkDiffs, ...advanced.diffs, ...recorded.diffs] as ReadonlyArray<Record<string, unknown>>,
+    input.contentContext,
   );
+  const typedRawDiffs = rawDiffs as unknown as ReadonlyArray<
+    { kind: string } & Record<string, unknown>
+  >;
+  const visibleDiffs = buildVisibleDiffs(typedRawDiffs, nextSave.state);
+  const persistDiffs: VisibleDiff[] | undefined =
+    visibleDiffs.length > 0
+      ? visibleDiffs
+      : hasHiddenStateShift(typedRawDiffs)
+        ? []
+        : undefined;
   const choiceVisibilities = computeChoiceVisibilities(
     proposal,
     nextSave.state,
@@ -3390,7 +3760,8 @@ async function runLlmDrivenSubmitChoice(
     prose: generated.parsed.prose,
     streamStatus: "complete",
     choiceVisibilities,
-    recentDiffs: visibleDiffs,
+    // W1 polish B: pass the sentinel-aware value (undefined omits the echo).
+    ...(persistDiffs !== undefined ? { recentDiffs: persistDiffs } : {}),
     terminal: terminal ? { endingId: terminal.endingId, kind: terminal.kind } : null,
   });
 
@@ -3511,15 +3882,40 @@ async function runLlmDrivenSubmitChoice(
     // so the NEXT turn's prompt-builder (via `loadRecentNpcMentions`) can
     // surface those NPCs' sheets without re-parsing prose (Req 31.3 / 31.4).
     ...(proposal.npcMentions ? { mentionsExtracted: proposal.npcMentions } : {}),
-    engineDiffs: [...advanced.diffs, ...recorded.diffs],
+    engineDiffs: [...checkDiffs, ...advanced.diffs, ...recorded.diffs],
     engineEvents: [...advanced.events, ...recorded.events],
-    // W1-S4: redacted visible-tier diffs (integrator-landed column, BC7).
-    ...(visibleDiffs.length > 0 ? { visibleDiffs } : {}),
+    // W1-S4 / W1 polish B: redacted visible-tier diffs (or the []-sentinel for
+    // a hidden-only turn; column omitted entirely when nothing shifted).
+    ...(persistDiffs !== undefined ? { visibleDiffs: persistDiffs } : {}),
     provider: generated.generation.provider,
     tokenUsage: generated.generation.tokenUsage,
     latency: { engineMs: 0, llmMs: Math.max(0, Date.now() - input.now) },
     createdAt: input.now,
   }));
+  // W2 analytics (fire-and-forget): check.resolved + clock advanced/expired.
+  if (checkResult) {
+    await insertStoryAnalytics(ctx, {
+      eventName: "check.resolved",
+      accountId: input.accountId,
+      saveId: input.saveIdValue,
+      storyId: input.story.id,
+      turnNumber: nextSave.turnNumber,
+      payload: {
+        outcome: checkResult.outcome,
+        statId: checkResult.statId,
+        margin: checkResult.margin,
+      },
+      now: input.now,
+    });
+  }
+  await insertClockAnalytics(ctx, {
+    diffs: rawDiffs,
+    accountId: input.accountId,
+    saveId: input.saveIdValue,
+    storyId: input.story.id,
+    turnNumber: nextSave.turnNumber,
+    now: input.now,
+  });
   // Turn-completion analytics (Req 15.2 / 27.2-27.5) for the non-streaming
   // llm-driven path — real provider + token usage from the inline router call.
   {

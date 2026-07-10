@@ -1,5 +1,6 @@
 import type { NpcState } from "@cyoa/engine";
 
+import type { RemoteCodexEntry, RemoteRecentDiff } from "../../lib/gameApi";
 import type { ReaderInventoryItem, ReaderStats } from "../../hooks/useTurn";
 
 /**
@@ -131,6 +132,17 @@ export type StatsHudCommonProps = {
    */
   accountId?: string;
   saveId?: string;
+  /**
+   * Story-engagement Wave 2 (W2-C4): the codex — recorded truths — surfaced in
+   * the FullSheet "Truths" section. Absent on legacy / arc-less saves.
+   */
+  codex?: RemoteCodexEntry[];
+  /**
+   * Story-engagement Wave 2 (W2-C3): the current turn's signed diffs. The
+   * FullSheet derives per-NPC disposition trend arrows from the `npc` diffs
+   * here (`npcTrendsFromDiffs`). Other modes ignore it.
+   */
+  recentDiffs?: RemoteRecentDiff[];
   /** Open the full character sheet on demand. */
   onOpenFullSheet?: () => void;
   /** Dismiss the full character sheet. */

@@ -263,6 +263,20 @@ describe("evaluateLlmChoiceVisibility predicates", () => {
     expect(evaluateLlmChoiceVisibility(choiceWith([...conditions]), state()).visibility).toBe(expected);
   });
 
+  // The reader holds { id: "bone-key", label: "Bone Key" }. The LLM often
+  // re-spells the id when gating a later choice; a tolerant match on normalized
+  // id OR label keeps the door openable instead of locking it forever.
+  it.each([
+    ["snake_case id", "bone_key", "visible"],
+    ["squashed id", "bonekey", "visible"],
+    ["label with space", "Bone Key", "visible"],
+    ["prefixed id", "the-bone-key", "locked"],
+    ["unrelated id", "iron-key", "locked"],
+  ] as const)("has_item tolerant: %s", (_label, itemId, expected) => {
+    const choice = choiceWith([{ kind: "has_item", itemId }]);
+    expect(evaluateLlmChoiceVisibility(choice, state()).visibility).toBe(expected);
+  });
+
   it("drops a condition referencing an unknown stat (choice stays visible)", () => {
     const choice = choiceWith([{ kind: "stat_at_least", statId: "willpower", value: 5 }]);
     expect(evaluateLlmChoiceVisibility(choice, state()).visibility).toBe("visible");

@@ -1,6 +1,7 @@
 import type { NpcState } from "@cyoa/engine";
 
 import type {
+  CheckOutcomePromptContext,
   PlayerStateSnapshot,
   PursuitPromptContext,
   SceneGenerationRequest,
@@ -171,8 +172,54 @@ export function buildPursuitSection(pursuit: PursuitPromptContext): string {
       "The reader survives, barely — narrate a costly escape; do NOT set terminal this scene.",
     );
   }
+  // W2 clock escalation (R9.3). Rendered inside the pursuit spine so the doom
+  // clock outranks scene variety. `none` prints nothing (early clock).
+  if (pursuit.clock) {
+    const { label, value, max, directive } = pursuit.clock;
+    if (directive === "escalate_50") {
+      lines.push(
+        `${label} is at ${value}/${max} — the world is closing in. Show it: the antagonist or the environment presses harder this scene.`,
+      );
+    } else if (directive === "escalate_75") {
+      lines.push(
+        `${label} is at ${value}/${max} — time is nearly gone. The pressure is acute; raise the stakes and narrow the reader's options this scene.`,
+      );
+    } else if (directive === "climax_now") {
+      lines.push(
+        `${label} has run out (${value}/${max}). Move DIRECTLY into the climax under degraded circumstances — no dawdling, no new side-threads. The reader is out of time.`,
+      );
+    }
+  }
   for (const note of pursuit.threadFires) {
     lines.push(`A THREAD FIRES THIS SCENE: "${note}" — narrate the callback.`);
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Render the CHECK OUTCOME block (R7.2, W2). The engine already resolved the
+ * skill check the reader's chosen choice carried — the model must NARRATE the
+ * outcome it was handed, never re-roll or undo it. Placed ABOVE the memory
+ * window (canonical result before texture). Returns null when no check fired.
+ */
+export function buildCheckOutcomeSection(check: CheckOutcomePromptContext): string {
+  const word =
+    check.outcome === "success"
+      ? "SUCCEEDED"
+      : check.outcome === "partial"
+        ? "PARTLY SUCCEEDED"
+        : "FAILED";
+  const closeness =
+    Math.abs(check.margin) <= 1 ? "barely" : Math.abs(check.margin) >= 4 ? "decisively" : "clearly";
+  const lines: string[] = [
+    "== CHECK OUTCOME (already resolved by the engine — narrate it, do NOT overrule it) ==",
+    `The reader's attempt ${word} (${check.statId}, ${closeness}). Narrate this result as fact this scene; do not undo it, soften it into a re-try, or let the prose contradict it.`,
+  ];
+  if (check.note && check.note.trim().length > 0) {
+    lines.push(`Flavor to weave in: "${check.note.trim()}".`);
+  }
+  if (check.outcome === "fail") {
+    lines.push("A failed attempt has a cost the reader feels — show the consequence, then let the story move on.");
   }
   return lines.join("\n");
 }
@@ -287,6 +334,12 @@ function buildLlmDrivenPrompt(request: SceneGenerationRequest): string {
   // Story-arc pursuit section (R1.3 / R6.1). Rendered ABOVE the memory window
   // so the spine outranks scene variety. Absent on legacy arc-less saves.
   const pursuitBlock = request.pursuit ? buildPursuitSection(request.pursuit) : null;
+  // W2: the resolved skill-check outcome for the choice the reader just picked
+  // (R7.2). Rendered ABOVE the memory window so the narrated result is
+  // canonical. Absent unless the prior choice carried a check.
+  const checkOutcomeBlock = request.checkOutcome
+    ? buildCheckOutcomeSection(request.checkOutcome)
+    : null;
   const hasArc = request.pursuit !== undefined;
   const candidateEndings = request.pursuit?.candidateEndings ?? [];
   const hasNpcSheets = Array.isArray(request.npcSheets) && request.npcSheets.length > 0;
@@ -328,6 +381,7 @@ function buildLlmDrivenPrompt(request: SceneGenerationRequest): string {
     ruleBodies.push(
       "CHOICE CONSEQUENCE (this outranks flavor) — every choice you offer should visibly ADVANCE THE PURSUIT, SPEND OR RISK A RESOURCE, or CHANGE A RELATIONSHIP. Label concrete costs in the choice text itself, e.g. \"Bribe the ferryman (-15 gold)\" or \"Break the seal (risk your Nerve)\". A choice with no mechanical or arc consequence is a defect.",
       "GATED CHOICE — roughly every 2-4 scenes, include EXACTLY ONE choice the reader cannot take yet, gated on state they have or nearly have. Attach `conditions` (0-2 of: { kind: 'stat_at_least'|'stat_at_most', statId, value }, { kind: 'has_item'|'missing_item', itemId }, { kind: 'flag_equals', flag, value }, { kind: 'currency_at_least', value }) and a `lockedHint` (≤90 chars, e.g. \"Needs the Bone Key\") so the reader sees the locked door and wants it. At most ONE gated choice per scene, and never gate so hard that fewer than 2 choices remain takeable.",
+      "ITEM-ID CONSISTENCY (critical — a mismatch locks a door forever) — when you gate a choice on `has_item`/`missing_item`, the `itemId` MUST be the SAME id you used in the `inventory_add` that grants the item. Reuse the exact kebab-case id (e.g. grant `{ kind: 'inventory_add', item: { id: 'bone-key', label: 'Bone Key' } }`, then gate with `{ kind: 'has_item', itemId: 'bone-key' }`). Do not invent a new spelling ('bonekey', 'the_bone_key', 'Bone Key') for the same object — the reader will hold the key and still be locked out. The Current Player State block lists every held item's id; copy the id from there.",
       "THREADS (foreshadowing that pays off) — use the `delayed` effect to plant a seed now that fires later: at most ONE `delayed` per scene, and its `note` is the foreshadow line the reader should feel when it lands. When a thread fires (surfaced in YOUR PURSUIT as \"A THREAD FIRES THIS SCENE\"), you MUST narrate the callback this scene.",
     );
     if (candidateEndings.length > 0) {
@@ -336,6 +390,13 @@ function buildLlmDrivenPrompt(request: SceneGenerationRequest): string {
         `ENDINGS — when this scene is the ending, choose \`terminal.endingId\` from these CANDIDATE ENDINGS: ${list}. The final scene's prose MUST explicitly answer the dramatic question. Do not name these candidates in the prose before they are reached.`,
       );
     }
+    // W2 rules (R7.4-adjacent, R8.5, R9.3, R10, R11.3). Only on arc saves.
+    ruleBodies.push(
+      "RELATIONSHIPS (R8.5) — the people in \"Characters in scope\" have feelings that shift with the reader's actions. When one shifts, emit `npc_disposition_delta { npcId, delta }` (±15/turn) AND narrate it (a colder tone, a hand withdrawn). When an NPC learns something durable, emit `npc_learn_fact { npcId, fact }` (reader sees \"<name> will remember that\"). At least one choice every 2-3 scenes should meaningfully involve an NPC. Use `npc_spawn { id, name, role, description }` only for a genuinely new recurring character.",
+      "SKILL CHECKS (R7.1) — at most ONE choice per scene may carry `skillCheck { statId, difficulty: 'easy'|'risky'|'desperate', successNote (≤90), failNote (≤90) }`: a gamble on a reader stat. The engine rolls it at submission and hands you the result (see CHECK OUTCOME) — never decide pass/fail yourself. A checked choice must NOT also carry `conditions`.",
+      "SCARCITY (R10) — when the fiction has a price, state it in the choice text AND spend it (\"Pay the ferryman (-15 gold)\" + a `currency` effect of -15), and gate the costly option behind `currency_at_least`/`has_item` with a `lockedHint` so a reader who can't afford it sees a LOCKED door. Items are keys — an item gained should later unlock a gated choice or a check. WOUNDS PERSIST: express real harm as vitality loss PLUS a `delayed` drain thread.",
+      "CODEX (R11.3) — record durable world-truths (a pact sworn, a name learned, a place burned) as string-valued `flag_set` effects with a kebab-case flag and a short SENTENCE value; the reader sees these as \"Truths the tome recorded\".",
+    );
   }
   if (hasNpcSheets) {
     ruleBodies.push(
@@ -363,8 +424,9 @@ function buildLlmDrivenPrompt(request: SceneGenerationRequest): string {
     `Scene length: ${lengthInstruction(request.sceneLength, turnBand)}`,
     storySummaryBlock,
     // Pursuit section sits ABOVE the memory window — canonical spine before
-    // scene texture (R6.1).
+    // scene texture (R6.1). The resolved check outcome (W2) rides just under it.
     pursuitBlock,
+    checkOutcomeBlock,
     `Recent story memory (oldest → newest):\n${memory}`,
     `Current player state:\n${playerStateSummary(request.playerState)}`,
     npcSheetsBlock(request.npcSheets),
@@ -410,9 +472,16 @@ function playerStateSummary(state: PlayerStateSnapshot | undefined): string {
   // book on nightstand). The next scene MUST respect this location —
   // without it the model drifts (ticket placed in a book turns into
   // ticket in hand on the next turn).
+  // Lead each item with its id in brackets so the model can copy the EXACT id
+  // when gating a later choice on `has_item`/`missing_item` (a re-spelled id
+  // silently locks the door forever — see ITEM-ID CONSISTENCY in the rules).
   const inventory = state.inventory.length > 0
     ? state.inventory
-        .map((i) => (i.description ? `${i.label} — ${i.description}` : i.label))
+        .map((i) =>
+          i.description
+            ? `[${i.id}] ${i.label} — ${i.description}`
+            : `[${i.id}] ${i.label}`,
+        )
         .join("; ")
     : "empty";
   const visible = state.visibleStats.length > 0
@@ -425,7 +494,7 @@ function playerStateSummary(state: PlayerStateSnapshot | undefined): string {
     `- Vitality: ${state.vitality}`,
     `- Currency: ${state.currency}`,
     `- Visible stats: ${visible}`,
-    `- Inventory (label — current location/state): ${inventory}`,
+    `- Inventory ([id] label — current location/state): ${inventory}`,
     `- Flags: ${flags}`,
   ].join("\n");
 }

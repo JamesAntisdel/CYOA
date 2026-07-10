@@ -371,7 +371,7 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
             here in ReaderScreen (not per-layout) so all five layouts inherit
             them for free. Both self-hide on legacy / arc-less saves. */}
         <View style={{ alignSelf: "stretch", gap: tokens.spacing.xs }}>
-          <QuestLine arc={projection.arc} />
+          <QuestLine arc={projection.arc} reducedMotion={reduceMotion || settings.reduceMotion} />
           {projection.arc ? (
             <ThreadsPill
               threadsPending={projection.arc.threadsPending}

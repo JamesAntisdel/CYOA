@@ -139,6 +139,9 @@ export function JournalLayout({
                 stats={projection.stats}
                 {...(accountId ? { accountId } : {})}
                 saveId={projection.saveId}
+                {...(projection.codex ? { codex: projection.codex } : {})}
+                {...(projection.recentDiffs ? { recentDiffs: projection.recentDiffs } : {})}
+                {...(projection.turnNumber !== undefined ? { turnNumber: projection.turnNumber } : {})}
               />
             </View>
           ) : null}

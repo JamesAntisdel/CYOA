@@ -2,17 +2,20 @@ import { z } from "zod";
 
 import {
   advanceActIfDue,
+  applyClockAdvance,
   arcAllowsEnding,
+  darkNightBeatIds,
   fireBeat,
   findArcBeat,
   nextTargetBeat,
   normalizeEndingId,
+  tickClock,
 } from "./arc";
 import { resolveDeath } from "./death";
 import { popDueDelayedEffects, scheduleThread } from "./delayed";
 import { unlockCurrentEnding } from "./endings";
 import { getFlag, setFlag, unsetFlag } from "./flags";
-import { addItem, hasItem, removeItem } from "./inventory";
+import { addItem, hasItem, hasItemTolerant, removeItem } from "./inventory";
 import { cloneState } from "./state";
 import { applyStatDelta, getStat } from "./stats";
 import type {
@@ -21,10 +24,13 @@ import type {
   EngineDiff,
   EngineEvent,
   EngineResult,
+  NpcRole,
+  NpcState,
   PlayerState,
   StoryArc,
   Story,
 } from "./types";
+import { NPC_DISPOSITION_MAX, NPC_DISPOSITION_MIN } from "./types";
 
 // =============================================================================
 // LLM scene contract: the LLM proposes prose + 2-4 choices + effects + an
@@ -48,6 +54,25 @@ const MAX_CONDITIONS_PER_CHOICE = 2;
 const LOCKED_HINT_MAX = 90;
 const MAX_CHOICES = 4;
 const MIN_CHOICES = 2;
+// -- W2 (Requirements 7–9) ---------------------------------------------------
+/** successNote / failNote clamp on a checked choice (Requirement 7.1). */
+const CHECK_NOTE_MAX = 90;
+/** Net disposition change per NPC per turn (Requirement 8.1). */
+const NPC_LLM_DISPOSITION_BOUND = 15;
+/** `npc_learn_fact` text clamp — tighter than the authored 200 (Requirement 8.1). */
+const NPC_FACT_LLM_MAX = 120;
+/** FIFO cap on facts per NPC (Requirement 8.1). */
+const NPC_FACT_CAP = 12;
+/** Roster ceiling — `npc_spawn` beyond this is dropped (Requirement 8.1). */
+const NPC_ROSTER_CAP = 8;
+const NPC_NAME_MAX = 48;
+const NPC_DESC_MAX = 160;
+/** `clock_advance.reason` clamp (Requirement 9.2). */
+const CLOCK_REASON_MAX = 80;
+/** ≤1 `clock_advance` per applied proposal (Requirement 9.2); extras dropped. */
+const MAX_CLOCK_ADVANCE_PER_PROPOSAL = 1;
+/** Codex entry cap (Requirement 11.1). */
+const CODEX_CAP = 40;
 /** Non-terminal scenes always keep ≥2 available choices (Requirement 4.5). */
 const MIN_VISIBLE_CHOICES = 2;
 // Authoritative bound on the engine's scene prose. With `responseSchema`
@@ -122,7 +147,51 @@ const delayedEffectSchema = z.object({
   note: clampedString({ max: THREAD_NOTE_MAX }).optional(),
 });
 
-export const llmEffectSchema = z.union([leafEffectSchema, delayedEffectSchema]);
+// W2 NPC + clock effects (Requirements 8, 9). These are now LLM-legal (the W1
+// guard kept ALL npc_* dropped; W2 opens exactly spawn/disposition/fact — the
+// other npc_* kinds stay out of the union and are still tolerant-dropped). Each
+// is length/enum-clamped; the engine applies clamps/caps again at apply time.
+const npcRoleSchema = z
+  .enum(["companion", "ally", "rival", "neutral", "antagonist"])
+  .catch("neutral");
+
+const npcDispositionDeltaSchema = z.object({
+  kind: z.literal("npc_disposition_delta"),
+  npcId: clampedString({ min: 1, max: 64 }),
+  delta: z
+    .number()
+    .finite()
+    .transform((value) => clampDelta(value, NPC_LLM_DISPOSITION_BOUND)),
+});
+
+const npcLearnFactSchema = z.object({
+  kind: z.literal("npc_learn_fact"),
+  npcId: clampedString({ min: 1, max: 64 }),
+  fact: clampedString({ min: 1, max: NPC_FACT_LLM_MAX }),
+});
+
+const npcSpawnSchema = z.object({
+  kind: z.literal("npc_spawn"),
+  id: clampedString({ min: 1, max: 64 }),
+  name: clampedString({ min: 1, max: NPC_NAME_MAX }),
+  role: npcRoleSchema,
+  description: clampedString({ min: 1, max: NPC_DESC_MAX }).optional(),
+});
+
+const clockAdvanceSchema = z.object({
+  kind: z.literal("clock_advance"),
+  amount: z.union([z.literal(1), z.literal(2)]).catch(1),
+  reason: clampedString({ min: 1, max: CLOCK_REASON_MAX }).optional(),
+});
+
+export const llmEffectSchema = z.union([
+  leafEffectSchema,
+  delayedEffectSchema,
+  npcDispositionDeltaSchema,
+  npcLearnFactSchema,
+  npcSpawnSchema,
+  clockAdvanceSchema,
+]);
 
 // Conditions the LLM may attach to a choice to gate it (Requirement 4.1). A
 // strict subset of the engine `Condition` union PLUS `currency_at_least` (the
@@ -144,7 +213,21 @@ const llmChoiceConditionSchema = z.discriminatedUnion("kind", [
 
 export type LlmChoiceCondition = z.infer<typeof llmChoiceConditionSchema>;
 
-export const llmChoiceSchema = z.object({
+// Optional skill check on a choice (Requirement 7.1). The engine resolves it
+// deterministically at submission (`resolveChoiceCheck` in stats.ts). Tolerant:
+// a malformed check is dropped (`.catch(undefined)`) so the choice — and turn —
+// survive. Mutual exclusivity with `conditions` and the ≤1-per-scene cap are
+// enforced by the transforms below (design §1.3 / W2-E1).
+const skillCheckSchema = z.object({
+  statId: clampedString({ min: 1, max: 64 }),
+  difficulty: z.enum(["easy", "risky", "desperate"]),
+  successNote: clampedString({ min: 1, max: CHECK_NOTE_MAX }).optional(),
+  failNote: clampedString({ min: 1, max: CHECK_NOTE_MAX }).optional(),
+});
+
+export type LlmSkillCheck = z.infer<typeof skillCheckSchema>;
+
+const llmChoiceObject = z.object({
   id: clampedString({ min: 1, max: 64 }),
   label: clampedString({ min: 1, max: 240 }),
   tone: clampedString({ min: 1, max: 32 }).optional(),
@@ -185,6 +268,22 @@ export const llmChoiceSchema = z.object({
     .optional(),
   /** Caption shown on the 🔒 locked card (Requirement 4.1). */
   lockedHint: clampedString({ min: 1, max: LOCKED_HINT_MAX }).optional(),
+  /**
+   * Skill check gating this choice (Requirement 7.1). Tolerant-dropped when
+   * malformed. Dropped entirely when the choice also carries `conditions`
+   * (checks and locks are mutually exclusive — locks win, Requirement 7.5).
+   */
+  skillCheck: skillCheckSchema.optional().catch(undefined),
+});
+
+// Per-choice mutual exclusivity (Requirement 7.5): a choice may be locked OR
+// checked, never both. Conditions win — the check is dropped. Applied as a
+// transform so `LlmChoiceProposal` still exposes an optional `skillCheck`.
+export const llmChoiceSchema = llmChoiceObject.transform((choice) => {
+  if (choice.skillCheck && (choice.conditions?.length ?? 0) > 0) {
+    return { ...choice, skillCheck: undefined };
+  }
+  return choice;
 });
 
 export const llmTerminalSchema = z.object({
@@ -286,6 +385,18 @@ export const llmSceneOutputSchema = z
       }
       ids.add(choice.id);
     });
+  })
+  // ≤1 checked choice per scene (Requirement 7.1): keep the first choice that
+  // carries a `skillCheck` (array order), strip the check from any others.
+  .transform((scene) => {
+    let checkSeen = false;
+    const choices = scene.choices.map((choice) => {
+      if (!choice.skillCheck) return choice;
+      if (checkSeen) return { ...choice, skillCheck: undefined };
+      checkSeen = true;
+      return choice;
+    });
+    return { ...scene, choices };
   });
 
 export type LlmEffect = z.infer<typeof llmEffectSchema>;
@@ -373,13 +484,32 @@ export function advanceLlmTurnCursor(input: {
    * regular prior-proposal branch fires.
    */
   freeform?: boolean;
+  /**
+   * Whether the taken choice's OWN llm effects apply this turn (Requirement
+   * 7.3, W2). Defaults true (legacy + unchecked choices). The server sets it
+   * false when a `skillCheck` on the taken choice did NOT succeed — the check's
+   * engine-authored cost is applied server-side instead. Threads still tick and
+   * the turn still advances regardless.
+   */
+  applyChoiceEffects?: boolean;
 }): EngineResult & { appliedChoiceId: string | null; nodeId: string } {
-  const { state, story, priorProposal, choiceId, ctx, freeform = false } = input;
+  const {
+    state,
+    story,
+    priorProposal,
+    choiceId,
+    ctx,
+    freeform = false,
+    applyChoiceEffects = true,
+  } = input;
   void ctx; // engine context is reserved for future-deterministic plumbing
   const next = cloneState(state);
   const diffs: EngineDiff[] = [];
   const events: EngineEvent[] = [];
   let appliedChoiceId: string | null = null;
+  // Capture pre-turn clock expiry so we only fire the `clock_expired`
+  // transition (dark_night auto-fire) once, on the turn it crosses the line.
+  const clockWasExpired = next.clock?.expired ?? false;
 
   if (priorProposal && choiceId && !freeform) {
     const choice = priorProposal.choices.find((candidate) => candidate.id === choiceId);
@@ -389,7 +519,7 @@ export function advanceLlmTurnCursor(input: {
     // delayNodes=1 fires now, and its fired effects clamp identically to direct
     // effects.
     tickDelayedThreads(next, diffs, events);
-    applyEffects(next, choice.effects ?? [], diffs);
+    if (applyChoiceEffects) applyEffects(next, choice.effects ?? [], diffs);
     events.push({ kind: "choice_applied", choiceId });
     appliedChoiceId = choiceId;
     next.turnNumber += 1;
@@ -402,6 +532,28 @@ export function advanceLlmTurnCursor(input: {
     events.push({ kind: "choice_applied", choiceId });
     appliedChoiceId = choiceId;
     next.turnNumber += 1;
+  }
+
+  // W2 clock (Requirement 9). A completed turn deterministically ticks the
+  // clock (+1 every 3rd turn); an `clock_advance` effect above may also have
+  // advanced it. Settle the expiry transition after both (dark_night auto-fire
+  // + `clock_expired`).
+  if (appliedChoiceId !== null && next.clock) {
+    const beforeTick = next.clock;
+    const ticked = tickClock(beforeTick, next.turnNumber);
+    if (ticked.value !== beforeTick.value) {
+      next.clock = ticked;
+      diffs.push({
+        kind: "clock_advanced",
+        target: "clock",
+        amount: ticked.value - beforeTick.value,
+        reason: "the hours slip past",
+        visibility: "visible",
+      });
+    }
+  }
+  if (next.clock && next.clock.expired && !clockWasExpired) {
+    settleClockExpiry(next, diffs);
   }
 
   const llmNodeId = `${story.id}:llm:${next.turnNumber}`;
@@ -502,6 +654,12 @@ export function applyLlmSceneToState(input: {
   choiceId: string | null;
   nextProposal: LlmSceneProposal;
   ctx: EngineContext;
+  /**
+   * Whether the taken choice's own llm effects apply (Requirement 7.3). Passed
+   * through to `advanceLlmTurnCursor`; defaults true. The server sets it false
+   * when a skill check on the taken choice did not succeed.
+   */
+  applyChoiceEffects?: boolean;
 }): LlmSceneApplyResult {
   const phaseA = advanceLlmTurnCursor({
     state: input.state,
@@ -509,6 +667,9 @@ export function applyLlmSceneToState(input: {
     priorProposal: input.priorProposal,
     choiceId: input.choiceId,
     ctx: input.ctx,
+    ...(input.applyChoiceEffects !== undefined
+      ? { applyChoiceEffects: input.applyChoiceEffects }
+      : {}),
   });
   const phaseB = recordLlmProposalTerminal({
     state: phaseA.state,
@@ -530,13 +691,37 @@ export function applyLlmSceneToState(input: {
 
 function applyEffects(state: PlayerState, effects: LlmEffect[], diffs: EngineDiff[]): void {
   let delayedScheduled = 0;
+  let clockAdvanced = 0;
+  // Net disposition change per NPC across this proposal (Requirement 8.1 —
+  // "±15/turn/NPC net clamp"): each additional delta on the same NPC is
+  // trimmed so the cumulative applied change never exceeds ±15.
+  const dispositionNet: Record<string, number> = {};
   for (const effect of effects) {
-    if (effect.kind === "delayed") {
-      // ≤1 delayed thread per applied proposal (Requirement 3.1); extras drop.
-      if (delayedScheduled >= MAX_DELAYED_PER_PROPOSAL) continue;
-      delayedScheduled += 1;
+    switch (effect.kind) {
+      case "delayed":
+        // ≤1 delayed thread per applied proposal (Requirement 3.1); extras drop.
+        if (delayedScheduled >= MAX_DELAYED_PER_PROPOSAL) continue;
+        delayedScheduled += 1;
+        applyEffect(state, effect, diffs);
+        break;
+      case "clock_advance":
+        // ≤1 clock_advance per applied proposal (Requirement 9.2); extras drop.
+        if (clockAdvanced >= MAX_CLOCK_ADVANCE_PER_PROPOSAL) continue;
+        clockAdvanced += 1;
+        applyLlmClockAdvance(state, effect, diffs);
+        break;
+      case "npc_disposition_delta":
+        applyLlmDispositionDelta(state, effect, dispositionNet, diffs);
+        break;
+      case "npc_learn_fact":
+        applyLlmLearnFact(state, effect, diffs);
+        break;
+      case "npc_spawn":
+        applyLlmNpcSpawn(state, effect, diffs);
+        break;
+      default:
+        applyEffect(state, effect, diffs);
     }
-    applyEffect(state, effect, diffs);
   }
 }
 
@@ -595,6 +780,14 @@ function applyEffect(state: PlayerState, effect: LlmEffect, diffs: EngineDiff[])
       return;
     case "flag_set":
       setFlag(state, effect.flag, effect.value, diffs);
+      // Codex bookkeeping (Requirement 11.1): stamp the turn a string-valued
+      // flag last landed so `deriveCodex` can order newest-first without a
+      // diff replay. Replace the reference (never mutate in place) so the
+      // previous turn's cloned snapshot is never aliased (cloneState shallow-
+      // copies this optional map).
+      if (typeof effect.value === "string") {
+        state.flagSetTurns = { ...(state.flagSetTurns ?? {}), [effect.flag]: state.turnNumber };
+      }
       return;
     case "flag_unset":
       unsetFlag(state, effect.flag, diffs);
@@ -620,6 +813,151 @@ function clampDelta(value: number, bound: number): number {
   if (integer > bound) return bound;
   if (integer < -bound) return -bound;
   return integer;
+}
+
+// =============================================================================
+// W2 NPC effects (Requirement 8). Applied on the llm path with the W2-tier
+// diffs (`disposition_shift`, `fact_learned`) — distinct from the authored
+// `npcs.ts` appliers, which emit `npc_disposition` / `npc_learn_fact` for the
+// authored reducer path. Unknown npcIds are tolerant-dropped (BC5).
+// =============================================================================
+
+function applyLlmDispositionDelta(
+  state: PlayerState,
+  effect: { npcId: string; delta: number },
+  net: Record<string, number>,
+  diffs: EngineDiff[],
+): void {
+  const npc = state.npcs[effect.npcId];
+  if (!npc) return; // unknown npcId → drop
+  const already = net[effect.npcId] ?? 0;
+  // Net clamp to ±15 across the whole proposal.
+  const targetNet = clampDelta(already + effect.delta, NPC_LLM_DISPOSITION_BOUND);
+  const applied = targetNet - already;
+  net[effect.npcId] = targetNet;
+  if (applied === 0) return;
+  const prev = npc.disposition;
+  const after = clampNpcDisposition(prev + applied);
+  if (after === prev) return;
+  npc.disposition = after;
+  diffs.push({
+    kind: "disposition_shift",
+    target: effect.npcId,
+    prevDisposition: prev,
+    delta: after - prev,
+    visibility: "visible",
+  });
+}
+
+function applyLlmLearnFact(
+  state: PlayerState,
+  effect: { npcId: string; fact: string },
+  diffs: EngineDiff[],
+): void {
+  const npc = state.npcs[effect.npcId];
+  if (!npc) return; // unknown npcId → drop
+  if (npc.knownFacts.includes(effect.fact)) return; // dedupe exact
+  let facts = [...npc.knownFacts, effect.fact];
+  // FIFO cap: drop the oldest when over the per-NPC ceiling.
+  if (facts.length > NPC_FACT_CAP) facts = facts.slice(facts.length - NPC_FACT_CAP);
+  npc.knownFacts = facts;
+  diffs.push({ kind: "fact_learned", target: effect.npcId, visibility: "visible" });
+}
+
+function applyLlmNpcSpawn(
+  state: PlayerState,
+  effect: { id: string; name: string; role: NpcRole; description?: string | undefined },
+  diffs: EngineDiff[],
+): void {
+  if (state.npcs[effect.id]) return; // duplicate id → drop
+  if (Object.keys(state.npcs).length >= NPC_ROSTER_CAP) return; // roster cap → drop
+  const npc: NpcState = {
+    id: effect.id,
+    name: effect.name,
+    role: effect.role,
+    disposition: 0,
+    attributes: {},
+    knownFacts: [],
+    flags: {},
+    ...(effect.description !== undefined ? { description: effect.description } : {}),
+  };
+  state.npcs[effect.id] = npc;
+  diffs.push({ kind: "npc_spawn", target: effect.id, delta: 1 });
+}
+
+function applyLlmClockAdvance(
+  state: PlayerState,
+  effect: { amount: number; reason?: string | undefined },
+  diffs: EngineDiff[],
+): void {
+  if (!state.clock) return; // no clock (legacy/arc-less) → drop
+  const before = state.clock;
+  const after = applyClockAdvance(before, effect.amount);
+  if (after.value === before.value) return;
+  state.clock = after;
+  diffs.push({
+    kind: "clock_advanced",
+    target: "clock",
+    amount: after.value - before.value,
+    reason: effect.reason ?? null,
+    visibility: "visible",
+  });
+}
+
+function clampNpcDisposition(value: number): number {
+  const integer = Math.trunc(Number.isFinite(value) ? value : 0);
+  if (integer < NPC_DISPOSITION_MIN) return NPC_DISPOSITION_MIN;
+  if (integer > NPC_DISPOSITION_MAX) return NPC_DISPOSITION_MAX;
+  return integer;
+}
+
+/**
+ * Settle a clock crossing into expiry (Requirement 9.3): emit `clock_expired`
+ * once and auto-fire every pending `dark_night` beat (idempotent via
+ * `fireBeat`), advancing the act if that rolls it over. Called only on the turn
+ * the clock first reaches max.
+ */
+function settleClockExpiry(state: PlayerState, diffs: EngineDiff[]): void {
+  diffs.push({ kind: "clock_expired", target: "clock", visibility: "visible" });
+  if (!state.arc) return;
+  const startAct = state.arc.act;
+  let arc = state.arc;
+  for (const id of darkNightBeatIds(arc)) {
+    const target = findArcBeat(arc, id);
+    const { arc: fired, fired: didFire } = fireBeat(arc, id, state.turnNumber);
+    arc = fired;
+    if (didFire && target) {
+      diffs.push({ kind: "beat_fired", target: target.id, label: target.label, visibility: "visible" });
+    }
+  }
+  arc = advanceActIfDue(arc);
+  if (arc.act !== startAct) {
+    diffs.push({ kind: "act_advanced", target: "arc", act: arc.act, visibility: "visible" });
+  }
+  state.arc = arc;
+}
+
+/**
+ * The Codex (Requirement 11.1): string-valued flags surfaced as recorded
+ * world-truths, newest-first, capped at 40. `turnNumber` comes from the
+ * record-at-set-time map `state.flagSetTurns` (written in the `flag_set` apply
+ * path); flags without a stamp (e.g. authored seeds) default to turn 0 and
+ * sort last. Ties break alphabetically for deterministic ordering. Boolean /
+ * numeric flags stay invisible mechanics (Requirement 11.2).
+ */
+export function deriveCodex(
+  state: PlayerState,
+): Array<{ flag: string; text: string; turnNumber: number }> {
+  const entries: Array<{ flag: string; text: string; turnNumber: number }> = [];
+  for (const [flag, value] of Object.entries(state.flags)) {
+    if (typeof value !== "string") continue;
+    entries.push({ flag, text: value, turnNumber: state.flagSetTurns?.[flag] ?? 0 });
+  }
+  entries.sort((a, b) => {
+    if (b.turnNumber !== a.turnNumber) return b.turnNumber - a.turnNumber;
+    return a.flag < b.flag ? -1 : a.flag > b.flag ? 1 : 0;
+  });
+  return entries.slice(0, CODEX_CAP);
 }
 
 /**
@@ -759,9 +1097,11 @@ function evaluateLlmCondition(
       return stat.value <= condition.value ? "pass" : "fail";
     }
     case "has_item":
-      return hasItem(state, condition.itemId) ? "pass" : "fail";
+      // Tolerant match: the LLM authored both the item and this condition, and
+      // rarely spells the id identically across turns. See hasItemTolerant.
+      return hasItemTolerant(state, condition.itemId) ? "pass" : "fail";
     case "missing_item":
-      return hasItem(state, condition.itemId) ? "fail" : "pass";
+      return hasItemTolerant(state, condition.itemId) ? "fail" : "pass";
     case "flag_equals":
       return getFlag(state, condition.flag) === condition.value ? "pass" : "fail";
     case "currency_at_least":

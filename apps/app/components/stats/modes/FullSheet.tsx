@@ -1,8 +1,10 @@
 import { Modal, ScrollView, View } from "react-native";
 
+import { npcTrendsFromDiffs } from "../../../lib/storyEngagement";
 import { useBreakpoint } from "../../../lib/responsive";
 import { Button, Chip, Divider, Surface, Text } from "../../primitives";
 import { useAppTheme } from "../../../theme";
+import { Codex } from "../../reading/Codex";
 import { NpcRoster } from "../NpcRoster";
 import { filterVisibleStats, type StatsHudCommonProps } from "../types";
 
@@ -25,10 +27,12 @@ type FullSheetProps = StatsHudCommonProps & {
 export function FullSheetMode({
   accountId,
   characterName = "Reader",
+  codex,
   hiddenStatIds,
   inventory,
   npcs,
   onCloseFullSheet,
+  recentDiffs,
   saveId,
   stats,
   turnNumber,
@@ -38,6 +42,9 @@ export function FullSheetMode({
   const { isPhone } = useBreakpoint();
   const visibleStats = filterVisibleStats(stats, hiddenStatIds);
   const hasNpcs = npcs ? Object.keys(npcs).length > 0 : false;
+  // W2-C3: disposition trend arrows for cast members who moved this turn.
+  const npcTrends = npcTrendsFromDiffs(recentDiffs);
+  const hasCodex = codex ? codex.length > 0 : false;
 
   return (
     <Modal
@@ -123,8 +130,12 @@ export function FullSheetMode({
                   npcs={npcs}
                   {...(accountId ? { accountId } : {})}
                   {...(saveId ? { saveId } : {})}
+                  {...(Object.keys(npcTrends).length > 0 ? { trends: npcTrends } : {})}
                 />
               </View>
+            ) : null}
+            {hasCodex ? (
+              <Codex codex={codex} {...(turnNumber !== undefined ? { currentTurn: turnNumber } : {})} />
             ) : null}
           </ScrollView>
           {onCloseFullSheet ? (

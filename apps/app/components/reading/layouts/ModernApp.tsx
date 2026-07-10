@@ -169,6 +169,9 @@ export function ModernAppLayout({
             stats={projection.stats}
             {...(accountId ? { accountId } : {})}
             saveId={projection.saveId}
+            {...(projection.codex ? { codex: projection.codex } : {})}
+            {...(projection.recentDiffs ? { recentDiffs: projection.recentDiffs } : {})}
+            {...(projection.turnNumber !== undefined ? { turnNumber: projection.turnNumber } : {})}
           />
         </Surface>
       ) : !showRails && showHud ? (
@@ -182,6 +185,9 @@ export function ModernAppLayout({
             stats={projection.stats}
             {...(accountId ? { accountId } : {})}
             saveId={projection.saveId}
+            {...(projection.codex ? { codex: projection.codex } : {})}
+            {...(projection.recentDiffs ? { recentDiffs: projection.recentDiffs } : {})}
+            {...(projection.turnNumber !== undefined ? { turnNumber: projection.turnNumber } : {})}
           />
         </>
       ) : null}

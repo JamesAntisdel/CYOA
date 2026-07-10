@@ -95,6 +95,33 @@ export type PursuitPromptContext = {
    * (R3.3) — the next scene must narrate the callback. Empty when none fired.
    */
   threadFires: string[];
+  /**
+   * The doom clock (R9, W2). Present on arc saves that have seeded a clock; the
+   * prompt renders escalation copy keyed off `directive` (50%/75%/expired
+   * bands, computed server-side by the engine's `clockDirective`). Absent on
+   * legacy / arc-less / pre-clock saves — the escalation line is skipped.
+   */
+  clock?: {
+    label: string;
+    value: number;
+    max: number;
+    directive: "none" | "escalate_50" | "escalate_75" | "climax_now";
+  };
+};
+
+/**
+ * Resolved skill-check outcome (R7.2, W2) threaded onto the NEXT scene request
+ * after the reader picks a checked choice. The engine resolves the check at
+ * submission (`beginStreamingChoice`), applies the outcome-table engine effects
+ * immediately, and stashes this so the prompt narrates a result it cannot
+ * overrule. `note` is the success/fail flavor line the LLM authored on the
+ * choice. Absent when the picked choice carried no check.
+ */
+export type CheckOutcomePromptContext = {
+  outcome: "success" | "partial" | "fail";
+  statId: string;
+  margin: number;
+  note?: string;
 };
 
 export type SceneGenerationRequest = {
@@ -153,6 +180,13 @@ export type SceneGenerationRequest = {
    * every later turn and on daily saves (arc is pre-injected).
    */
   produceArc?: boolean;
+  /**
+   * Resolved skill-check outcome for the choice the reader just picked (R7.2,
+   * W2). Present only on the scene generated immediately after a checked choice
+   * was submitted; the prompt renders a CHECK OUTCOME block ("the attempt
+   * FAILED — narrate it; do not undo it"). Absent otherwise.
+   */
+  checkOutcome?: CheckOutcomePromptContext;
 };
 
 export const sceneGenerationRequestSchema = z.object({
@@ -207,9 +241,25 @@ export const sceneGenerationRequestSchema = z.object({
       directive: z.enum(["surface_beat", "narrate_costly_survival"]).optional(),
       surfaceBeatLabel: z.string().optional(),
       threadFires: z.array(z.string()),
+      clock: z
+        .object({
+          label: z.string(),
+          value: z.number(),
+          max: z.number(),
+          directive: z.enum(["none", "escalate_50", "escalate_75", "climax_now"]),
+        })
+        .optional(),
     })
     .optional(),
   produceArc: z.boolean().optional(),
+  checkOutcome: z
+    .object({
+      outcome: z.enum(["success", "partial", "fail"]),
+      statId: z.string(),
+      margin: z.number(),
+      note: z.string().optional(),
+    })
+    .optional(),
 });
 
 export type TokenChunk = {

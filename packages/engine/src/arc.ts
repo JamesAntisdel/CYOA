@@ -4,6 +4,7 @@ import type {
   ArcPriorityHint,
   CandidateEnding,
   StoryArc,
+  StoryClock,
 } from "./types";
 
 // =============================================================================
@@ -324,6 +325,105 @@ export function normalizeEndingId(arc: StoryArc, proposedId: string): string {
   if (best === null) return proposedId;
   const threshold = Math.max(2, Math.floor(proposedSlug.length * 0.34));
   return best.distance <= threshold ? best.id : proposedId;
+}
+
+// =============================================================================
+// The Guttering Candle — doom clock (Requirement 9, W2). Pure StoryClock
+// helpers. The clock rides inside `saves.state` (no schema change); legacy +
+// arc-less saves omit it entirely (BC9). Orchestration (per-turn ticking,
+// expiry auto-fire of `dark_night` beats, diff emission) lives in `llm.ts`
+// where the turn loop is; these functions are the pure math it calls.
+// =============================================================================
+
+/** Default clock ceiling (Requirement 9.1). */
+export const CLOCK_MAX_DEFAULT = 12;
+/** Hardcore shrinks the ceiling ~25% (Requirement 15.1 — wired W3 via param). */
+export const CLOCK_HARDCORE_MAX_REDUCTION = 0.25;
+const CLOCK_LABEL_DEFAULT = "The candle burns";
+/** The engine auto-advances +1 every this-many completed turns (Requirement 9.2). */
+const CLOCK_TURNS_PER_TICK = 3;
+
+/**
+ * Build a fresh clock (Requirement 9.1). `label` defaults to the themed
+ * fallback; `max` defaults to {@link CLOCK_MAX_DEFAULT}. `maxReduction` (0..1)
+ * shrinks the ceiling — hardcore passes {@link CLOCK_HARDCORE_MAX_REDUCTION}
+ * (W3). The result is never below 1.
+ */
+export function createClock(
+  label?: string,
+  opts?: { max?: number; maxReduction?: number },
+): StoryClock {
+  const baseMax = Math.max(1, Math.trunc(opts?.max ?? CLOCK_MAX_DEFAULT));
+  const reduction = clampUnit(opts?.maxReduction ?? 0);
+  const max = Math.max(1, Math.round(baseMax * (1 - reduction)));
+  const trimmed = (label ?? "").trim();
+  return {
+    label: trimmed.length > 0 ? trimmed : CLOCK_LABEL_DEFAULT,
+    value: 0,
+    max,
+    expired: false,
+  };
+}
+
+/**
+ * Deterministic per-turn advance (Requirement 9.2): +1 on every 3rd completed
+ * turn (turn 3, 6, 9, …), otherwise unchanged. Idempotent given the same
+ * `turnNumber` (the caller ticks exactly once per completed turn). Never
+ * retreats. Returns the input clock unchanged on non-tick turns.
+ */
+export function tickClock(clock: StoryClock, turnNumber: number): StoryClock {
+  if (turnNumber <= 0 || turnNumber % CLOCK_TURNS_PER_TICK !== 0) return clock;
+  return applyClockAdvance(clock, 1);
+}
+
+/**
+ * Advance (or, with a negative amount, retreat — the rare skill-check boon)
+ * the clock, clamped to [0, max]; `expired` becomes true once value reaches
+ * max (Requirement 9.3). Returns a NEW clock; the input is never mutated. A
+ * zero net change still returns a fresh object (harmless; callers compare
+ * `value`).
+ */
+export function applyClockAdvance(clock: StoryClock, amount: number): StoryClock {
+  const delta = Math.trunc(Number.isFinite(amount) ? amount : 0);
+  const value = clampInt(clock.value + delta, 0, clock.max);
+  return { ...clock, value, expired: value >= clock.max };
+}
+
+/**
+ * Escalation band for the prompt (Requirement 9.3): none < 50% < 75% < 100%.
+ * At 100% (expired) the next prompt must drive into the climax under degraded
+ * circumstances.
+ */
+export function clockDirective(
+  clock: StoryClock,
+): "none" | "escalate_50" | "escalate_75" | "climax_now" {
+  if (clock.max <= 0) return "none";
+  if (clock.value >= clock.max) return "climax_now";
+  const pct = clock.value / clock.max;
+  if (pct >= 0.75) return "escalate_75";
+  if (pct >= 0.5) return "escalate_50";
+  return "none";
+}
+
+/** Beat ids the clock should auto-fire on expiry (Requirement 9.3). */
+export function darkNightBeatIds(arc: StoryArc): string[] {
+  return arc.beats
+    .filter((beat) => beat.kind === "dark_night" && beat.status !== "fired")
+    .map((beat) => beat.id);
+}
+
+function clampUnit(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  if (value < 0) return 0;
+  if (value > 1) return 1;
+  return value;
+}
+
+function clampInt(value: number, min: number, max: number): number {
+  const int = Math.trunc(value);
+  if (int < min) return min;
+  if (int > max) return max;
+  return int;
 }
 
 function levenshtein(a: string, b: string): number {

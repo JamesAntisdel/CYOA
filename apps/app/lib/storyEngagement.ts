@@ -13,7 +13,9 @@
  */
 import type {
   RemoteArc,
+  RemoteCheck,
   RemoteChoice,
+  RemoteCodexEntry,
   RemoteRecentDiff,
 } from "./gameApi";
 
@@ -39,6 +41,8 @@ export type ChoiceRenderModel = {
   label: string;
   locked: boolean;
   hint?: string;
+  /** W2 skill-check descriptor (odds phrase only — BC10). Absent when none. */
+  check?: RemoteCheck;
 };
 
 /**
@@ -51,11 +55,15 @@ export function adaptRemoteChoice(choice: RemoteChoice): ChoiceRenderModel {
   const gate = choice.state ?? choice.visibility;
   const locked = gate === "locked";
   const hint = choice.lockedHint ?? undefined;
+  const check = choice.check ?? undefined;
   return {
     id: choice.choice.id,
     label: choice.choice.label,
     locked,
     ...(hint ? { hint } : {}),
+    // A locked choice never shows its check chip — the door isn't open, so the
+    // odds are moot. Keeps the two W2/W1 affordances from stacking on one card.
+    ...(check && !locked ? { check } : {}),
   };
 }
 
@@ -136,19 +144,39 @@ export function diffToChip(diff: RemoteRecentDiff): Chip | null {
     case "act": {
       return { text: `Act ${romanAct(diff.act)}`, tone: "positive" };
     }
-    // --- W2 forward-compat: best-effort chips (W2-CLIENT refines) ---
+    // --- W2 chips (design §4.2) ---
     case "clock": {
-      return { text: `🕯 ${signed(diff.amount)}`, tone: "negative" };
+      // The doom-clock advanced. The reason string (server-authored, ≤80) is
+      // the reader-facing copy; fall back to a neutral escalation line so a
+      // reason-less advance still narrates. Always the negative tone — the
+      // candle burning down is pressure, never a gain.
+      const reason = diff.reason?.trim();
+      return { text: `🕯 ${reason && reason.length > 0 ? reason : "the hour presses on"}`, tone: "negative" };
     }
     case "npc": {
-      const arrow = diff.deltaBand === "up" ? "▴" : "▾";
+      // A relationship moved OR the NPC learned a fact. A fact ("Mira will
+      // remember that") reads warmer/heavier than a bare disposition tick, so
+      // when both ride on one diff we surface the fact line and keep the arrow
+      // in the a11y-neutral tone; a pure disposition shift shows the band word.
+      if (diff.fact && diff.fact.trim().length > 0) {
+        return { text: `${diff.name} will remember that`, tone: "neutral" };
+      }
+      // A pure disposition shift carries a band; a fact-only diff omits it
+      // (server types deltaBand as optional). With neither, there's nothing
+      // reader-facing to chip.
+      if (!diff.deltaBand) return null;
+      const arrow = trendArrow(diff.deltaBand);
       const tone: EchoTone = diff.deltaBand === "up" ? "positive" : "negative";
-      return { text: `${diff.name} ${arrow}`, tone };
+      return { text: `${diff.name} ${arrow} ${dispositionBandWord(diff.deltaBand)}`, tone };
     }
     case "check": {
+      // Short echo stamp for the resolved check. The fuller CheckBanner (with
+      // the margin phrase + dice roll) is the primary surface; this chip just
+      // records the outcome in the running echo line. The stat is NOT named
+      // here (the diff only carries statId, not a label).
       const tone: EchoTone =
         diff.outcome === "success" ? "positive" : diff.outcome === "fail" ? "negative" : "neutral";
-      return { text: diff.outcome, tone };
+      return { text: `⚄ ${checkOutcomeWord(diff.outcome)}`, tone };
     }
     default:
       return null;
@@ -216,4 +244,224 @@ export function actStampFromDiffs(
   if (!actDiff) return null;
   const label = arc?.actLabel ?? undefined;
   return { actNumber: actDiff.act, ...(label ? { actLabel: label } : {}) };
+}
+
+// ---------------------------------------------------------------------------
+// W2-C1 — Skill checks: CheckChip label + post-turn CheckBanner (design §4.2).
+// ---------------------------------------------------------------------------
+
+/** The die glyph the CheckChip / CheckBanner lead with. */
+export const CHECK_DIE_GLYPH = "⚄";
+
+export type CheckOutcome = "success" | "partial" | "fail";
+
+/**
+ * The CheckChip label shown on a choice card, e.g. `⚄ Nerve — risky`. Built
+ * from the server-projected ODDS PHRASE only — the client never sees the stat
+ * total, roll, or threshold (BC10). Uses an em dash to match the book voice.
+ */
+export function checkChipLabel(check: RemoteCheck): string {
+  return `${CHECK_DIE_GLYPH} ${check.label} — ${check.odds}`;
+}
+
+/**
+ * A11y label for the CheckChip — spells out that this is a gamble on the given
+ * stat and how the odds read, without any raw numbers.
+ */
+export function checkChipAccessibilityLabel(check: RemoteCheck): string {
+  return `Skill check on ${check.label}. Your odds: ${check.odds}.`;
+}
+
+/** One short in-world word per outcome for the running echo chip. */
+export function checkOutcomeWord(outcome: CheckOutcome): string {
+  switch (outcome) {
+    case "success":
+      return "cleared";
+    case "partial":
+      return "strained";
+    case "fail":
+      return "failed";
+  }
+}
+
+export type CheckBannerModel = {
+  outcome: CheckOutcome;
+  /** Short stamp word: "Success" / "Partial" / "Failed". */
+  stamp: string;
+  /** In-world margin phrase, e.g. "and barely" or "with room to spare". */
+  phrase: string;
+  tone: EchoTone;
+};
+
+/**
+ * Map a resolved-check diff to the CheckBanner display model. `margin` is the
+ * signed distance past/short of the threshold the server surfaces (still not
+ * the raw roll — it's the outcome margin). We translate its magnitude into an
+ * in-world phrase rather than showing the number, keeping BC10 spoiler
+ * discipline (no visible check math).
+ */
+export function checkBannerModel(diff: {
+  outcome: CheckOutcome;
+  statId: string;
+  margin: number;
+}): CheckBannerModel {
+  const magnitude = Math.abs(diff.margin);
+  const close = magnitude <= 1;
+  let stamp: string;
+  let phrase: string;
+  let tone: EchoTone;
+  switch (diff.outcome) {
+    case "success":
+      stamp = "Success";
+      phrase = close ? "by a hair" : "with room to spare";
+      tone = "positive";
+      break;
+    case "partial":
+      stamp = "Partial";
+      phrase = "at a cost";
+      tone = "neutral";
+      break;
+    case "fail":
+      stamp = "Failed";
+      phrase = close ? "by a hair" : "outright";
+      tone = "negative";
+      break;
+  }
+  return { outcome: diff.outcome, stamp, phrase, tone };
+}
+
+/**
+ * Extract the resolved-check record from a turn's diffs, if any. Drives the
+ * post-turn CheckBanner (which shows on the scene that FOLLOWS the checked
+ * choice — the outcome diff rides that scene's recentDiffs, per design §4.2).
+ */
+export function checkResultFromDiffs(
+  diffs: RemoteRecentDiff[] | null | undefined,
+): { outcome: CheckOutcome; statId: string; margin: number } | null {
+  const found = (diffs ?? []).find(
+    (d): d is Extract<RemoteRecentDiff, { kind: "check" }> => d.kind === "check",
+  );
+  if (!found) return null;
+  return { outcome: found.outcome, statId: found.statId, margin: found.margin };
+}
+
+// ---------------------------------------------------------------------------
+// W2-C2 — CandleClock segment math (design §4.2, R9.4).
+// ---------------------------------------------------------------------------
+
+/** Fraction (0–1) at/above which the doom-clock shows a lit flame. */
+export const CANDLE_FLAME_THRESHOLD = 0.75;
+
+export type CandleModel = {
+  /** Segments already burned down (value). */
+  filled: number;
+  /** Segments still standing (max − value). */
+  empty: number;
+  /** Total segments (clamped max). */
+  total: number;
+  /** Burn fraction 0–1. */
+  pct: number;
+  /** True at ≥75% — the inline flame lights and the prose escalates. */
+  flame: boolean;
+};
+
+/**
+ * Compute the segmented-candle model from a clock's value/max. Both are
+ * clamped non-negative; value is clamped to max; a zero/absent max yields an
+ * empty, flame-less candle (never divides by zero). The candle renders one
+ * segment per unit of `max` so the reader can count the pressure directly.
+ */
+export function candleSegments(value: number, max: number): CandleModel {
+  const total = Math.max(0, Math.floor(max));
+  const filled = Math.max(0, Math.min(total, Math.floor(value)));
+  const empty = total - filled;
+  const pct = total === 0 ? 0 : filled / total;
+  return { filled, empty, total, pct, flame: total > 0 && pct >= CANDLE_FLAME_THRESHOLD };
+}
+
+/** Burned/standing candle glyphs, e.g. value 3 of 4 → "▮▮▮▯". */
+export function candleBar(value: number, max: number): string {
+  const { filled, empty } = candleSegments(value, max);
+  return "▮".repeat(filled) + "▯".repeat(empty);
+}
+
+// ---------------------------------------------------------------------------
+// W2-C3 — NPC disposition band words + roster trend arrows (design §4.2, R8.3).
+// ---------------------------------------------------------------------------
+
+/**
+ * Turn a disposition delta BAND (the only directional signal in the npc diff —
+ * §7 gives us `up`/`down`, never the raw disposition value) into an in-world
+ * mood word for the echo chip.
+ */
+export function dispositionBandWord(band: "up" | "down"): string {
+  return band === "up" ? "warmer" : "cooler";
+}
+
+/** ▴ / ▾ trend arrow for a roster row from a disposition band. */
+export function trendArrow(band: "up" | "down"): string {
+  return band === "up" ? "▴" : "▾";
+}
+
+/**
+ * Build a per-NPC trend map from a turn's diffs so the roster can mark which
+ * cast members moved (and which way) THIS turn. Later diffs win when the same
+ * NPC appears twice (the net latest direction). NPC diffs that only carry a
+ * learned fact (no disposition move) are ignored for the arrow.
+ */
+export function npcTrendsFromDiffs(
+  diffs: RemoteRecentDiff[] | null | undefined,
+): Record<string, "up" | "down"> {
+  const out: Record<string, "up" | "down"> = {};
+  for (const d of diffs ?? []) {
+    // Only a genuine disposition move carries a band; fact-only npc diffs omit
+    // `deltaBand` (server types it optional) and get no trend arrow.
+    if (d.kind !== "npc" || !d.deltaBand) continue;
+    out[d.npcId] = d.deltaBand;
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// W2-C4 — Codex list model + new-truth detection (design §4.2, R11.2).
+// ---------------------------------------------------------------------------
+
+/** Normalize the wire codex (null-for-absent) into an optional array. */
+export function adaptCodex(
+  raw: RemoteCodexEntry[] | null | undefined,
+): RemoteCodexEntry[] | undefined {
+  return raw ?? undefined;
+}
+
+/**
+ * Codex entries newest-first (highest turnNumber first). The server projects
+ * them newest-first already (§7), but we re-sort defensively so the tab order
+ * is stable regardless of server ordering. Stable within a turn (preserves
+ * relative order of same-turn entries).
+ */
+export function codexNewestFirst(
+  codex: RemoteCodexEntry[] | null | undefined,
+): RemoteCodexEntry[] {
+  return (codex ?? [])
+    .map((entry, index) => ({ entry, index }))
+    .sort((a, b) => {
+      if (b.entry.turnNumber !== a.entry.turnNumber) {
+        return b.entry.turnNumber - a.entry.turnNumber;
+      }
+      return a.index - b.index;
+    })
+    .map((w) => w.entry);
+}
+
+/**
+ * True when a truth was recorded on the CURRENT turn — drives the one-shot
+ * "✒️ New truth recorded" pip. Compares the newest entry's turnNumber against
+ * the scene's turn number (design §4.2: pip on a new codex entry).
+ */
+export function hasNewCodexTruth(
+  codex: RemoteCodexEntry[] | null | undefined,
+  currentTurn: number | undefined,
+): boolean {
+  if (currentTurn == null) return false;
+  return codexNewestFirst(codex).some((e) => e.turnNumber === currentTurn);
 }

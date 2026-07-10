@@ -467,6 +467,67 @@ describe("buildScenePrompt pursuit section (W1-S3)", () => {
   });
 });
 
+describe("W2 prompt sections (W2-S3)", () => {
+  it("renders clock escalation copy by directive, above the memory window", () => {
+    const at75 = buildScenePrompt(
+      llmRequest({
+        pursuit: pursuitFixture({
+          clock: { label: "The candle burns", value: 9, max: 12, directive: "escalate_75" },
+        }),
+      }),
+    );
+    expect(at75).toContain("The candle burns is at 9/12 — time is nearly gone");
+    const expired = buildScenePrompt(
+      llmRequest({
+        pursuit: pursuitFixture({
+          clock: { label: "The candle burns", value: 12, max: 12, directive: "climax_now" },
+        }),
+      }),
+    );
+    expect(expired).toContain("has run out");
+    expect(expired).toContain("Move DIRECTLY into the climax");
+    // `none` prints no escalation line.
+    const early = buildScenePrompt(
+      llmRequest({
+        pursuit: pursuitFixture({
+          clock: { label: "The candle burns", value: 1, max: 12, directive: "none" },
+        }),
+      }),
+    );
+    expect(early).not.toContain("is at 1/12");
+  });
+
+  it("renders the CHECK OUTCOME block above the memory window and forbids overruling", () => {
+    const prompt = buildScenePrompt(
+      llmRequest({
+        checkOutcome: { outcome: "fail", statId: "Nerve", margin: -1, note: "the lock held" },
+      }),
+    );
+    const checkIdx = prompt.indexOf("== CHECK OUTCOME");
+    const memoryIdx = prompt.indexOf("Recent story memory");
+    expect(checkIdx).toBeGreaterThan(-1);
+    expect(checkIdx).toBeLessThan(memoryIdx);
+    expect(prompt).toContain("FAILED (Nerve, barely)");
+    expect(prompt).toContain("do NOT overrule it");
+    expect(prompt).toContain('Flavor to weave in: "the lock held"');
+  });
+
+  it("omits the CHECK OUTCOME block when no check fired", () => {
+    expect(buildScenePrompt(llmRequest())).not.toContain("== CHECK OUTCOME");
+  });
+
+  it("emits the W2 rules only on arc saves", () => {
+    const withArc = buildScenePrompt(llmRequest({ pursuit: pursuitFixture() }));
+    expect(withArc).toContain("RELATIONSHIPS (R8.5)");
+    expect(withArc).toContain("SKILL CHECKS (R7.1)");
+    expect(withArc).toContain("SCARCITY (R10)");
+    expect(withArc).toContain("CODEX (R11.3)");
+    const withoutArc = buildScenePrompt(llmRequest());
+    expect(withoutArc).not.toContain("RELATIONSHIPS (R8.5)");
+    expect(withoutArc).not.toContain("SKILL CHECKS (R7.1)");
+  });
+});
+
 describe("pursuit spoiler discipline (BC10, W1-S3)", () => {
   it("shows candidate-ending labels ONLY in the ENDINGS rule", () => {
     const prompt = buildScenePrompt(llmRequest({ pursuit: pursuitFixture() }));
@@ -494,10 +555,11 @@ describe("pursuit spoiler discipline (BC10, W1-S3)", () => {
   });
 });
 
-describe("pursuit token budget (W1-S3, ≤ baseline + 900 tokens)", () => {
-  it("stays within the W1 additive budget on a worst-case arc prompt", () => {
+describe("pursuit token budget (W2-S3, ≤ baseline + 1400 cumulative tokens)", () => {
+  it("stays within the W1+W2 cumulative budget on a worst-case arc prompt", () => {
     const baseline = buildScenePrompt(llmRequest());
-    // Worst case: full pursuit + a directive + a fired thread + arc production.
+    // Worst case: full pursuit + directive + fired thread + clock escalation +
+    // arc production + all W2 rules (relationships / checks / scarcity / codex).
     const worst = buildScenePrompt(
       llmRequest({
         produceArc: true,
@@ -506,6 +568,12 @@ describe("pursuit token budget (W1-S3, ≤ baseline + 900 tokens)", () => {
           directive: "surface_beat",
           surfaceBeatLabel: "The flood gate breaks",
           threadFires: ["a long foreshadow line that pays off a much earlier promise"],
+          clock: {
+            label: "The candle burns",
+            value: 9,
+            max: 12,
+            directive: "escalate_75",
+          },
           candidateEndings: [
             { id: "a", label: "The Drowned Crown" },
             { id: "b", label: "The Risen City" },
@@ -515,8 +583,9 @@ describe("pursuit token budget (W1-S3, ≤ baseline + 900 tokens)", () => {
         }),
       }),
     );
-    // 4-chars/token heuristic (design §3): +900 tokens ≈ +3600 chars.
+    // 4-chars/token heuristic (design §3): +1400 tokens ≈ +5600 chars. R16.5
+    // caps cumulative growth at +1600 across all waves — W2 stays under 1400.
     const addedTokens = (worst.length - baseline.length) / 4;
-    expect(addedTokens).toBeLessThanOrEqual(900);
+    expect(addedTokens).toBeLessThanOrEqual(1400);
   });
 });

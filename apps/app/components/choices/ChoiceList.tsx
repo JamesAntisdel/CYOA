@@ -4,6 +4,7 @@ import { Animated, Easing, Pressable, View } from "react-native";
 import { Choice, Text } from "../primitives";
 import { useAppTheme } from "../../theme";
 import type { ChoiceProjection } from "../../hooks/useTurn";
+import { CheckChip } from "./CheckChip";
 import { FreeformChoice } from "./FreeformChoice";
 import { LockedChoiceCopy } from "./LockedChoiceCopy";
 
@@ -56,16 +57,21 @@ export function ChoiceList({
           );
         }
         const isPending = pendingChoiceId === choice.id;
+        // A checked choice (W2-C1) gets a CheckChip beneath its card advertising
+        // the odds (`⚄ Nerve — risky`). The chip is a sibling, not inside the
+        // Pressable, so it doesn't inflate the tap target or the a11y button.
         return (
-          <Choice
-            accessibilityLabel={choice.label}
-            hint={isPending ? "Working" : choice.hint}
-            key={choice.id}
-            locked={disabled || Boolean(pendingChoiceId)}
-            onPress={() => onChoose(choice)}
-          >
-            {choice.label}
-          </Choice>
+          <View key={choice.id} style={{ gap: tokens.spacing.xs }}>
+            <Choice
+              accessibilityLabel={choice.label}
+              hint={isPending ? "Working" : choice.hint}
+              locked={disabled || Boolean(pendingChoiceId)}
+              onPress={() => onChoose(choice)}
+            >
+              {choice.label}
+            </Choice>
+            {choice.check ? <CheckChip check={choice.check} /> : null}
+          </View>
         );
       })}
       {showFreeform ? (

@@ -1,5 +1,7 @@
 import {
+  choiceCheckOdds,
   createInitialState,
+  deriveCodex,
   evaluateNodeChoices,
   llmSceneOutputSchema,
   migrateEngineState,
@@ -62,7 +64,7 @@ export type SceneProjection = {
   turnNumber: number;
   prose: string;
   streamStatus: "pending" | "streaming" | "complete" | "failed" | "blocked";
-  choices: ChoiceEvaluation[];
+  choices: ProjectedChoice[];
   visibleStats: Array<{ statId: string; label: string; value: number }>;
   /**
    * Top-level vitality value pulled off `state.vitality`. The HUD reads this
@@ -117,26 +119,65 @@ export type SceneProjection = {
    * and on legacy pre-diff saves.
    */
   recentDiffs?: VisibleDiff[];
+  /**
+   * Reader-visible Codex (R11.1 / W2-S6): string-valued `flag_set` effects are
+   * durable world-truths the tome recorded. Newest-first, cap 40, derived
+   * server-side via engine `deriveCodex`. Boolean / numeric flags stay hidden
+   * mechanics. Absent on legacy saves + turns with no string flags.
+   */
+  codex?: CodexEntry[];
   terminal: ReturnType<typeof resolveTerminal>;
 };
 
 /**
+ * Skill-check summary rendered on a choice card BEFORE the reader picks
+ * (R7.4). The `odds` phrase is precomputed server-side — the client NEVER sees
+ * the raw roll math (BC10). `difficulty` is the LLM-authored band; `label` is
+ * the resolved stat label.
+ */
+export type ProjectionCheck = {
+  statId: string;
+  label: string;
+  difficulty: "easy" | "risky" | "desperate";
+  odds: "likely" | "even" | "risky" | "desperate";
+};
+
+/**
+ * A projected choice: the engine's `ChoiceEvaluation` (choice + visibility +
+ * lockedHint) plus the optional W2 skill-check summary. `check` is present only
+ * on choices the LLM gated behind a `skillCheck`; mutually exclusive with a
+ * locked state (R7.5).
+ */
+export type ProjectedChoice = ChoiceEvaluation & { check?: ProjectionCheck };
+
+/** One Codex row (design §7). `turnNumber` is when the truth was recorded. */
+export type CodexEntry = { flag: string; text: string; turnNumber: number };
+
+/**
  * Reader-visible arc summary (R1.5 wire shape, design §7). Beat progress is a
- * COUNT — never the pending beat labels or candidate endings (BC10).
+ * COUNT — never the pending beat labels or candidate endings (BC10). The W1
+ * polish adds the reader's OWN quest fields (`protagonistWant`, `stakes`) and
+ * the already-fired beat list (`firedBeats`) — these are NOT spoilers (the
+ * reader lived them). W2 adds the doom clock.
  */
 export type ProjectionArc = {
   dramaticQuestion: string;
+  protagonistWant: string;
+  stakes: string;
   act: number;
   actLabel: string | null;
   beatsFired: number;
   beatsTotal: number;
+  /** Labels + turns of beats already fired (reader lived them — safe). */
+  firedBeats: Array<{ label: string; turnNumber: number }>;
   threadsPending: number;
-  // clock?: { label: string; value: number; max: number };  // W2
+  /** Doom clock (R9.4 / W2-S6). Absent until the arc seeds one. */
+  clock?: { label: string; value: number; max: number };
 };
 
 /**
  * A single signed change surfaced to the reader's echo (design §7
- * `recentDiffs`). Redacted + label-resolved server-side; W2 adds `clock`,
+ * `recentDiffs`). Redacted + label-resolved server-side. W2 adds `clock`,
  * `npc`, and `check` kinds.
  */
 export type VisibleDiff =
@@ -145,7 +186,10 @@ export type VisibleDiff =
   | { kind: "item"; op: "add" | "remove"; label: string }
   | { kind: "thread"; op: "set" | "fired"; note: string | null }
   | { kind: "beat"; label: string }
-  | { kind: "act"; act: number };
+  | { kind: "act"; act: number }
+  | { kind: "clock"; amount: number; reason: string | null }
+  | { kind: "npc"; npcId: string; name: string; deltaBand?: "up" | "down"; fact: string | null }
+  | { kind: "check"; outcome: "success" | "partial" | "fail"; statId: string; margin: number };
 
 /** Max visible diffs surfaced per turn (design §2.3). */
 export const MAX_VISIBLE_DIFFS_PER_TURN = 12;
@@ -161,9 +205,18 @@ type RawDiff = { kind: string } & Record<string, unknown>;
 /** Structural view of `state.arc` (engine adds the typed `PlayerState.arc`). */
 type ArcStateLike = {
   dramaticQuestion?: unknown;
+  protagonistWant?: unknown;
+  stakes?: unknown;
   act?: unknown;
   actLabel?: unknown;
-  beats?: Array<{ status?: unknown }>;
+  beats?: Array<{ label?: unknown; status?: unknown; firedAtTurn?: unknown }>;
+};
+
+/** Structural view of `state.clock` (engine adds the typed `PlayerState.clock`). */
+type ClockStateLike = {
+  label?: unknown;
+  value?: unknown;
+  max?: unknown;
 };
 
 export type SaveMigrationPlan = {
@@ -342,13 +395,103 @@ export function buildVisibleDiffs(
           act: typeof diff.act === "number" ? diff.act : 0,
         });
         break;
+      case "clock_advanced":
+        // The `reason` was already run through evaluateTextPolicy upstream
+        // (game.ts) before it reached the persisted diff — safe to surface.
+        out.push({
+          kind: "clock",
+          amount: typeof diff.amount === "number" ? diff.amount : 1,
+          reason: typeof diff.reason === "string" ? diff.reason : null,
+        });
+        break;
+      case "disposition_shift": {
+        const npc = state.npcs?.[target];
+        const delta = typeof diff.delta === "number" ? diff.delta : 0;
+        out.push({
+          kind: "npc",
+          npcId: target,
+          name: npc?.name ?? target,
+          deltaBand: delta >= 0 ? "up" : "down",
+          fact: null,
+        });
+        break;
+      }
+      case "fact_learned": {
+        const npc = state.npcs?.[target];
+        // The engine's `fact_learned` diff carries no fact text; pull the
+        // just-appended fact off the NPC's knownFacts (FIFO cap) so the echo
+        // reads "Mira will remember <fact>". Not a spoiler — it's about the
+        // reader's own actions.
+        const lastFact =
+          npc && Array.isArray(npc.knownFacts) && npc.knownFacts.length > 0
+            ? npc.knownFacts[npc.knownFacts.length - 1] ?? null
+            : null;
+        out.push({
+          kind: "npc",
+          npcId: target,
+          name: npc?.name ?? target,
+          fact: lastFact,
+        });
+        break;
+      }
+      case "check_resolved":
+        out.push({
+          kind: "check",
+          outcome:
+            diff.outcome === "success" || diff.outcome === "partial" || diff.outcome === "fail"
+              ? diff.outcome
+              : "partial",
+          statId: target,
+          margin: typeof diff.margin === "number" ? diff.margin : 0,
+        });
+        break;
       default:
-        // flag_set/flag_unset (codex is W2), node, ending, npc_* → not a
-        // W1 reader-visible echo. Skip.
+        // flag_set/flag_unset (surfaced via the Codex, not the echo), node,
+        // ending, raw npc_* → not a reader-visible echo. Skip.
         break;
     }
   }
   return out;
+}
+
+/**
+ * True when a turn produced a state mutation but NONE of it was reader-visible
+ * (W1 polish B / R5.2). The caller persists an empty `recentDiffs: []` sentinel
+ * on such turns so the client's "something shifted…" echo fires; turns whose
+ * only diff is bookkeeping (node advance, ending unlock, choice applied)
+ * return false so the echo stays silent. Called only when `buildVisibleDiffs`
+ * returned empty.
+ */
+const ECHO_BOOKKEEPING_KINDS = new Set([
+  "node",
+  "ending",
+  "choice_applied",
+  "delayed_scheduled",
+]);
+export function hasHiddenStateShift(
+  diffs: ReadonlyArray<RawDiff>,
+): boolean {
+  return diffs.some(
+    (diff) =>
+      typeof diff.kind === "string" && !ECHO_BOOKKEEPING_KINDS.has(diff.kind),
+  );
+}
+
+/**
+ * Precompute the odds phrase for a choice's skill check (design §2.5 / §5,
+ * BC10 — the client gets the PHRASE, never the roll math). Delegates to the
+ * engine's `choiceCheckOdds` so the card's odds stay consistent with the actual
+ * resolution bands. Tolerant: a shape the engine rejects falls back to "risky".
+ */
+export function deriveCheckOdds(
+  state: PlayerState,
+  check: { statId: string; difficulty: "easy" | "risky" | "desperate" },
+): ProjectionCheck["odds"] {
+  try {
+    return choiceCheckOdds(state, check);
+  } catch {
+    return "risky";
+  }
 }
 
 /**
@@ -365,6 +508,16 @@ export function projectArcSummary(state: PlayerState): ProjectionArc | null {
   if (question.length === 0) return null;
   const beats = Array.isArray(arc.beats) ? arc.beats : [];
   const beatsFired = beats.filter((b) => b?.status === "fired").length;
+  // W1 polish A: the reader's OWN fired beats (label + turn) — NOT a spoiler,
+  // they are milestones the reader lived through. Pending beat labels are still
+  // withheld (BC10).
+  const firedBeats = beats
+    .filter((b) => b?.status === "fired")
+    .map((b) => ({
+      label: typeof b?.label === "string" ? b.label : "",
+      turnNumber: typeof b?.firedAtTurn === "number" ? b.firedAtTurn : 0,
+    }))
+    .filter((b) => b.label.length > 0);
   // Threads pending = scheduled delayed effects not yet fired. Prefer a
   // dedicated `threads` array when the engine adds one; fall back to `delayed`.
   const threads = (state as unknown as { threads?: unknown[] }).threads;
@@ -373,13 +526,28 @@ export function projectArcSummary(state: PlayerState): ProjectionArc | null {
     : Array.isArray(state.delayed)
       ? state.delayed.length
       : 0;
+  // W2-S6: the doom clock, when the arc has seeded one. Value/max only —
+  // `expired` is an internal flag the prompt reacts to, not a reader field.
+  const clockLike = (state as unknown as { clock?: ClockStateLike }).clock;
+  const clock =
+    clockLike && typeof clockLike === "object" && typeof clockLike.label === "string"
+      ? {
+          label: clockLike.label,
+          value: typeof clockLike.value === "number" ? clockLike.value : 0,
+          max: typeof clockLike.max === "number" ? clockLike.max : 0,
+        }
+      : undefined;
   return {
     dramaticQuestion: question,
+    protagonistWant: typeof arc.protagonistWant === "string" ? arc.protagonistWant : "",
+    stakes: typeof arc.stakes === "string" ? arc.stakes : "",
     act: typeof arc.act === "number" ? arc.act : 1,
     actLabel: typeof arc.actLabel === "string" ? arc.actLabel : null,
     beatsFired,
     beatsTotal: beats.length,
+    firedBeats,
     threadsPending,
+    ...(clock ? { clock } : {}),
   };
 }
 
@@ -431,9 +599,16 @@ export function projectLlmDrivenScene(input: {
   const visibilityById = new Map(
     (input.choiceVisibilities ?? []).map((entry) => [entry.choiceId, entry]),
   );
-  const choices: ChoiceEvaluation[] = (input.proposal?.choices ?? []).map((choice) => {
+  const choices: ProjectedChoice[] = (input.proposal?.choices ?? []).map((choice) => {
     const evaluated = visibilityById.get(choice.id);
     const visibility = evaluated?.visibility ?? "visible";
+    // W2-S6: surface the skill-check summary on the card. Read the field
+    // defensively so this projection stays green whether or not W2-ENGINE's
+    // `skillCheck` schema addition has landed yet. Locked choices never carry a
+    // check (R7.5 mutual exclusivity); we still attach it when present — the
+    // engine already dropped the check when conditions won.
+    const rawCheck = (choice as { skillCheck?: RawSkillCheck }).skillCheck;
+    const check = projectChoiceCheck(rawCheck, input.save.state);
     return {
       choice: {
         id: choice.id,
@@ -444,10 +619,13 @@ export function projectLlmDrivenScene(input: {
       },
       visibility,
       ...(evaluated?.lockedHint ? { lockedHint: evaluated.lockedHint } : {}),
+      ...(check ? { check } : {}),
     };
   });
 
   const arc = projectArcSummary(input.save.state);
+  // W2-S6: the Codex — string-valued flags as recorded world-truths (R11.1).
+  const codex = projectCodex(input.save.state);
 
   return {
     ...(input.save._id === undefined ? {} : { saveId: input.save._id }),
@@ -468,11 +646,70 @@ export function projectLlmDrivenScene(input: {
     // shape stable for clients that don't yet read `isFallback`.
     ...(input.isFallback === true ? { isFallback: true } : {}),
     ...(arc ? { arc } : {}),
-    ...(input.recentDiffs && input.recentDiffs.length > 0
-      ? { recentDiffs: input.recentDiffs }
-      : {}),
+    ...(codex.length > 0 ? { codex } : {}),
+    // W1 polish B (R5.2): emit `recentDiffs` whenever the caller passes an
+    // array — INCLUDING an empty one. An empty array is the "something
+    // shifted…" sentinel for a hidden-only turn; `undefined` (not passed, or a
+    // legacy turn with no diff record) omits the field entirely.
+    ...(input.recentDiffs !== undefined ? { recentDiffs: input.recentDiffs } : {}),
     terminal: input.terminal ?? null,
   };
+}
+
+/**
+ * Raw skill-check shape as the LLM proposes it (W2-E1 adds it to
+ * `llmChoiceSchema`). Read structurally so the projection tolerates the field
+ * before/after the engine schema lands.
+ */
+type RawSkillCheck = {
+  statId?: unknown;
+  difficulty?: unknown;
+  successNote?: unknown;
+  failNote?: unknown;
+};
+
+/** Project a choice's skill check into the reader-facing card summary. */
+function projectChoiceCheck(
+  raw: RawSkillCheck | undefined,
+  state: PlayerState,
+): ProjectionCheck | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const statId = typeof raw.statId === "string" ? raw.statId : "";
+  if (statId.length === 0) return undefined;
+  const difficulty =
+    raw.difficulty === "easy" || raw.difficulty === "risky" || raw.difficulty === "desperate"
+      ? raw.difficulty
+      : "risky";
+  return {
+    statId,
+    label: state.attributes?.[statId]?.label ?? statId,
+    difficulty,
+    odds: deriveCheckOdds(state, { statId, difficulty }),
+  };
+}
+
+/**
+ * Project the Codex (R11.1 / W2-S6): string-valued flags newest-first, cap 40,
+ * via the engine's `deriveCodex`. Returns [] on legacy saves / no string flags.
+ * Tolerant — a shape the engine version predates yields an empty codex rather
+ * than throwing inside the projection choke point.
+ */
+function projectCodex(state: PlayerState): CodexEntry[] {
+  try {
+    const entries = deriveCodex(state);
+    if (!Array.isArray(entries)) return [];
+    return entries
+      .filter(
+        (e): e is CodexEntry =>
+          !!e &&
+          typeof (e as CodexEntry).flag === "string" &&
+          typeof (e as CodexEntry).text === "string" &&
+          typeof (e as CodexEntry).turnNumber === "number",
+      )
+      .map((e) => ({ flag: e.flag, text: e.text, turnNumber: e.turnNumber }));
+  } catch {
+    return [];
+  }
 }
 
 /**

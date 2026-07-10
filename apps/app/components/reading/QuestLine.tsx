@@ -2,9 +2,10 @@ import { useState } from "react";
 import { Pressable, View } from "react-native";
 
 import type { RemoteArc } from "../../lib/gameApi";
-import { beatDots, romanAct } from "../../lib/storyEngagement";
+import { beatDots, candleSegments, romanAct } from "../../lib/storyEngagement";
 import { useAppTheme } from "../../theme";
 import { Stamp, Surface, Text } from "../primitives";
+import { CandleClock } from "./CandleClock";
 
 type QuestLineProps = {
   /**
@@ -13,6 +14,8 @@ type QuestLineProps = {
    * R1.6 / BC9).
    */
   arc?: RemoteArc | undefined;
+  /** Suppresses the candle advance-pulse when the reader prefers reduced motion. */
+  reducedMotion?: boolean;
 };
 
 /**
@@ -28,7 +31,7 @@ type QuestLineProps = {
  * / fired-beat enrichment is optional (see the RemoteArc integrator note); the
  * drawer omits any section the server didn't send.
  */
-export function QuestLine({ arc }: QuestLineProps) {
+export function QuestLine({ arc, reducedMotion = false }: QuestLineProps) {
   const { tokens } = useAppTheme();
   const [open, setOpen] = useState(false);
 
@@ -37,6 +40,10 @@ export function QuestLine({ arc }: QuestLineProps) {
   const act = romanAct(arc.act);
   const dots = beatDots(arc.beatsFired, arc.beatsTotal);
   const firedBeats = arc.firedBeats ?? [];
+  const clock = arc.clock ?? null;
+  // The tiny inline flame lights only when the doom-clock is burning hot
+  // (≥75%) — a quiet urgency cue that doesn't clutter the strip otherwise.
+  const clockHot = clock ? candleSegments(clock.value, clock.max).flame : false;
   const summary = `Your pursuit: ${arc.dramaticQuestion}. Act ${act}. ${arc.beatsFired} of ${arc.beatsTotal} beats landed.`;
 
   return (
@@ -77,6 +84,9 @@ export function QuestLine({ arc }: QuestLineProps) {
         >
           {`Act ${act} · ${dots}`}
         </Text>
+        {clock && clockHot ? (
+          <CandleClock label={clock.label} value={clock.value} max={clock.max} inline reducedMotion={reducedMotion} />
+        ) : null}
       </Pressable>
 
       {open ? (
@@ -125,6 +135,18 @@ export function QuestLine({ arc }: QuestLineProps) {
             label="Threads yet to pull"
             value={`🧵 ${arc.threadsPending}`}
           />
+
+          {clock ? (
+            <View style={{ gap: tokens.spacing.xs }}>
+              <ArcCaption>The hour</ArcCaption>
+              <CandleClock
+                label={clock.label}
+                value={clock.value}
+                max={clock.max}
+                reducedMotion={reducedMotion}
+              />
+            </View>
+          ) : null}
         </Surface>
       ) : null}
     </View>

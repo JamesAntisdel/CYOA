@@ -13,7 +13,15 @@ wire shapes exactly per design §7 (BC2), full function paths (BC1).
 
 ---
 
-## WAVE 1 — THE SPINE
+## WAVE 1 — THE SPINE  ✅ SHIPPED 2026-07-10 (commit 9f78a7d)
+
+Built by the 3-agent team (engine/server/client) + integration. Verified:
+typecheck clean (6 workspaces); tests green — engine 136, convex 398, app 178,
+shared 10, stories 9. Prompt +816 tokens (≤ budget); spoiler tests pass.
+Deployed to cyoa-local. Two small polish follow-ups deferred (not blockers):
+(a) add non-spoiler `protagonistWant`/`stakes`/`firedBeats[]` to `projection.arc`
+for the full arc drawer (R1.5); (b) emit `recentDiffs: []` on hidden-only turns
+so the "something shifted…" echo fires (R5.2). All tasks below done.
 
 ### Agent W1-ENGINE — owns `packages/engine/src/{arc.ts,types.ts,llm.ts,delayed.ts}` + engine tests
 

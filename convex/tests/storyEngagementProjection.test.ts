@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  createClock,
   createInitialState,
   evaluateLlmSceneChoices,
   fireBeat,
@@ -20,6 +21,8 @@ import {
 import {
   MAX_VISIBLE_DIFFS_PER_TURN,
   buildVisibleDiffs,
+  deriveCheckOdds,
+  hasHiddenStateShift,
   projectArcSummary,
   projectLlmDrivenScene,
   type SaveRecord,
@@ -273,5 +276,171 @@ describe("projectLlmDrivenScene arc + spoiler discipline (W1-S4/BC10)", () => {
     expect(projection.recentDiffs).toEqual([
       { kind: "stat", statId: "nerve", label: "Nerve", delta: 2 },
     ]);
+  });
+
+  it("emits an EMPTY recentDiffs array when passed one (hidden-only sentinel, W1 polish B)", () => {
+    const save = saveWith(baseState());
+    const projection = projectLlmDrivenScene({
+      save,
+      proposal: arcProposal,
+      prose: "x",
+      streamStatus: "complete",
+      recentDiffs: [],
+    });
+    // Present-but-empty → the "something shifted…" echo fires.
+    expect(projection.recentDiffs).toEqual([]);
+    expect("recentDiffs" in projection).toBe(true);
+  });
+
+  it("omits recentDiffs entirely when not passed (legacy turn)", () => {
+    const save = saveWith(baseState());
+    const projection = projectLlmDrivenScene({
+      save,
+      proposal: arcProposal,
+      prose: "x",
+      streamStatus: "complete",
+    });
+    expect(projection.recentDiffs).toBeUndefined();
+  });
+});
+
+// ===========================================================================
+// Story-engagement W2 projections (W2-S6 + W1 polish): check / clock / codex /
+// npc diffs, arc quest fields, and the extended spoiler-absence guard.
+// ===========================================================================
+
+describe("buildVisibleDiffs W2 kinds (W2-S6)", () => {
+  it("maps clock_advanced (reason already sanitised upstream)", () => {
+    expect(
+      buildVisibleDiffs(
+        [{ kind: "clock_advanced", target: "clock", amount: 2, reason: "the bell tolls", visibility: "visible" }],
+        baseState(),
+      ),
+    ).toEqual([{ kind: "clock", amount: 2, reason: "the bell tolls" }]);
+  });
+
+  it("maps disposition_shift to an npc diff with a delta band", () => {
+    const state = baseState();
+    state.npcs = { mira: { id: "mira", name: "Mira", role: "companion", disposition: 5, attributes: {}, knownFacts: [], flags: {} } } as never;
+    const out = buildVisibleDiffs(
+      [{ kind: "disposition_shift", target: "mira", prevDisposition: 10, delta: -5, visibility: "visible" }],
+      state,
+    );
+    expect(out).toEqual([{ kind: "npc", npcId: "mira", name: "Mira", deltaBand: "down", fact: null }]);
+  });
+
+  it("maps fact_learned to an npc diff carrying the just-learned fact", () => {
+    const state = baseState();
+    state.npcs = { mira: { id: "mira", name: "Mira", role: "companion", disposition: 0, attributes: {}, knownFacts: ["you lied about the key"], flags: {} } } as never;
+    const out = buildVisibleDiffs(
+      [{ kind: "fact_learned", target: "mira", visibility: "visible" }],
+      state,
+    );
+    expect(out).toEqual([{ kind: "npc", npcId: "mira", name: "Mira", fact: "you lied about the key" }]);
+  });
+
+  it("maps check_resolved to a check diff", () => {
+    expect(
+      buildVisibleDiffs(
+        [{ kind: "check_resolved", target: "nerve", outcome: "fail", margin: -3, visibility: "visible" }],
+        baseState(),
+      ),
+    ).toEqual([{ kind: "check", outcome: "fail", statId: "nerve", margin: -3 }]);
+  });
+});
+
+describe("hasHiddenStateShift (W1 polish B)", () => {
+  it("is true when a state-mutating diff is present", () => {
+    expect(hasHiddenStateShift([{ kind: "stat", target: "dread", delta: -1 }])).toBe(true);
+    expect(hasHiddenStateShift([{ kind: "flag_set", target: "pact", delta: true }])).toBe(true);
+  });
+
+  it("is false for bookkeeping-only diffs", () => {
+    expect(
+      hasHiddenStateShift([
+        { kind: "node", target: "open:llm:3" },
+        { kind: "choice_applied", target: "x" },
+        { kind: "ending", target: "e" },
+      ]),
+    ).toBe(false);
+  });
+});
+
+describe("deriveCheckOdds (W2-S6, phrase only — BC10)", () => {
+  it("shifts one band by difficulty (mirrors the engine)", () => {
+    const state = baseState(); // nerve 3 → "even"
+    expect(deriveCheckOdds(state, { statId: "nerve", difficulty: "risky" })).toBe("even");
+    expect(deriveCheckOdds(state, { statId: "nerve", difficulty: "easy" })).toBe("likely");
+    expect(deriveCheckOdds(state, { statId: "nerve", difficulty: "desperate" })).toBe("risky");
+  });
+});
+
+describe("projectArcSummary W1 polish + clock (W2-S6)", () => {
+  it("surfaces protagonistWant, stakes, firedBeats, and the clock", () => {
+    const arc = synthesizeFallbackArc("A drowned city waits for its heir.");
+    const firedArc = fireBeat(arc, arc.beats[0]!.id, 4).arc;
+    const state = { ...baseState(), arc: firedArc, clock: createClock("The candle burns") } as PlayerState;
+    const summary = projectArcSummary(state);
+    expect(summary?.protagonistWant).toBe(arc.protagonistWant);
+    expect(summary?.stakes).toBe(arc.stakes);
+    expect(summary?.firedBeats).toEqual([{ label: arc.beats[0]!.label, turnNumber: 4 }]);
+    expect(summary?.clock).toEqual({ label: "The candle burns", value: 0, max: createClock().max });
+  });
+});
+
+describe("projectLlmDrivenScene W2 (check / codex / spoiler discipline)", () => {
+  const checkedProposal = proposal({
+    prose: "The lock waits.",
+    choices: [
+      { id: "force", label: "Force the lock", skillCheck: { statId: "nerve", difficulty: "risky", successNote: "it gives", failNote: "it holds" } },
+      { id: "wait", label: "Wait" },
+    ],
+    terminal: null,
+  });
+
+  it("projects a per-choice check summary with an engine odds phrase (never raw math)", () => {
+    const save = saveWith({ ...baseState(), arc: synthesizeFallbackArc("premise") } as PlayerState);
+    const projection = projectLlmDrivenScene({
+      save,
+      proposal: checkedProposal,
+      prose: "x",
+      streamStatus: "complete",
+    });
+    const forced = projection.choices.find((c) => c.choice.id === "force");
+    expect(forced?.check).toEqual({ statId: "nerve", label: "Nerve", difficulty: "risky", odds: "even" });
+    // No raw roll math leaked anywhere (BC10).
+    const serialized = JSON.stringify(projection);
+    expect(serialized).not.toContain("threshold");
+    expect(serialized).not.toContain("roll");
+  });
+
+  it("projects the codex from string flags (R11.1) and hides boolean/number flags", () => {
+    const state = { ...baseState(), arc: synthesizeFallbackArc("premise") } as PlayerState;
+    state.flags = { "van-state": "upside-down on Hwy 14", locked: true, count: 3 };
+    (state as unknown as { flagSetTurns?: Record<string, number> }).flagSetTurns = { "van-state": 5 };
+    const projection = projectLlmDrivenScene({
+      save: saveWith(state),
+      proposal: checkedProposal,
+      prose: "x",
+      streamStatus: "complete",
+    });
+    expect(projection.codex).toEqual([{ flag: "van-state", text: "upside-down on Hwy 14", turnNumber: 5 }]);
+  });
+
+  it("keeps the clock label out of any spoiler surface but still never leaks beats/candidates", () => {
+    const arc = synthesizeFallbackArc("A drowned city waits.");
+    const state = { ...baseState(), arc, clock: createClock("The tide rises") } as PlayerState;
+    const projection = projectLlmDrivenScene({
+      save: saveWith(state),
+      proposal: checkedProposal,
+      prose: "x",
+      streamStatus: "complete",
+    });
+    expect(projection.arc?.clock?.label).toBe("The tide rises");
+    const serialized = JSON.stringify(projection);
+    for (const beat of arc.beats.filter((b) => b.status !== "fired")) {
+      expect(serialized).not.toContain(beat.label);
+    }
+    for (const ending of arc.candidateEndings) expect(serialized).not.toContain(ending.label);
   });
 });

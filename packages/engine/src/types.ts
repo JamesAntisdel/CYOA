@@ -50,6 +50,12 @@ export type NpcState = {
   id: string;
   name: string;
   role: NpcRole;
+  /**
+   * One-line description (Requirement 8.1, W2). Optional — authored NPCs and
+   * legacy rosters may omit it; `npc_spawn` LLM effects populate it (≤160).
+   * Surfaced by the prompt builder's NPC sheet; never a spoiler.
+   */
+  description?: string;
   /** Integer in [-100, 100]; clamped by the engine on every disposition_delta. */
   disposition: number;
   /** Optional node-id-like location tag. When set, the prompt builder surfaces this NPC only in matching scenes. */
@@ -277,6 +283,15 @@ export type PlayerState = {
   arc?: StoryArc;
   /** Doom clock (Requirement 9, W2). Optional; legacy + arc-less saves omit it. */
   clock?: StoryClock;
+  /**
+   * Turn at which each string-valued `flag_set` last landed (Requirement 11,
+   * W2 — the Codex). Optional + sparse: only string flags applied via the llm
+   * path get an entry, written in `llm.ts` at flag-set time (the cheap
+   * record-at-set-time choice from design §1.2 / tasks W2-E5, avoiding a
+   * diff-replay). `deriveCodex` reads it to order/timestamp codex entries;
+   * absent entries default to turn 0. Legacy saves omit it entirely (BC9).
+   */
+  flagSetTurns?: Record<string, number>;
   schemaVersion: number;
 };
 
@@ -311,7 +326,15 @@ export type EngineDiff =
   | { kind: "thread_set"; target: string; note: string | null; visibility: "visible" }
   | { kind: "thread_fired"; target: string; note: string | null; visibility: "visible" }
   | { kind: "beat_fired"; target: string; label: string; visibility: "visible" }
-  | { kind: "act_advanced"; target: string; act: number; visibility: "visible" };
+  | { kind: "act_advanced"; target: string; act: number; visibility: "visible" }
+  // -- Story-engagement W2 additions (Requirements 7, 8, 9). Additive, all
+  //    reader-visible tier. Existing consumers switch on `kind` and ignore
+  //    these; the server's diff-persistence filters on `visibility`.
+  | { kind: "clock_advanced"; target: "clock"; amount: number; reason: string | null; visibility: "visible" }
+  | { kind: "clock_expired"; target: "clock"; visibility: "visible" }
+  | { kind: "disposition_shift"; target: string; prevDisposition: number; delta: number; visibility: "visible" }
+  | { kind: "fact_learned"; target: string; visibility: "visible" }
+  | { kind: "check_resolved"; target: string; outcome: "success" | "partial" | "fail"; margin: number; visibility: "visible" };
 
 export type EngineEvent =
   | { kind: "choice_applied"; choiceId: string }
