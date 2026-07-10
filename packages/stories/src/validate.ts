@@ -10,11 +10,29 @@ export type StoryValidationResult = {
   issues: StoryValidationIssue[];
 };
 
+/**
+ * Treat a story as "llm-driven" when its only node is `start` and that node
+ * carries no choices and no endingId. LLM-driven stories don't need the
+ * authored-graph guarantees (referenced endings, declared death node) because
+ * those checks are enforced at runtime against the LLM's proposed scene.
+ */
+function isLlmDrivenStory(story: Story): boolean {
+  const nodeIds = Object.keys(story.nodes);
+  if (nodeIds.length !== 1 || nodeIds[0] !== story.startNodeId) return false;
+  const start = story.nodes[story.startNodeId];
+  if (!start) return false;
+  return start.choices.length === 0 && !start.endingId && !story.deathNodeId;
+}
+
 export function validateStory(story: Story): StoryValidationResult {
   const issues: StoryValidationIssue[] = [];
 
   if (!story.nodes[story.startNodeId]) {
     issues.push({ path: "startNodeId", message: "Start node does not exist" });
+  }
+
+  if (isLlmDrivenStory(story)) {
+    return { valid: issues.length === 0, issues };
   }
 
   if (story.deathNodeId && !story.nodes[story.deathNodeId]) {

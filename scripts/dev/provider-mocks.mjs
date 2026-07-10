@@ -36,13 +36,53 @@ function readBody(req) {
   });
 }
 
-function completionText(provider, request) {
-  const seed =
-    request?.seed ??
+function extractPromptText(request) {
+  return (
     request?.prompt ??
     request?.messages?.at?.(-1)?.content ??
     request?.contents?.at?.(-1)?.parts?.at?.(0)?.text ??
-    "The page waits at a local development boundary.";
+    ""
+  );
+}
+
+function isLlmDrivenPrompt(request) {
+  const prompt = String(extractPromptText(request));
+  // The llm-driven prompt explicitly demands a single JSON object with prose,
+  // choices, and terminal — and the provider config also requests JSON mode
+  // via responseMimeType for Gemini. Either signal flips us to JSON output.
+  if (prompt.includes('"choices": Choice[]')) return true;
+  if (request?.generationConfig?.responseMimeType === "application/json") return true;
+  return false;
+}
+
+function llmDrivenJsonText(provider, request) {
+  const seed = String(extractPromptText(request)).slice(0, 240) || "A quiet local page.";
+  return JSON.stringify({
+    prose:
+      `[${provider}:mock] The page holds steady. ${seed.split("\n")[0]}\n\nThe local provider mock has stitched a deterministic two-beat scene so the reader can take a turn without a real model call.`,
+    choices: [
+      {
+        id: "step-forward",
+        label: "Step forward into the next beat.",
+        tone: "bold",
+        effects: [{ kind: "flag_set", flag: "mock_stepped_forward", value: true }],
+      },
+      {
+        id: "watch-shadows",
+        label: "Watch the shadows for one breath more.",
+        tone: "careful",
+        effects: [{ kind: "stat", statId: "resolve", delta: 1 }],
+      },
+    ],
+    terminal: null,
+  });
+}
+
+function completionText(provider, request) {
+  if (isLlmDrivenPrompt(request)) {
+    return llmDrivenJsonText(provider, request);
+  }
+  const seed = extractPromptText(request) || "The page waits at a local development boundary.";
   return `[${provider}:mock] ${String(seed).slice(0, 240)}\n\nThe scene continues deterministically without a paid provider call.`;
 }
 

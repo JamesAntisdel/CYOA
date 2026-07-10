@@ -3,6 +3,17 @@ import { popDueDelayedEffects, scheduleDelayedEffect } from "./delayed";
 import { unlockCurrentEnding } from "./endings";
 import { setFlag, unsetFlag } from "./flags";
 import { addItem, removeItem } from "./inventory";
+import {
+  addNpcInventoryItem,
+  applyDispositionDelta,
+  applyNpcAttributeDelta,
+  despawnNpc,
+  learnNpcFact,
+  relocateNpc,
+  removeNpcInventoryItem,
+  setNpcFlag,
+  spawnNpc,
+} from "./npcs";
 import { cloneState } from "./state";
 import { applyStatDelta } from "./stats";
 import { evaluateConditions } from "./visibility";
@@ -111,6 +122,41 @@ function applyEffect(state: PlayerState, effect: Effect, diffs: EngineDiff[]): v
       return;
     case "delayed":
       scheduleDelayedEffect(state, effect.delayNodes, effect.effects, diffs);
+      return;
+    case "npc_spawn":
+      spawnNpc(state, effect.npc, diffs);
+      return;
+    case "npc_despawn":
+      despawnNpc(state, effect.npcId, diffs);
+      return;
+    case "npc_relocate":
+      relocateNpc(state, effect.npcId, effect.location, diffs);
+      return;
+    case "npc_disposition_delta":
+      applyDispositionDelta(state, effect.npcId, effect.delta, diffs);
+      return;
+    case "npc_attribute_delta":
+      applyNpcAttributeDelta(state, effect.npcId, effect.attributeId, effect.delta, diffs);
+      return;
+    case "npc_inventory_add":
+      addNpcInventoryItem(state, effect.npcId, effect.item, diffs);
+      return;
+    case "npc_inventory_remove":
+      removeNpcInventoryItem(state, effect.npcId, effect.itemId, diffs);
+      return;
+    case "npc_flag_set":
+      setNpcFlag(state, effect.npcId, effect.flag, effect.value, diffs);
+      return;
+    case "npc_learn_fact":
+      learnNpcFact(state, effect.npcId, effect.fact, diffs);
+      return;
+    case "skill_check":
+      // Declarative-only (Requirement 31.5). The reducer does not mutate
+      // state for a skill_check; callers run `resolveSkillCheck` against the
+      // pre-effect state and surface the resolution through the prompt
+      // builder / narrator. Applying it here as a no-op keeps the switch
+      // exhaustive without entangling the deterministic state machine with
+      // an RNG roll outcome.
       return;
   }
 }

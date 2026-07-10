@@ -1,4 +1,5 @@
 import { applyChoiceAndEnterNode, resolveTerminal, type EngineEvent } from "@cyoa/engine";
+import type { ContentPolicyContext } from "@cyoa/shared";
 
 import { applySaveState, projectCurrentScene, type SaveRecord } from "./saves";
 import { LlmRouter } from "./llm/router";
@@ -20,6 +21,19 @@ export type TurnRequest = {
   dayKey: string;
   resetAt: number;
   router?: LlmRouter;
+  /**
+   * Resolved content-policy context (mature opt-in + entitlement tier) for the
+   * scene request. Falls back to a safe free-tier context when omitted so
+   * legacy callers and tests keep compiling without explicit wiring.
+   */
+  contentContext?: ContentPolicyContext;
+  /**
+   * Compact memory beats threaded into the LLM prompt. The narrator uses these
+   * for continuity; when omitted the request goes out with no memory window.
+   */
+  memory?: string[];
+  /** Mature-aware entitlement tier carried through to the router/provider policy. */
+  entitlementTier?: "free" | "unlimited" | "pro";
 };
 
 export type TurnHistoryRecord = {
@@ -66,39 +80,51 @@ export async function submitTurn(input: TurnRequest): Promise<TurnResult> {
     allowance: input.dailyAllowance,
   });
 
-  const engineStarted = input.now;
+  // Wall-clock timing. `input.now` is a single static timestamp used for the
+  // persisted createdAt/updatedAt; it cannot measure elapsed time. Read the
+  // clock directly around the engine step and the (awaited, network-bound)
+  // LLM call so turn_history.latency reflects real provider latency instead
+  // of a constant 0 that blinds the cost/latency dashboards.
+  const engineStarted = Date.now();
   const applied = applyChoiceAndEnterNode(input.save.state, input.story, input.choiceId, {
     now: input.now,
     rngSeed: input.requestId,
   });
+  const engineMs = Math.max(0, Date.now() - engineStarted);
   const nextSave = applySaveState(input.save, applied.state, input.now);
   const terminal = resolveTerminal(applied.state, input.story);
 
   let prose = "";
   let provider = "deterministic";
   let tokenUsage: { input: number; output: number } | undefined;
+  let llmMs = 0;
   const router = input.router ?? new LlmRouter();
 
   if (!terminal && applied.state.vitality > 0) {
     const node = input.story.nodes[applied.state.currentNodeId];
     if (!node) throw new AppError("node_not_found");
+    const contentContext: ContentPolicyContext = input.contentContext ?? {
+      surface: "generation",
+      entitlementTier: "free",
+      matureContentEnabled: false,
+    };
+    const entitlementTier = input.entitlementTier ?? contentContext.entitlementTier ?? "free";
     const generationRequest: SceneGenerationRequest = {
       saveId: input.save._id ?? "pending",
       storyId: input.story.id,
       nodeId: node.id,
       seed: node.seed ?? "",
-      memory: [],
+      memory: input.memory ?? [],
       choices: node.choices.map((choice) => ({ choiceId: choice.id, label: choice.label })),
-      contentContext: {
-        surface: "generation",
-        entitlementTier: "free",
-        matureContentEnabled: false,
-      },
+      sceneLength: node.sceneLength ?? input.story.defaultSceneLength ?? "standard",
+      contentContext,
       risk: "normal",
-      entitlementTier: "free",
+      entitlementTier,
       retryCount: 0,
     };
+    const llmStarted = Date.now();
     const generated = await router.generateScene(generationRequest);
+    llmMs = Math.max(0, Date.now() - llmStarted);
     prose = generated.parsed.prose;
     provider = generated.generation.provider;
     tokenUsage = generated.generation.tokenUsage;
@@ -121,7 +147,7 @@ export async function submitTurn(input: TurnRequest): Promise<TurnResult> {
       engineEvents: applied.events,
       provider,
       ...(tokenUsage === undefined ? {} : { tokenUsage }),
-      latency: { engineMs: 0, llmMs: Math.max(0, input.now - engineStarted) },
+      latency: { engineMs, llmMs },
       createdAt: input.now,
     },
   };

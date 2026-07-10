@@ -12,6 +12,12 @@ type VeoCinematicProps = {
 export function VeoCinematic({ alt, reducedMotion, uri }: VeoCinematicProps) {
   const { tokens } = useAppTheme();
 
+  // Defensive guard: an empty `uri` would mount `<video src="">` and trip
+  // the browser's "Invalid URI" error on every render. The death variant
+  // dispatcher already checks for a populated cinematicUri before reaching
+  // here, but the primitive should still refuse to render with no source.
+  if (typeof uri !== "string" || uri.length === 0) return null;
+
   if (reducedMotion) {
     return (
       <Surface padded variant="muted">

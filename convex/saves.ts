@@ -1,11 +1,15 @@
 import {
   createInitialState,
   evaluateNodeChoices,
+  llmSceneOutputSchema,
   migrateEngineState,
   resolveTerminal,
   type ChoiceEvaluation,
+  type LlmSceneProposal,
+  type NpcState,
   type PlayerState,
   type Story,
+  type TerminalResult,
 } from "@cyoa/engine";
 
 import { AppError } from "./lib/errors";
@@ -23,6 +27,30 @@ export type SaveRecord = {
   currentSceneId?: string;
   turnNumber: number;
   activeTurnRequestId?: string;
+  // Narrator voice id pinned to this save (see apps/app/hooks/useNarratorVoice.ts).
+  // Drives Google Cloud TTS voice selection in convex/media/sceneMedia.ts.
+  // Optional for backwards compatibility with saves created before narration.
+  voiceId?: string;
+  // Seed-flow inputs (creator: "Seed an adventure"). When the reader
+  // authored a custom premise/title/tone, these override the starter
+  // story's hardcoded seed text in the LLM scene pipeline.
+  seedPremise?: string;
+  seedTitle?: string;
+  seedTone?: string;
+  // Running "story so far" summary, maintained by `convex/llm/summarizer.ts`
+  // after each successful turn. Capped at ~500 chars; surfaced to the next
+  // scene prompt as canonical context so the LLM doesn't re-propose actions
+  // the reader already took. Absent until the first turn completes.
+  storySummary?: string;
+  // Reference-image carry-over for scene illustrations. Asset ids of the
+  // protagonist + setting anchor images generated on turn 1 of an
+  // llm-driven save (see `convex/media/geminiImageClient.ts`). Subsequent
+  // scene-image calls fetch the underlying storage bytes via
+  // `convex/media/sceneMedia.ts:runImagenJob` and pass them as inline
+  // references to Gemini Flash Image so character + setting stay
+  // visually consistent across scenes.
+  anchorProtagonistAssetId?: string;
+  anchorSettingAssetId?: string;
   createdAt: number;
   updatedAt: number;
 };
@@ -36,7 +64,45 @@ export type SceneProjection = {
   streamStatus: "pending" | "streaming" | "complete" | "failed" | "blocked";
   choices: ChoiceEvaluation[];
   visibleStats: Array<{ statId: string; label: string; value: number }>;
+  /**
+   * Top-level vitality value pulled off `state.vitality`. The HUD reads this
+   * directly rather than searching `visibleStats` so vitality survives the
+   * "no attributes were declared visible" case (every llm-driven stub) and
+   * keeps its 0–10 bound — vitality is not clamped to the 5-pip ceiling that
+   * the visible attribute stats use.
+   */
+  vitality: number;
   inventoryCount: number;
+  /**
+   * Full inventory items (id + label). Bug fix: previously only
+   * `inventoryCount` was sent, so the client fabricated dummy labels and
+   * the LLM-proposed item names (e.g. "Black ledger") never reached the HUD.
+   * The description is intentionally omitted from the projection — it's only
+   * useful inside the LLM prompt's player-state summary.
+   */
+  inventory: Array<{ id: string; label: string }>;
+  /**
+   * NPC roster currently in player state. Empty `{}` when no NPCs have been
+   * spawned. Surfaced to the reader's character sheet (NpcRoster). Mirrors
+   * `PlayerState.npcs` (Requirement 31) — projecting it here is what powers
+   * the FullSheet "Companions and Cast" section for remote LLM-driven saves.
+   */
+  npcs: Record<string, NpcState>;
+  /**
+   * Reader-authored title from the Seed-an-Adventure flow (Requirement 22.7).
+   * When present, the reader UI prefers this over the engine `story.title`
+   * so seeded saves show the user's title instead of "Open Canvas".
+   * Optional — legacy starters and pre-seed-flow saves omit it.
+   */
+  seedTitle?: string;
+  /**
+   * True when the scene record carries the deterministic-fallback sentinel
+   * (`scene.isFallback === true`). Surfaced on the projection so the reader
+   * UI can render the FallbackTurnPanel ("the page is blank for a moment —
+   * try again") instead of the deterministic placeholder prose + choices.
+   * Absent on every real-provider scene; clients treat absent as `false`.
+   */
+  isFallback?: boolean;
   terminal: ReturnType<typeof resolveTerminal>;
 };
 
@@ -84,7 +150,31 @@ export function migrateSaveIfNeeded(save: SaveRecord): SaveMigrationPlan {
 export function projectCurrentScene(save: SaveRecord, story: Story): SceneProjection {
   assertStoryMatchesSave(save, story);
   const node = story.nodes[save.currentNodeId];
-  if (!node) throw new AppError("node_not_found", save.currentNodeId);
+  if (!node) {
+    // LLM-driven scenes have synthetic node ids (`<storyId>:llm:<turn>`) that
+    // do not exist in the authored graph. Return a stable shell projection so
+    // callers can still read save metadata; the actual prose/choices come
+    // from the persisted SceneRecord via projectSceneRecord.
+    return {
+      ...(save._id === undefined ? {} : { saveId: save._id }),
+      storyId: save.storyId,
+      nodeId: save.currentNodeId,
+      turnNumber: save.turnNumber,
+      prose: "",
+      streamStatus: "pending",
+      choices: [],
+      visibleStats: visibleStatsFromState(save.state),
+      vitality: save.state.vitality,
+      inventoryCount: save.state.inventory.length,
+      inventory: inventoryFromState(save.state),
+      // Defensive default: pre-migration saves snuck through before
+      // `state.npcs` was always initialized would otherwise crash the
+      // projection. Empty roster → UI suppresses the section.
+      npcs: save.state.npcs ?? {},
+      ...(save.seedTitle ? { seedTitle: save.seedTitle } : {}),
+      terminal: null,
+    };
+  }
   return {
     ...(save._id === undefined ? {} : { saveId: save._id }),
     storyId: save.storyId,
@@ -95,12 +185,90 @@ export function projectCurrentScene(save: SaveRecord, story: Story): SceneProjec
     choices: evaluateNodeChoices(save.state, node.choices).filter(
       (choice) => choice.visibility !== "hidden",
     ),
-    visibleStats: Object.values(save.state.attributes)
-      .filter((stat) => stat.visibility === "visible")
-      .map((stat) => ({ statId: stat.id, label: stat.label, value: stat.value })),
+    visibleStats: visibleStatsFromState(save.state),
+    vitality: save.state.vitality,
     inventoryCount: save.state.inventory.length,
+    inventory: inventoryFromState(save.state),
+    npcs: save.state.npcs ?? {},
+    ...(save.seedTitle ? { seedTitle: save.seedTitle } : {}),
     terminal: resolveTerminal(save.state, story),
   };
+}
+
+function visibleStatsFromState(state: PlayerState): SceneProjection["visibleStats"] {
+  return Object.values(state.attributes)
+    .filter((stat) => stat.visibility === "visible")
+    .map((stat) => ({ statId: stat.id, label: stat.label, value: stat.value }));
+}
+
+function inventoryFromState(state: PlayerState): SceneProjection["inventory"] {
+  return state.inventory.map((item) => ({ id: item.id, label: item.label }));
+}
+
+/**
+ * Project an LLM-driven scene record (with its persisted proposal) onto the
+ * SceneProjection shape that the reader and HTTP layer consume. The engine
+ * has already validated the proposal — we only translate it into the
+ * authored-shape `ChoiceEvaluation[]` so the client doesn't need a parallel
+ * render path for llm-driven choices.
+ */
+export function projectLlmDrivenScene(input: {
+  save: SaveRecord;
+  proposal: LlmSceneProposal | null;
+  prose: string;
+  streamStatus: SceneProjection["streamStatus"];
+  terminal?: TerminalResult | null;
+  /**
+   * Deterministic-fallback sentinel from the scene record. Forwarded
+   * onto the projection so the reader UI can render the FallbackTurnPanel
+   * instead of the deterministic placeholder prose + choices.
+   */
+  isFallback?: boolean;
+}): SceneProjection {
+  // The reader doesn't render effects on choices — they exist only for the
+  // engine's per-turn validation. Strip them from the projection so the
+  // ChoiceEvaluation shape matches the authored contract cleanly.
+  const choices: ChoiceEvaluation[] = (input.proposal?.choices ?? []).map((choice) => ({
+    choice: {
+      id: choice.id,
+      label: choice.label,
+      // synthetic — there is no authored target node for an llm-driven choice;
+      // the engine fabricates `<storyId>:llm:<turn>` on the next turn instead.
+      targetNodeId: `${input.save.storyId}:llm:next`,
+    },
+    visibility: "visible" as const,
+  }));
+
+  return {
+    ...(input.save._id === undefined ? {} : { saveId: input.save._id }),
+    storyId: input.save.storyId,
+    nodeId: input.save.currentNodeId,
+    turnNumber: input.save.turnNumber,
+    prose: input.prose,
+    streamStatus: input.streamStatus,
+    choices,
+    visibleStats: visibleStatsFromState(input.save.state),
+    vitality: input.save.state.vitality,
+    inventoryCount: input.save.state.inventory.length,
+    inventory: inventoryFromState(input.save.state),
+    npcs: input.save.state.npcs ?? {},
+    ...(input.save.seedTitle ? { seedTitle: input.save.seedTitle } : {}),
+    // Surface the deterministic-fallback sentinel only when actually true —
+    // omitting the key on real-provider scenes keeps the projection wire
+    // shape stable for clients that don't yet read `isFallback`.
+    ...(input.isFallback === true ? { isFallback: true } : {}),
+    terminal: input.terminal ?? null,
+  };
+}
+
+/**
+ * Coerce a persisted proposal payload back into a typed proposal. Returns
+ * null when the persisted value is missing or no longer schema-valid.
+ */
+export function readPersistedProposal(value: unknown): LlmSceneProposal | null {
+  if (!value || typeof value !== "object") return null;
+  const parsed = llmSceneOutputSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
 }
 
 export function applySaveState(save: SaveRecord, state: PlayerState, now: number): SaveRecord {

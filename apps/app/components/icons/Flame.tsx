@@ -1,0 +1,16 @@
+import { SvgIcon, SvgIconProps, svgEl } from "./SvgIcon";
+
+export function Flame(props: SvgIconProps) {
+  return (
+    <SvgIcon name="flame" {...props}>
+      {svgEl("path", {
+        fill: "none",
+        stroke: "currentColor",
+        "stroke-width": 1.5,
+        "stroke-linecap": "round",
+        "stroke-linejoin": "round",
+        d: "M12 2 c2 4 6 6 6 11 c0 4-3 7-6 7 c-3 0-6-3-6-7 c0-3 1.5-4 3-6 c0 2 1 3 2 3 c-1-3 0-6 1-8 z",
+      })}
+    </SvgIcon>
+  );
+}

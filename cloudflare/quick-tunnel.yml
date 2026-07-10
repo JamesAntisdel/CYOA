@@ -1,0 +1,10 @@
+# Quick tunnel config for temporary HTTPS testing.
+#
+# Run:
+#   cloudflared tunnel --url http://localhost:8081
+#
+# Cloudflare prints a random https://*.trycloudflare.com URL. Put that URL in .env:
+#   PUBLIC_APP_URL=https://<random>.trycloudflare.com
+#   BETTER_AUTH_URL=https://<random>.trycloudflare.com
+
+service: http://localhost:8081

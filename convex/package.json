@@ -3,20 +3,26 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "dev": "convex dev",
-    "codegen": "convex codegen",
-    "deploy": "convex deploy",
+    "dev": "sh ../scripts/dev/convex-local-dev.sh",
+    "codegen": "cd .. && convex codegen",
+    "deploy": "cd .. && convex deploy",
     "lint": "echo \"lint not configured yet\"",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage --coverage.include='billing/**' --coverage.include='media/veo.ts' --coverage.include='liveCore.ts'",
     "test:unit": "vitest run"
   },
   "dependencies": {
+    "@convex-dev/better-auth": "^0.12.0",
     "@cyoa/shared": "workspace:*",
+    "@cyoa/stories": "workspace:*",
+    "better-auth": "^1.6.9",
     "convex": "^1.19.4",
+    "stripe": "^22.1.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@vitest/coverage-v8": "2.1.9",
     "typescript": "^5.9.3",
     "vitest": "^2.1.9"
   }

@@ -15,10 +15,27 @@ export const authProviderSchema = z.enum([
 ]);
 export type AuthProvider = z.infer<typeof authProviderSchema>;
 
+/**
+ * OAuth social providers (the auth providers minus the email magic link).
+ * Canonical single source shared by the client auth surface and the convex
+ * BetterAuth config so the two can't drift.
+ */
+export const socialProviderSchema = z.enum(["google", "apple", "github", "microsoft", "discord"]);
+export type SocialProvider = z.infer<typeof socialProviderSchema>;
+export const SOCIAL_PROVIDER_IDS: readonly SocialProvider[] = socialProviderSchema.options;
+
 export const createGuestRequestSchema = z.object({
   ageBand: ageBandSchema,
 });
 export type CreateGuestRequest = z.infer<typeof createGuestRequestSchema>;
+
+export const emailAuthRequestSchema = z.object({
+  email: z.string().trim().toLowerCase().email(),
+  password: z.string().min(8).max(128),
+  name: z.string().trim().min(1).max(80).optional(),
+  ageBand: ageBandSchema.optional(),
+});
+export type EmailAuthRequest = z.infer<typeof emailAuthRequestSchema>;
 
 export const accountProjectionSchema = z.object({
   accountId: z.string().min(1),

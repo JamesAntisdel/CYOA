@@ -8,6 +8,8 @@ export type ChoiceVisibility = z.infer<typeof choiceVisibilitySchema>;
 
 export type AttributeVisibility = "visible" | "hidden";
 
+export type SceneLength = "brief" | "standard" | "rich" | "chapter";
+
 export type AttributeState = {
   id: string;
   label: string;
@@ -25,6 +27,52 @@ export type InventoryItem = {
 
 export type FlagMap = Record<string, boolean | number | string>;
 
+// =============================================================================
+// NPCs and Companions (Requirement 31)
+// =============================================================================
+
+export type NpcRole = "companion" | "ally" | "rival" | "neutral" | "antagonist";
+
+/**
+ * Flag map shape for NPCs. Narrower than `FlagMap` (no string values) because
+ * the design pins NPC flags to `boolean | number` only — string flags on NPCs
+ * are reserved for future iteration and would inflate the per-turn prompt
+ * surface without a use case in v0.
+ */
+export type NpcFlagMap = Record<string, boolean | number>;
+
+export type NpcInventoryItem = {
+  id: string;
+  label: string;
+};
+
+export type NpcState = {
+  id: string;
+  name: string;
+  role: NpcRole;
+  /** Integer in [-100, 100]; clamped by the engine on every disposition_delta. */
+  disposition: number;
+  /** Optional node-id-like location tag. When set, the prompt builder surfaces this NPC only in matching scenes. */
+  location?: string;
+  /** Same shape as player attributes. */
+  attributes: Record<string, AttributeState>;
+  /** Same shape as player inventory. Optional — many NPCs carry nothing. */
+  inventory?: NpcInventoryItem[];
+  /** Short tags the LLM is told the NPC knows. The prompt builder surfaces the top 3 per turn. */
+  knownFacts: string[];
+  /** Optional cross-NPC disposition map. relationships[otherNpcId] = delta to apply when they interact. */
+  relationships?: Record<string, number>;
+  /** Same shape as player flags, restricted to boolean | number. */
+  flags: NpcFlagMap;
+  /** Optional reference to a generated portrait asset (the image-gen agent populates this). */
+  portraitAssetId?: string;
+};
+
+export const NPC_DISPOSITION_MIN = -100;
+export const NPC_DISPOSITION_MAX = 100;
+/** Max characters retained when an `npc_learn_fact` effect appends a fact. */
+export const NPC_FACT_MAX_LENGTH = 200;
+
 export type Effect =
   | { kind: "stat"; statId: string; delta: number }
   | { kind: "currency"; delta: number }
@@ -32,7 +80,25 @@ export type Effect =
   | { kind: "inventory_remove"; itemId: string }
   | { kind: "flag_set"; flag: string; value: boolean | number | string }
   | { kind: "flag_unset"; flag: string }
-  | { kind: "delayed"; delayNodes: number; effects: Effect[] };
+  | { kind: "delayed"; delayNodes: number; effects: Effect[] }
+  | { kind: "npc_spawn"; npc: NpcState }
+  | { kind: "npc_despawn"; npcId: string }
+  | { kind: "npc_relocate"; npcId: string; location?: string }
+  | { kind: "npc_disposition_delta"; npcId: string; delta: number }
+  | { kind: "npc_attribute_delta"; npcId: string; attributeId: string; delta: number }
+  | { kind: "npc_inventory_add"; npcId: string; item: NpcInventoryItem }
+  | { kind: "npc_inventory_remove"; npcId: string; itemId: string }
+  | { kind: "npc_flag_set"; npcId: string; flag: string; value: boolean | number }
+  | { kind: "npc_learn_fact"; npcId: string; fact: string }
+  /**
+   * Declarative skill check (Requirement 31.5). The engine evaluates the
+   * effective total — including companion contributions when
+   * `includeCompanions` is set — but does not directly mutate state. The
+   * resolution is surfaced via `resolveSkillCheck` so callers (LLM prompt
+   * builder, narrator) can react. Authoring this as an effect kind keeps the
+   * check declarative and discoverable from a choice's `effects` array.
+   */
+  | { kind: "skill_check"; statId: string; difficulty: number; includeCompanions?: boolean };
 
 export type Condition =
   | { kind: "always" }
@@ -50,12 +116,28 @@ export type Choice = {
   visibility?: "visible" | "locked" | "hidden";
   conditions?: Condition[];
   effects?: Effect[];
+  /**
+   * NPC id that must be present in the current scene for the choice to be
+   * visible (Requirement 31.4). "Present" means
+   * `state.npcs[requiresNpc]?.location === state.currentNodeId`. When the
+   * NPC is missing from the roster or located elsewhere, the visibility
+   * evaluator hides the choice before any condition evaluation runs.
+   */
+  requiresNpc?: string;
+  /**
+   * NPC id the LLM is told the choice acts on (Requirement 31.4). Purely
+   * presentational — the engine performs no validation against the roster
+   * because the prompt builder may surface this hint even when the NPC is
+   * off-scene (e.g. "Send word to <targetNpc>").
+   */
+  targetNpc?: string;
 };
 
 export type StoryNode = {
   id: string;
   title?: string;
   seed?: string;
+  sceneLength?: SceneLength;
   choices: Choice[];
   effectsOnEnter?: Effect[];
   endingId?: string;
@@ -72,11 +154,20 @@ export type Story = {
   id: string;
   version: number;
   title: string;
+  defaultSceneLength?: SceneLength;
   startNodeId: string;
   deathNodeId?: string;
   initialState: PlayerStateSeed;
   nodes: Record<string, StoryNode>;
   endings: Record<string, EndingDefinition>;
+  /**
+   * Optional initial NPC roster (Requirement 31.7). Authored stories MAY
+   * declare a starting cast that `createInitialState` merges into
+   * `PlayerState.npcs`. Reader-typed open-premise seeds leave this undefined
+   * and let the LLM introduce NPCs organically via subsequent `npc_spawn`
+   * effects.
+   */
+  initialNpcs?: Record<string, NpcState>;
 };
 
 export type PlayerStateSeed = {
@@ -114,6 +205,12 @@ export type PlayerState = {
   path: string[];
   delayed: ScheduledEffect[];
   endingsUnlocked: Record<string, UnlockedEnding>;
+  /**
+   * Roster of named NPCs in this save (Requirement 31). Always present —
+   * legacy snapshots that lack the field are upgraded by `migrateEngineState`
+   * to `npcs: {}` so downstream code never has to defensive-default.
+   */
+  npcs: Record<string, NpcState>;
   schemaVersion: number;
 };
 
@@ -131,7 +228,16 @@ export type EngineDiff =
   | { kind: "flag_unset"; target: string; delta: null; before?: boolean | number | string }
   | { kind: "delayed_scheduled"; target: string; delta: number }
   | { kind: "node"; target: string; delta: 1 }
-  | { kind: "ending"; target: string; delta: 1 };
+  | { kind: "ending"; target: string; delta: 1 }
+  | { kind: "npc_spawn"; target: string; delta: 1 }
+  | { kind: "npc_despawn"; target: string; delta: -1 }
+  | { kind: "npc_relocate"; target: string; delta: null; before?: string; after?: string }
+  | { kind: "npc_disposition"; target: string; delta: number; before: number; after: number }
+  | { kind: "npc_attribute"; target: string; attributeId: string; delta: number; before: number; after: number }
+  | { kind: "npc_inventory_add"; target: string; itemId: string; delta: 1 }
+  | { kind: "npc_inventory_remove"; target: string; itemId: string; delta: -1 }
+  | { kind: "npc_flag_set"; target: string; flag: string; delta: boolean | number; before?: boolean | number; after: boolean | number }
+  | { kind: "npc_learn_fact"; target: string; fact: string; delta: 1 };
 
 export type EngineEvent =
   | { kind: "choice_applied"; choiceId: string }

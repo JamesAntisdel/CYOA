@@ -11,6 +11,7 @@
     "lint": "echo \"lint not configured yet\"",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "test:unit": "vitest run"
   },
   "dependencies": {

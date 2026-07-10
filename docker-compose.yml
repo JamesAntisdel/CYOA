@@ -21,7 +21,7 @@ x-workspace: &workspace
 services:
   app:
     <<: *workspace
-    command: pnpm dev:app -- --host 0.0.0.0
+    command: node tests/e2e/serve-expo-web.mjs
     ports:
       - "8081:8081"
       - "19000:19000"
@@ -31,7 +31,9 @@ services:
       provider-mocks:
         condition: service_healthy
     environment:
-      EXPO_PUBLIC_PROVIDER_MOCKS_URL: http://localhost:4010
+      E2E_HOST: 0.0.0.0
+      E2E_PORT: 8081
+      EXPO_PUBLIC_PROVIDER_MOCKS_URL: ${EXPO_PUBLIC_PROVIDER_MOCKS_URL:-http://localhost:4010}
 
   convex:
     <<: *workspace
@@ -40,8 +42,15 @@ services:
       - convex
     ports:
       - "3210:3210"
+      - "3211:3211"
+      # Dashboard reached via the convex-dashboard sidecar
+      # (host 6790/6791 → bridge 16790/16791 → loopback 6790/6791)
+      - "6790:16790"
+      - "6791:16791"
     environment:
       PROVIDER_MOCKS_URL: http://provider-mocks:4010
+      # Opt out of Convex's self-hosted telemetry beacon.
+      DISABLE_BEACON: "1"
 
   provider-mocks:
     image: node:20-bookworm-slim
@@ -87,6 +96,53 @@ services:
       - "${STRIPE_WEBHOOK_FORWARD_URL:-http://host.docker.internal:3210/stripe/webhook}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+  # Cloudflare Named Tunnel — HTTPS access without router config or
+  # port forwarding. Opt in with `--profile tunnel`.
+  #
+  # Setup (Cloudflare Zero Trust dashboard):
+  #   1. Networks → Tunnels → Create → "Install connector" → Docker tab
+  #      → copy the long base64 token into .env as CLOUDFLARE_TUNNEL_TOKEN.
+  #   2. Same tunnel → Public Hostname:
+  #        app.<your-domain>    → HTTP → app:8081
+  #        convex.<your-domain> → HTTP → convex:3210
+  #   3. Set PUBLIC_APP_URL / EXPO_PUBLIC_CONVEX_URL /
+  #      EXPO_PUBLIC_CONVEX_SITE_URL in .env to the public hostnames.
+  #   4. docker compose --profile convex --profile tunnel \
+  #        up -d --force-recreate app convex cloudflared
+  # Bridges the Convex local dashboard from the container's loopback
+  # interface to published ports. Convex binds 127.0.0.1:6790 (dashboard
+  # static SPA) and 127.0.0.1:6791 (admin API the SPA calls) by design,
+  # so Docker can't publish them directly — these sidecars share the
+  # convex netns and re-expose on 0.0.0.0.
+  convex-dashboard:
+    image: alpine/socat:1.8.0.0
+    profiles:
+      - convex
+    network_mode: "service:convex"
+    depends_on:
+      - convex
+    restart: unless-stopped
+    command: TCP-LISTEN:16790,fork,reuseaddr TCP:127.0.0.1:6790
+
+  convex-dashboard-api:
+    image: alpine/socat:1.8.0.0
+    profiles:
+      - convex
+    network_mode: "service:convex"
+    depends_on:
+      - convex
+    restart: unless-stopped
+    command: TCP-LISTEN:16791,fork,reuseaddr TCP:127.0.0.1:6791
+
+  cloudflared:
+    image: cloudflare/cloudflared:2025.9.0
+    profiles:
+      - tunnel
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - app
 
 volumes:
   root_node_modules:

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 56 56" width="56" height="56">
+  <defs>
+    <radialGradient id="sg" cx="40%" cy="35%" r="60%">
+      <stop offset="0%" stop-color="#dc8678"></stop>
+      <stop offset="60%" stop-color="#7a2218"></stop>
+      <stop offset="100%" stop-color="#3a0e08"></stop>
+    </radialGradient>
+  </defs>
+  <path d="M28 4 c8 0 16 4 19 12 c4 8 2 16-4 22 c-3 4-9 8-15 8 c-7 0-13-3-17-9 c-4-6-5-13-1-19 c4-7 11-14 18-14 z" fill="url(#sg)"></path>
+  <text x="28" y="34" text-anchor="middle" font-family="EB Garamond, Georgia, serif" font-size="22" font-weight="500" font-style="italic" fill="#f4ecd8">TU</text>
+  <path d="M14 18 q14 -10 28 0" stroke="#f4ecd8" stroke-width="0.8" fill="none" opacity="0.5"></path></svg>

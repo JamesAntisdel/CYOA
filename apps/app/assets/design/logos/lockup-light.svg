@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 380 60" width="380" height="60">
+  <g transform="translate(0,4)">
+  <g fill="none" stroke="#f4ecd8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M28 6 c2 4 5 6 5 11 c0 4-2.5 6-5 6 c-2.5 0-5-2-5-6 c0-3 1-4 2.5-6 c0 1.5 1 2 1.5 2 c-0.5-2 0.5-4 1-7 z" fill="#d8b158" stroke="#d8b158"></path>
+    <path d="M28 23 v6"></path>
+    <rect x="18" y="29" width="20" height="21" rx="0.5"></rect>
+    <path d="M18 29 h20"></path>
+    <path d="M22 35 v8" opacity="0.4"></path>
+  </g></g>
+  <g transform="translate(76,0)">
+    <text x="0" y="36" font-family="EB Garamond, Georgia, serif" font-size="36" font-weight="500" font-style="italic" fill="#f4ecd8" letter-spacing="-0.5">The Unwritten</text>
+    <text x="2" y="54" font-family="Special Elite, monospace" font-size="9" fill="#d8b158" letter-spacing="3" textLength="240">AN ADVENTURE THAT WRITES ITSELF</text>
+  </g></svg>

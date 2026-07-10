@@ -43,6 +43,7 @@ const save: SaveRecord & { _id: string } = {
     delayed: [],
     endingsUnlocked: {},
     schemaVersion: 1,
+    npcs: {},
   },
   currentNodeId: "start",
   turnNumber: 1,

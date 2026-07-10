@@ -17,17 +17,32 @@ export function chooseProvider(
   providers: LlmProvider[],
   request: SceneGenerationRequest,
 ): LlmProvider {
-  const preferredOrder: ProviderName[] =
-    request.risk === "low"
-      ? ["deepseek", "anthropic", "vertex", "deterministic"]
-      : ["anthropic", "vertex", "deterministic"];
-
-  for (const name of preferredOrder) {
-    const provider = providers.find((candidate) => candidate.name === name);
-    if (provider && providerEligible(provider, request)) return provider;
-  }
+  const candidates = orderedProviders(providers, request);
+  const first = candidates[0];
+  if (first) return first;
 
   const deterministic = providers.find((provider) => provider.name === "deterministic");
   if (!deterministic) throw new Error("deterministic_provider_missing");
   return deterministic;
+}
+
+export function orderedProviders(
+  providers: LlmProvider[],
+  request: SceneGenerationRequest,
+): LlmProvider[] {
+  const preferredOrder = providerOrder(request);
+  const ordered: LlmProvider[] = [];
+
+  for (const name of preferredOrder) {
+    const provider = providers.find((candidate) => candidate.name === name);
+    if (provider && providerEligible(provider, request)) ordered.push(provider);
+  }
+
+  return ordered;
+}
+
+function providerOrder(request: SceneGenerationRequest): ProviderName[] {
+  return request.risk === "low"
+    ? ["deepseek", "anthropic", "vertex", "deterministic"]
+    : ["anthropic", "vertex", "deterministic"];
 }

@@ -1,13 +1,22 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  applyChoiceAndEnterNode,
+  createInitialState,
+  evaluateNodeChoices,
+} from "@cyoa/engine";
+
+import {
   assertValidStory,
   getStory,
+  getStoryMode,
   listStarterStories,
   listStarterStoryDefinitions,
   trainingRoom,
   validateStory,
 } from "../src";
+
+const ctx = { now: 1, rngSeed: "stories-test" };
 
 describe("starter stories", () => {
   it("lists all V1 starter adventures", () => {
@@ -19,9 +28,18 @@ describe("starter stories", () => {
     ]);
   });
 
+  it("does not expose the open-canvas seed shell in the public starter list", () => {
+    expect(listStarterStories().map((story) => story.id)).not.toContain("open-canvas");
+  });
+
   it("returns stories by id", () => {
     expect(getStory("training-room").title).toBe("Escape the Training Room");
     expect(() => getStory("missing")).toThrow("story_not_found:missing");
+  });
+
+  it("resolves the hidden open-canvas starter via getStory and getStoryMode", () => {
+    expect(getStory("open-canvas").title).toBe("Open Canvas");
+    expect(getStoryMode("open-canvas")).toBe("llm-driven");
   });
 
   it("validates every starter story", () => {
@@ -40,6 +58,27 @@ describe("starter stories", () => {
     expect(result.issues[0]?.path).toContain("targetNodeId");
   });
 
+  it("reports every structural validation issue and throws a readable summary", () => {
+    const story = structuredClone(trainingRoom.story);
+    story.startNodeId = "missing-start";
+    story.deathNodeId = "missing-death";
+    story.nodes["waking-cell"]!.endingId = "missing-ending";
+    story.endings.unused = { id: "unused", label: "Unused", kind: "other" };
+
+    const result = validateStory(story);
+
+    expect(result.valid).toBe(false);
+    expect(result.issues.map((issue) => issue.path)).toEqual(
+      expect.arrayContaining([
+        "startNodeId",
+        "deathNodeId",
+        "nodes.waking-cell.endingId",
+        "endings.unused",
+      ]),
+    );
+    expect(() => assertValidStory(story)).toThrow(/startNodeId: Start node does not exist/u);
+  });
+
   it("training-room includes required tutorial mechanics", () => {
     const story = trainingRoom.story;
     const nodes = Object.values(story.nodes);
@@ -56,5 +95,30 @@ describe("starter stories", () => {
     expect(Object.values(story.endings).some((ending) => ending.kind === "death")).toBe(true);
     expect(Object.values(story.endings).some((ending) => ending.kind === "success")).toBe(true);
     expect(() => assertValidStory(story)).not.toThrow();
+  });
+
+  it("training-room leaves every Room 3 route with an available final choice", () => {
+    const story = trainingRoom.story;
+    const routes = [
+      ["take-key", "unlock-gate"],
+      ["study-runes", "trace-sigil"],
+      ["study-runes", "grab-bowl"],
+      ["kick-door", "grab-bowl"],
+    ];
+
+    for (const route of routes) {
+      const state = route.reduce(
+        (currentState, choiceId) =>
+          applyChoiceAndEnterNode(currentState, story, choiceId, ctx).state,
+        createInitialState(story, "story", ctx.now, ctx.rngSeed),
+      );
+      const node = story.nodes[state.currentNodeId];
+      expect(node?.id).toBe("weight-room");
+      expect(
+        evaluateNodeChoices(state, node!.choices).some(
+          (choice) => choice.visibility === "visible",
+        ),
+      ).toBe(true);
+    }
   });
 });

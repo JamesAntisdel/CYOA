@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 const root = process.cwd();
 const outputDir = process.env.E2E_EXPORT_DIR ?? "/tmp/cyoa-e2e-export";
 const port = Number(process.env.E2E_PORT ?? 8081);
+const host = process.env.E2E_HOST ?? "127.0.0.1";
 const corepackHome = process.env.COREPACK_HOME ?? join(root, ".corepack");
 const expoBin = join(root, "apps/app/node_modules/.bin/expo");
 const reuseExport = process.env.E2E_REUSE_EXPORT === "1";
@@ -45,8 +46,8 @@ server.on("error", (error) => {
   process.exit(1);
 });
 
-server.listen(port, "127.0.0.1", () => {
-  console.log(`Serving Expo E2E export at http://127.0.0.1:${port}`);
+server.listen(port, host, () => {
+  console.log(`Serving Expo E2E export at http://${host}:${port}`);
 });
 
 for (const signal of ["SIGINT", "SIGTERM"]) {

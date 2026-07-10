@@ -10,11 +10,45 @@ import {
 import { useAppTheme } from "../../theme";
 import { Text } from "./Text";
 
-type ButtonVariant = "default" | "primary" | "ghost" | "locked";
+/**
+ * Canonical Button variants. Every consumer in the app must pick one of
+ * these — the variant determines background, border, and label colors via
+ * the theme tokens. To add a variant: extend this union, then map it in
+ * the resolver below AND in
+ * `apps/app/components/primitives/__tests__/primitives.contract.test.mjs`
+ * (BUTTON_VARIANTS) so the contract test stays green.
+ */
+export type ButtonVariant =
+  | "default"
+  | "primary"
+  | "secondary"
+  | "ghost"
+  | "danger"
+  | "locked";
+
+export const BUTTON_VARIANTS: readonly ButtonVariant[] = [
+  "default",
+  "primary",
+  "secondary",
+  "ghost",
+  "danger",
+  "locked",
+] as const;
 
 type ButtonProps = PropsWithChildren<PressableProps> & {
   variant?: ButtonVariant;
 };
+
+// Minimum tappable height per WCAG 2.5.5 (44 logical px). Kept here as a
+// named constant so the magic number doesn't leak into every render.
+const MIN_TAPPABLE_HEIGHT = 44;
+// Disabled opacity tuned to keep label contrast >= 3:1 against the variant's
+// background in every theme. Lower than this and the label fails AA on
+// the `night` palette.
+const DISABLED_OPACITY = 0.6;
+// Pressed-state opacity — the only feedback we apply. Avoids reflow because
+// we don't touch border/padding on press.
+const PRESSED_OPACITY = 0.78;
 
 export function Button({
   accessibilityRole = "button",
@@ -27,6 +61,21 @@ export function Button({
   const { tokens } = useAppTheme();
   const isDisabled = disabled || variant === "locked";
 
+  const isFilled = variant === "primary" || variant === "danger";
+  const backgroundColor =
+    variant === "primary"
+      ? tokens.colors.text
+      : variant === "danger"
+        ? tokens.colors.danger
+        : variant === "ghost"
+          ? "transparent"
+          : tokens.colors.surface;
+  const borderColor =
+    variant === "danger" ? tokens.colors.danger : tokens.colors.border;
+  const borderStyle: ViewStyle["borderStyle"] =
+    variant === "ghost" || variant === "locked" ? "dashed" : "solid";
+  const labelColor = isFilled ? tokens.colors.background : tokens.colors.text;
+
   return (
     <Pressable
       accessibilityRole={accessibilityRole}
@@ -35,14 +84,14 @@ export function Button({
       style={({ pressed }) => [
         {
           alignItems: "center",
-          backgroundColor: variant === "primary" ? tokens.colors.text : tokens.colors.surface,
-          borderColor: tokens.colors.border,
+          backgroundColor,
+          borderColor,
           borderRadius: tokens.radii.sm,
-          borderStyle: variant === "ghost" || variant === "locked" ? "dashed" : "solid",
+          borderStyle,
           borderWidth: tokens.borderWidths.regular,
           justifyContent: "center",
-          minHeight: 44,
-          opacity: isDisabled ? 0.55 : pressed ? 0.78 : 1,
+          minHeight: MIN_TAPPABLE_HEIGHT,
+          opacity: isDisabled ? DISABLED_OPACITY : pressed ? PRESSED_OPACITY : 1,
           paddingHorizontal: tokens.spacing.lg,
           paddingVertical: tokens.spacing.sm,
         } satisfies ViewStyle,
@@ -52,7 +101,7 @@ export function Button({
     >
       <Text
         style={{
-          color: variant === "primary" ? tokens.colors.background : tokens.colors.text,
+          color: labelColor,
           fontWeight: "600",
           textAlign: "center",
         } satisfies TextStyle}

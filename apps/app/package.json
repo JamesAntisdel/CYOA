@@ -10,24 +10,28 @@
     "build:web": "expo export --platform web",
     "lint": "echo \"lint not configured yet\"",
     "typecheck": "tsc --noEmit",
-    "test": "echo \"tests not configured yet\"",
-    "test:unit": "echo \"unit tests not configured yet\"",
+    "test": "node --test theme/__tests__ components/primitives/__tests__ components/reading/__tests__ components/navigation/__tests__ components/account/__tests__",
+    "test:unit": "node --test theme/__tests__ components/primitives/__tests__ components/reading/__tests__ components/navigation/__tests__ components/account/__tests__",
     "test:e2e": "node ../../tests/e2e/run-e2e.mjs"
   },
   "dependencies": {
     "@babel/runtime": "^7.26.0",
+    "@convex-dev/better-auth": "^0.12.0",
+    "@cyoa/engine": "workspace:*",
+    "@cyoa/stories": "workspace:*",
+    "better-auth": "^1.6.9",
     "convex": "^1.19.4",
     "expo": "^52.0.0",
     "expo-router": "^4.0.0",
     "react": "^18.3.1",
     "react-native": "^0.76.0",
-    "react-native-web": "~0.19.13",
-    "react-native-safe-area-context": "4.12.0"
+    "react-native-safe-area-context": "4.12.0",
+    "react-native-web": "~0.19.13"
   },
   "devDependencies": {
+    "@playwright/test": "^1.52.0",
     "@types/node": "^20.17.10",
     "@types/react": "^18.3.12",
-    "@playwright/test": "^1.52.0",
     "typescript": "^5.9.3"
   }
 }

@@ -9,6 +9,12 @@ import {
 } from "react";
 import { AccessibilityInfo, ColorSchemeName, useColorScheme } from "react-native";
 
+import { getLocalStorage as getStorage } from "../lib/storage";
+import {
+  READER_SETTINGS_CHANGED_EVENT,
+  READER_SETTINGS_KEY,
+  type ReaderSettings,
+} from "../hooks/useReaderSettings";
 import { FontScale, scaleTypography, ThemeMode, themeTokens, ThemeTokens } from "./tokens";
 
 type ThemePreference = ThemeMode | "system";
@@ -27,24 +33,48 @@ const ThemeContext = createContext<ThemeContextValue | null>(null);
 
 export function AppThemeProvider({ children }: PropsWithChildren) {
   const colorScheme = useColorScheme();
-  const [preference, setPreference] = useState<ThemePreference>("system");
-  const [fontScale, setFontScale] = useState<FontScale>("default");
-  const [reduceMotion, setReduceMotion] = useState(false);
+  const storedSettings = readStoredThemeSettings();
+  const [preference, setPreference] = useState<ThemePreference>(storedSettings.theme ?? "system");
+  const [fontScale, setFontScale] = useState<FontScale>(storedSettings.fontScale ?? "default");
+  const [readerReduceMotion, setReaderReduceMotion] = useState(storedSettings.reduceMotion ?? false);
+  const [systemReduceMotion, setSystemReduceMotion] = useState(false);
 
   useEffect(() => {
     let mounted = true;
 
     AccessibilityInfo.isReduceMotionEnabled().then((enabled) => {
       if (mounted) {
-        setReduceMotion(enabled);
+        setSystemReduceMotion(enabled);
       }
     });
 
-    const subscription = AccessibilityInfo.addEventListener("reduceMotionChanged", setReduceMotion);
+    const subscription = AccessibilityInfo.addEventListener("reduceMotionChanged", setSystemReduceMotion);
 
     return () => {
       mounted = false;
       subscription.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    const eventTarget = getEventTarget();
+    if (!eventTarget) return undefined;
+
+    const syncSettings = () => {
+      const nextSettings = readStoredThemeSettings();
+      if (nextSettings.theme) setPreference(nextSettings.theme);
+      if (nextSettings.fontScale) setFontScale(nextSettings.fontScale);
+      if (typeof nextSettings.reduceMotion === "boolean") {
+        setReaderReduceMotion(nextSettings.reduceMotion);
+      }
+    };
+
+    eventTarget.addEventListener(READER_SETTINGS_CHANGED_EVENT, syncSettings);
+    eventTarget.addEventListener("storage", syncSettings);
+
+    return () => {
+      eventTarget.removeEventListener(READER_SETTINGS_CHANGED_EVENT, syncSettings);
+      eventTarget.removeEventListener("storage", syncSettings);
     };
   }, []);
 
@@ -65,6 +95,8 @@ export function AppThemeProvider({ children }: PropsWithChildren) {
   const updateFontScale = useCallback((nextFontScale: FontScale) => {
     setFontScale(nextFontScale);
   }, []);
+
+  const reduceMotion = systemReduceMotion || readerReduceMotion;
 
   const value = useMemo<ThemeContextValue>(
     () => ({
@@ -98,4 +130,45 @@ function resolveMode(preference: ThemePreference, colorScheme: ColorSchemeName):
   }
 
   return colorScheme === "dark" ? "night" : "day";
+}
+
+function readStoredThemeSettings(): Partial<Pick<ReaderSettings, "theme" | "fontScale" | "reduceMotion">> {
+  const storage = getStorage();
+  if (!storage) return {};
+
+  try {
+    const raw = storage.getItem(READER_SETTINGS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Partial<ReaderSettings>;
+    const settings: Partial<Pick<ReaderSettings, "theme" | "fontScale" | "reduceMotion">> = {};
+
+    if (isThemePreference(parsed.theme)) settings.theme = parsed.theme;
+    if (isFontScale(parsed.fontScale)) settings.fontScale = parsed.fontScale;
+    if (typeof parsed.reduceMotion === "boolean") settings.reduceMotion = parsed.reduceMotion;
+
+    return settings;
+  } catch {
+    return {};
+  }
+}
+
+function isThemePreference(value: unknown): value is ThemePreference {
+  return value === "day" || value === "night" || value === "sepia" || value === "system";
+}
+
+function isFontScale(value: unknown): value is FontScale {
+  return value === "compact" || value === "default" || value === "large";
+}
+
+
+function getEventTarget(): Pick<EventTarget, "addEventListener" | "removeEventListener"> | null {
+  if (
+    typeof globalThis === "undefined" ||
+    typeof globalThis.addEventListener !== "function" ||
+    typeof globalThis.removeEventListener !== "function"
+  ) {
+    return null;
+  }
+
+  return globalThis;
 }

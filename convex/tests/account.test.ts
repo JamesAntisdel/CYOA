@@ -4,10 +4,14 @@ import {
   buildAccountExport,
   buildClaimGuestPlan,
   buildMatureContentUpdate,
+  buildMediaPrefsUpdate,
   canEnableMatureContent,
+  createAccountDeletionSummary,
   createGuestAccountRecord,
+  DEFAULT_MEDIA_PREFS,
   projectAccount,
   requireEligibleAge,
+  resolveMediaPrefs,
   shouldPurgeGuest,
   type AccountRecord,
 } from "../account";
@@ -71,6 +75,7 @@ describe("account domain", () => {
       kind: "guest",
       ageBand: "18+",
       matureContentEnabled: false,
+      mediaPrefs: DEFAULT_MEDIA_PREFS,
     });
   });
 
@@ -88,7 +93,8 @@ describe("account domain", () => {
       updates: {
         kind: "user",
         userId: "user_1",
-        guestTokenHash: undefined,
+        // guestTokenHash is intentionally preserved (not cleared) so a claimed
+        // account isn't locked out before SSO/magic-link sign-in exists.
         ttlExpiresAt: undefined,
         lastActiveAt: now + 1,
       },
@@ -131,6 +137,82 @@ describe("account domain", () => {
       createdAt: now,
       lastActiveAt: now,
       isAdmin: false,
+    });
+  });
+
+  it("defaults mediaPrefs to all-enabled on the projection when the row has no override", () => {
+    const guest = createGuestAccountRecord({
+      ageSelection: "18+",
+      guestTokenHash: "secret",
+      now,
+    });
+    const projection = projectAccount({ ...guest, _id: "acct" });
+    expect(projection.mediaPrefs).toEqual({
+      imagesEnabled: true,
+      audioEnabled: true,
+      videoEnabled: true,
+    });
+    expect(projection.mediaPrefs).toEqual(DEFAULT_MEDIA_PREFS);
+  });
+
+  it("surfaces stored mediaPrefs on the projection", () => {
+    const guest = createGuestAccountRecord({
+      ageSelection: "18+",
+      guestTokenHash: "secret",
+      now,
+    });
+    const stored: AccountRecord = {
+      ...guest,
+      _id: "acct",
+      mediaPrefs: { imagesEnabled: true, audioEnabled: false, videoEnabled: false },
+    };
+    expect(projectAccount(stored).mediaPrefs).toEqual({
+      imagesEnabled: true,
+      audioEnabled: false,
+      videoEnabled: false,
+    });
+  });
+
+  it("resolves a missing or partial mediaPrefs to all-enabled defaults", () => {
+    expect(resolveMediaPrefs({})).toEqual(DEFAULT_MEDIA_PREFS);
+    // A malformed row (somehow lost a boolean field) reverts to true so
+    // we never silently disable media for legacy readers.
+    expect(
+      resolveMediaPrefs({
+        mediaPrefs: {
+          imagesEnabled: false,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          audioEnabled: undefined as unknown as boolean,
+          videoEnabled: true,
+        },
+      }),
+    ).toEqual({ imagesEnabled: false, audioEnabled: true, videoEnabled: true });
+  });
+
+  it("builds a normalized mediaPrefs patch coercing truthy values to booleans", () => {
+    expect(
+      buildMediaPrefsUpdate({ imagesEnabled: true, audioEnabled: false, videoEnabled: true }),
+    ).toEqual({
+      mediaPrefs: { imagesEnabled: true, audioEnabled: false, videoEnabled: true },
+    });
+  });
+
+  it("creates empty deletion summaries with explicit counters", () => {
+    expect(createAccountDeletionSummary("acct")).toEqual({
+      accountId: "acct",
+      savesDeleted: 0,
+      scenesDeleted: 0,
+      turnHistoryDeleted: 0,
+      endingsDeleted: 0,
+      entitlementsDeleted: 0,
+      usageMetersDeleted: 0,
+      dailyCountersDeleted: 0,
+      analyticsDeleted: 0,
+      assetsDeleted: 0,
+      taleReadsDeleted: 0,
+      taleForksDeleted: 0,
+      authoredSeedsArchived: 0,
+      publishedTalesRevoked: 0,
     });
   });
 });
