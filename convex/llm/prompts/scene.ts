@@ -1,6 +1,10 @@
 import type { NpcState } from "@cyoa/engine";
 
-import type { PlayerStateSnapshot, SceneGenerationRequest } from "../types";
+import type {
+  PlayerStateSnapshot,
+  PursuitPromptContext,
+  SceneGenerationRequest,
+} from "../types";
 
 /**
  * Compact sheet projected onto the LLM scene prompt for a single NPC. Hidden
@@ -125,6 +129,69 @@ function formatNpcSheetsSection(sheets: NpcSheet[]): string {
 }
 
 /**
+ * Render the `== YOUR PURSUIT ==` section (Requirements R1.3 / R6.1). Placed
+ * ABOVE the memory window so the spine (dramatic question, target beat,
+ * threads, one-shot directives) outranks scene-to-scene variety. Returns null
+ * when no pursuit context is present (legacy arc-less saves) so the prompt
+ * skips the section entirely.
+ *
+ * Spoiler discipline (BC10): the single steer-toward beat label appears ONLY
+ * on the STEER line; candidate-ending labels are NOT emitted here (they live
+ * in the ENDINGS output rule). Neither reaches the reader — the projection
+ * strips them.
+ */
+export function buildPursuitSection(pursuit: PursuitPromptContext): string {
+  const fired =
+    pursuit.firedBeatLabels.length > 0
+      ? pursuit.firedBeatLabels.join(", ")
+      : "none";
+  const lines: string[] = [
+    "== YOUR PURSUIT (the spine — this outranks variety) ==",
+    `Dramatic question: ${pursuit.dramaticQuestion}`,
+    `The protagonist wants: ${pursuit.protagonistWant}   Stakes if they fail: ${pursuit.stakes}`,
+    `Act ${pursuit.act}. Beats already landed: ${fired}.`,
+  ];
+  if (pursuit.targetBeatLabel) {
+    lines.push(
+      `STEER TOWARD (subtly, within 1-2 scenes): "${pursuit.targetBeatLabel}".`,
+    );
+    if (pursuit.targetBeatId) {
+      lines.push(
+        `When THIS scene lands that beat, set "beatFired": "${pursuit.targetBeatId}".`,
+      );
+    }
+  }
+  if (pursuit.directive === "surface_beat" && pursuit.surfaceBeatLabel) {
+    lines.push(
+      `The story tried to end too early — this scene must put "${pursuit.surfaceBeatLabel}" on stage.`,
+    );
+  }
+  if (pursuit.directive === "narrate_costly_survival") {
+    lines.push(
+      "The reader survives, barely — narrate a costly escape; do NOT set terminal this scene.",
+    );
+  }
+  for (const note of pursuit.threadFires) {
+    lines.push(`A THREAD FIRES THIS SCENE: "${note}" — narrate the callback.`);
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Turn-1 STORY ARC production block (R1.1). Instructs the model to emit a
+ * `storyArc` object alongside the scene so the engine can persist the spine.
+ * The schema mirrors `validateProposedArc`'s clamps — the engine drops/repairs
+ * anything malformed (BC5), so this is guidance, never a hard gate.
+ */
+const STORY_ARC_PRODUCTION_BLOCK = [
+  "STORY ARC (REQUIRED on turn 1 ONLY — ignored on every later turn). Also emit a top-level `storyArc` object that defines what this whole story is FOR:",
+  '`storyArc` = { "dramaticQuestion": string (8-160, phrased as a question or charge the reader is playing to answer), "protagonistWant": string (8-120, the concrete thing they pursue), "stakes": string (8-160, what is lost on failure), "beats": Beat[] (3-5), "candidateEndings": Ending[] (2-4) }.',
+  '`Beat` = { "id": kebab-slug (≤48), "label": string (≤80, a dramatic milestone), "kind": "inciting" | "midpoint" | "dark_night" | "climax" | "custom", "priorityHint": "early" | "mid" | "late", "requiredBeforeEnding": boolean }. At least the `climax` beat MUST be requiredBeforeEnding: true.',
+  '`Ending` = { "id": kebab-slug (≤48), "label": string (≤80), "hint": string (≤120, a spoiler-free teaser) }. These are the possible destinations; the reader must not be told them until reached.',
+  "The arc is the reader's promise — make the dramatic question specific to THIS premise, not a generic 'will they survive?'.",
+].join("\n");
+
+/**
  * Build the prompt body for a scene generation request. The shape adapts to
  * the request mode:
  *
@@ -217,6 +284,11 @@ function buildLlmDrivenPrompt(request: SceneGenerationRequest): string {
   const storySummaryBlock = request.storySummary
     ? `Story so far (running summary; treat as canonical):\n${request.storySummary}`
     : null;
+  // Story-arc pursuit section (R1.3 / R6.1). Rendered ABOVE the memory window
+  // so the spine outranks scene variety. Absent on legacy arc-less saves.
+  const pursuitBlock = request.pursuit ? buildPursuitSection(request.pursuit) : null;
+  const hasArc = request.pursuit !== undefined;
+  const candidateEndings = request.pursuit?.candidateEndings ?? [];
   const hasNpcSheets = Array.isArray(request.npcSheets) && request.npcSheets.length > 0;
   // Build the output rule bodies dynamically so the numbering stays consecutive
   // when rule 13 (NPC MENTIONS — which references the "Characters in scope"
@@ -225,9 +297,9 @@ function buildLlmDrivenPrompt(request: SceneGenerationRequest): string {
   // hallucinating that section.
   const ruleBodies: string[] = [
     'Output a single JSON object with this exact shape: { "prose": string, "choices": Choice[], "terminal": Terminal | null, "visualDescription"?: string, "npcMentions"?: string[] }.',
-    "choices is an array of 2 to 4 entries. Each choice is { id: string, label: string, tone?: string, effects?: Effect[] }.",
+    "choices is an array of 2 to 4 entries. Each choice is { id: string, label: string, tone?: string, effects?: Effect[], conditions?: Condition[], lockedHint?: string }.",
     "id is a short kebab-case identifier unique within this scene.",
-    "effects is an array of: { kind: 'stat', statId, delta }, { kind: 'currency', delta }, { kind: 'inventory_add', item: { id, label, description? } }, { kind: 'inventory_remove', itemId }, { kind: 'flag_set', flag, value }, or { kind: 'flag_unset', flag }.",
+    "effects is an array of: { kind: 'stat', statId, delta }, { kind: 'currency', delta }, { kind: 'inventory_add', item: { id, label, description? } }, { kind: 'inventory_remove', itemId }, { kind: 'flag_set', flag, value }, { kind: 'flag_unset', flag }, or { kind: 'delayed', delayNodes: 1-12, note: string (the foreshadow line the reader will feel pay off later), effects: Effect[] (1-3 leaf effects that fire when the thread lands) }.",
     "INVENTORY_ADD LOCATION RULE — when you emit `inventory_add`, the item's `description` MUST encode WHERE the item is right now and any notable state. Examples: 'Powerball ticket — hidden between pages 207-208 of The Count of Monte Cristo on the bedroom nightstand'; 'iron key — clipped to your belt loop, sticky with engine grease'; 'compact mirror — in your jacket's inner pocket, shattered on one corner'. The NEXT turn's prompt renders this description in the Current Player State block, and your NEXT scene's prose MUST respect the stated location. Do not narrate the protagonist pulling an item from their hand when its description says it's in a closet. When the protagonist physically moves an item to a new location (pulls the ticket out of the book and into a pocket, drops the key in a drawer), emit `inventory_remove` followed by a fresh `inventory_add` with the updated description on the same choice's effects array.",
     "Stat deltas must be integers between -10 and 10. Currency deltas between -100 and 100. The engine will clamp anything larger.",
     "terminal is null unless this scene is an ending. When set: { kind: 'death' | 'success' | 'safe', endingId: string, label?: string }.",
@@ -248,6 +320,23 @@ function buildLlmDrivenPrompt(request: SceneGenerationRequest): string {
       "Brisk, consequence-driven. Lead with the action or the dialogue. Two short establishment lines maximum. The beat is a TARGET, not a straitjacket — adjacent beats can blend, but never deliver two consecutive turns of the same beat shape.",
     "VISUAL DESCRIPTION (REQUIRED — the image renderer relies on this field; missing it produces a wrong image). Provide a `visualDescription` field with one concise sentence (under 320 chars) optimized for image generation. Name the SUBJECT (who/what is in frame RIGHT NOW in this scene — not a memory, not a past location), the SETTING (where the scene physically takes place AT THIS MOMENT, time of day, weather/light), 1-3 KEY OBJECTS with their SPATIAL RELATION (\"the cracked windshield to her left\", \"the radio above the seat\"), and the COMPOSITION (close-up, wide shot, over-the-shoulder, etc.). Use concrete real-world referents (\"Boeing 737 cockpit\", \"stainless steel coffee thermos\", \"vinyl bench seat\") not vague nouns (\"airplane\", \"cup\", \"chair\"). Avoid impossible or self-contradictory imagery (no airplanes without noses, no glass that is also wood, no characters described as both tall and seated-with-eye-level-at-ankles). The visualDescription MUST match the CURRENT physical scene in the prose — not a flashback, not a memory, not what the character is thinking about. If the prose opens with a memory or flashback, the visualDescription describes where the character is RIGHT NOW (the cockpit, the conference room, the porch), not the remembered location (their childhood living room, etc.). Example: prose mentions \"she remembers her living room before the flight\" but the scene is set in a 737 cockpit → visualDescription is about the cockpit, NOT the living room.",
   ];
+  // Story-arc rules (R6.2, R3.3, R4 guidance, R2.5). Only emitted on arc
+  // saves — legacy saves keep the exact prior rule set (BC9). CHOICE
+  // CONSEQUENCE tightens the divergence rule's tail; GATED CHOICE + THREADS +
+  // ENDINGS wire the new mechanics.
+  if (hasArc) {
+    ruleBodies.push(
+      "CHOICE CONSEQUENCE (this outranks flavor) — every choice you offer should visibly ADVANCE THE PURSUIT, SPEND OR RISK A RESOURCE, or CHANGE A RELATIONSHIP. Label concrete costs in the choice text itself, e.g. \"Bribe the ferryman (-15 gold)\" or \"Break the seal (risk your Nerve)\". A choice with no mechanical or arc consequence is a defect.",
+      "GATED CHOICE — roughly every 2-4 scenes, include EXACTLY ONE choice the reader cannot take yet, gated on state they have or nearly have. Attach `conditions` (0-2 of: { kind: 'stat_at_least'|'stat_at_most', statId, value }, { kind: 'has_item'|'missing_item', itemId }, { kind: 'flag_equals', flag, value }, { kind: 'currency_at_least', value }) and a `lockedHint` (≤90 chars, e.g. \"Needs the Bone Key\") so the reader sees the locked door and wants it. At most ONE gated choice per scene, and never gate so hard that fewer than 2 choices remain takeable.",
+      "THREADS (foreshadowing that pays off) — use the `delayed` effect to plant a seed now that fires later: at most ONE `delayed` per scene, and its `note` is the foreshadow line the reader should feel when it lands. When a thread fires (surfaced in YOUR PURSUIT as \"A THREAD FIRES THIS SCENE\"), you MUST narrate the callback this scene.",
+    );
+    if (candidateEndings.length > 0) {
+      const list = candidateEndings.map((e) => `${e.id} (${e.label})`).join("; ");
+      ruleBodies.push(
+        `ENDINGS — when this scene is the ending, choose \`terminal.endingId\` from these CANDIDATE ENDINGS: ${list}. The final scene's prose MUST explicitly answer the dramatic question. Do not name these candidates in the prose before they are reached.`,
+      );
+    }
+  }
   if (hasNpcSheets) {
     ruleBodies.push(
       "NPC MENTIONS — when the prose names an NPC by name (a recurring character with an identity, not a passing extra), include their id in `npcMentions`. Use the npc id from the \"Characters in scope\" section when present; for newly-introduced characters use a kebab-case slug of their name (e.g. \"mira-vale\"). This keeps the cast in scope for the next turn's prompt.",
@@ -257,6 +346,12 @@ function buildLlmDrivenPrompt(request: SceneGenerationRequest): string {
     "Do NOT include any text outside the single JSON object. No markdown fences, no preamble, no trailing commentary.",
     "ANCHORS (REQUIRED on turn 1 only). When `turn band === establish` AND this is turn 1, ALSO provide `protagonistAnchor` (one sentence describing the protagonist's face/build/clothing/era for a portrait — e.g. 'Korean woman late 30s, faded yellow rain jacket, short black hair, weathered hands, hazel eyes, painterly realism') and `settingAnchor` (one sentence describing the primary setting as an establishing shot — e.g. 'Pacific Northwest cove at dawn, gray fog over slick black rocks, distant fishing boats, painterly realism'). These prime the image renderer with reference portraits that anchor character + setting across the entire story. Both fields are IGNORED on subsequent turns — write them only at turn 1.",
   );
+  // Turn-1 arc-production instruction (R1.1). Only when the caller asked for a
+  // fresh arc (arc save's opening turn, arc not yet authored). Appended to the
+  // output rules so it rides the same "emit this JSON" contract.
+  if (request.produceArc) {
+    ruleBodies.push(STORY_ARC_PRODUCTION_BLOCK);
+  }
   const outputRules = [
     "Output rules — failure to follow these is rejected:",
     ...ruleBodies.map((body, i) => `${i + 1}. ${body}`),
@@ -267,6 +362,9 @@ function buildLlmDrivenPrompt(request: SceneGenerationRequest): string {
     turnContext,
     `Scene length: ${lengthInstruction(request.sceneLength, turnBand)}`,
     storySummaryBlock,
+    // Pursuit section sits ABOVE the memory window — canonical spine before
+    // scene texture (R6.1).
+    pursuitBlock,
     `Recent story memory (oldest → newest):\n${memory}`,
     `Current player state:\n${playerStateSummary(request.playerState)}`,
     npcSheetsBlock(request.npcSheets),

@@ -55,6 +55,48 @@ export type NpcSheetSnapshot = {
   attributes: Array<{ label: string; value: number }>;
 };
 
+/**
+ * Story-arc "pursuit" context threaded onto the scene prompt (Requirements
+ * R1.3, R6.1). The Convex request builder fills this from `state.arc` (the
+ * arc created on turn 1 — see `convex/game.ts`); the prompt-builder renders it
+ * as the `== YOUR PURSUIT ==` section ABOVE the memory window so the spine
+ * outranks variety. Absent on legacy (arc-less) saves — the prompt then skips
+ * the whole section and behaves exactly as before (BC9).
+ *
+ * Spoiler discipline (BC10): the candidate-ending labels appear ONLY in the
+ * ENDINGS output rule; the single steer-toward beat label appears ONLY in the
+ * steer line. Neither reaches the reader (the projection strips them) — this is
+ * the LLM's private planning surface.
+ */
+export type PursuitPromptContext = {
+  dramaticQuestion: string;
+  protagonistWant: string;
+  stakes: string;
+  act: number;
+  /** Labels of beats already fired (safe to name — the reader lived them). */
+  firedBeatLabels: string[];
+  /** The single beat to steer toward this scene, or null when none pending. */
+  targetBeatLabel: string | null;
+  /** Id the model must set on `beatFired` when it lands the target beat. */
+  targetBeatId: string | null;
+  /** Candidate endings the final scene must choose from (R2.4). */
+  candidateEndings: Array<{ id: string; label: string }>;
+  /**
+   * One-shot directive from the terminal gate (R2), consumed + cleared by the
+   * prompt build that surfaces it. `surface_beat` → the story tried to end
+   * early; `narrate_costly_survival` → an early death was converted to a
+   * severe setback.
+   */
+  directive?: "surface_beat" | "narrate_costly_survival";
+  /** Beat label to put on stage when `directive === "surface_beat"`. */
+  surfaceBeatLabel?: string;
+  /**
+   * Foreshadow notes of delayed threads that fired on the just-completed turn
+   * (R3.3) — the next scene must narrate the callback. Empty when none fired.
+   */
+  threadFires: string[];
+};
+
 export type SceneGenerationRequest = {
   saveId: string;
   storyId: string;
@@ -98,6 +140,19 @@ export type SceneGenerationRequest = {
    * summarizer.
    */
   storySummary?: string;
+  /**
+   * Story-arc pursuit context (R1.3 / R6.1). Present on arc saves; the
+   * prompt-builder renders the `== YOUR PURSUIT ==` section from it. Absent on
+   * legacy saves — the section is skipped entirely.
+   */
+  pursuit?: PursuitPromptContext;
+  /**
+   * True only on an arc save's OPENING turn (turn 1) when the arc has NOT yet
+   * been authored — the prompt then carries the STORY ARC production block
+   * instructing the model to emit a `storyArc` object (R1.1). Absent/false on
+   * every later turn and on daily saves (arc is pre-injected).
+   */
+  produceArc?: boolean;
 };
 
 export const sceneGenerationRequestSchema = z.object({
@@ -139,6 +194,22 @@ export const sceneGenerationRequestSchema = z.object({
     )
     .optional(),
   storySummary: z.string().optional(),
+  pursuit: z
+    .object({
+      dramaticQuestion: z.string(),
+      protagonistWant: z.string(),
+      stakes: z.string(),
+      act: z.number(),
+      firedBeatLabels: z.array(z.string()),
+      targetBeatLabel: z.string().nullable(),
+      targetBeatId: z.string().nullable(),
+      candidateEndings: z.array(z.object({ id: z.string(), label: z.string() })),
+      directive: z.enum(["surface_beat", "narrate_costly_survival"]).optional(),
+      surfaceBeatLabel: z.string().optional(),
+      threadFires: z.array(z.string()),
+    })
+    .optional(),
+  produceArc: z.boolean().optional(),
 });
 
 export type TokenChunk = {

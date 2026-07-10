@@ -19,7 +19,22 @@ type ChapterEndProps = {
   reducedMotion?: boolean;
   muted?: boolean;
   audioEnabled?: boolean;
+  /**
+   * Story-engagement Wave 1 (R1.5, design §4.1) — when this chapter boundary
+   * coincides with an act advance (an `act_advanced` diff on the turn), the
+   * recap stamps the new act ("Act II — <label>"). Both optional: a normal
+   * chapter boundary (no act change) omits them and the stamp doesn't render.
+   */
+  actNumber?: number;
+  actLabel?: string;
 };
+
+const ACT_ROMAN = ["I", "II", "III", "IV", "V"];
+function actRoman(n: number): string {
+  if (n < 1) return "I";
+  if (n <= ACT_ROMAN.length) return ACT_ROMAN[n - 1]!;
+  return String(n);
+}
 
 const ROMAN_NUMERALS = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"];
 
@@ -49,9 +64,15 @@ export function ChapterEnd({
   reducedMotion = false,
   muted = false,
   audioEnabled = true,
+  actNumber,
+  actLabel,
 }: ChapterEndProps) {
   const { tokens } = useAppTheme();
   const chapterLabel = `Chapter ${romanize(chapterIndex)}`;
+  const actStamp =
+    actNumber !== undefined
+      ? `Act ${actRoman(actNumber)}${actLabel ? ` — ${actLabel}` : ""}`
+      : null;
 
   return (
     <Surface
@@ -72,6 +93,9 @@ export function ChapterEnd({
       ) : null}
 
       <View style={{ gap: tokens.spacing.xs }}>
+        {actStamp ? (
+          <Stamp accessibilityLabel={`${actStamp} begins`}>{actStamp}</Stamp>
+        ) : null}
         <Stamp>End of {chapterLabel.toLowerCase()}</Stamp>
         <Text
           style={{

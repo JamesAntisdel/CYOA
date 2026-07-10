@@ -1,4 +1,4 @@
-import type { Mode, NpcState, PlayerState, Story } from "./types";
+import type { Mode, NpcState, PlayerState, Story, StoryArc } from "./types";
 
 /**
  * Bumped to 2 alongside Requirement 31 (NPCs and Companions). The migration
@@ -50,6 +50,19 @@ export function cloneState(state: PlayerState): PlayerState {
       ]),
     ),
     npcs: cloneNpcRoster(state.npcs),
+    // Optional story-arc fields (Requirement 1). Deep-clone so mutations on the
+    // returned state never leak back to the previous turn's snapshot. Absent on
+    // legacy saves — the conditional spread keeps them absent (BC4/BC9).
+    ...(state.arc !== undefined ? { arc: cloneArc(state.arc) } : {}),
+    ...(state.clock !== undefined ? { clock: { ...state.clock } } : {}),
+  };
+}
+
+function cloneArc(arc: StoryArc): StoryArc {
+  return {
+    ...arc,
+    beats: arc.beats.map((beat) => ({ ...beat })),
+    candidateEndings: arc.candidateEndings.map((candidate) => ({ ...candidate })),
   };
 }
 

@@ -182,6 +182,63 @@ export type ScheduledEffect = {
   id: string;
   remainingNodes: number;
   effects: Effect[];
+  /**
+   * Chekhov-thread foreshadow line (Requirement 3). Optional — authored
+   * delayed effects leave it undefined; LLM-scheduled threads carry the
+   * one-line callback text so the client can surface "an earlier choice
+   * echoes" when the thread fires. Spoiler-adjacent: the projection exposes
+   * the note ONLY once the thread has fired (see BC10).
+   */
+  note?: string;
+};
+
+// =============================================================================
+// Story Arc (Requirement 1) — the "spine" every llm-driven save is playing
+// toward. All fields ride inside the opaque `saves.state` blob, so there is no
+// convex schema change. Legacy saves lack `arc` entirely and branch to legacy
+// behavior everywhere (BC9).
+// =============================================================================
+
+export type ArcBeatKind = "inciting" | "midpoint" | "dark_night" | "climax" | "custom";
+export type ArcPriorityHint = "early" | "mid" | "late";
+export type ArcBeatStatus = "pending" | "fired";
+
+export type ArcBeat = {
+  id: string;
+  label: string;
+  kind: ArcBeatKind;
+  priorityHint: ArcPriorityHint;
+  requiredBeforeEnding: boolean;
+  status: ArcBeatStatus;
+  firedAtTurn?: number;
+};
+
+export type CandidateEnding = {
+  id: string;
+  label: string;
+  hint: string;
+};
+
+export type StoryArcSource = "llm" | "synthesized" | "daily";
+
+export type StoryArc = {
+  dramaticQuestion: string; // 8–160
+  protagonistWant: string; // 8–120
+  stakes: string; // 8–160
+  act: 1 | 2 | 3;
+  actLabel?: string; // generated on act advance
+  beats: ArcBeat[]; // 3–5
+  candidateEndings: CandidateEnding[]; // 2–4
+  antagonistNpcId?: string; // W2
+  clockLabel?: string; // W2
+  source: StoryArcSource;
+};
+
+export type StoryClock = {
+  label: string;
+  value: number;
+  max: number;
+  expired: boolean;
 };
 
 export type UnlockedEnding = {
@@ -211,6 +268,15 @@ export type PlayerState = {
    * to `npcs: {}` so downstream code never has to defensive-default.
    */
   npcs: Record<string, NpcState>;
+  /**
+   * Story arc (Requirement 1). Optional — present only on llm-driven saves
+   * created after story-engagement W1 shipped. Absent on legacy saves, which
+   * keep playing under legacy terminal/gate behavior (BC9). Chekhov threads
+   * ride inside `delayed` (each `ScheduledEffect.note`), NOT a parallel store.
+   */
+  arc?: StoryArc;
+  /** Doom clock (Requirement 9, W2). Optional; legacy + arc-less saves omit it. */
+  clock?: StoryClock;
   schemaVersion: number;
 };
 
@@ -237,7 +303,15 @@ export type EngineDiff =
   | { kind: "npc_inventory_add"; target: string; itemId: string; delta: 1 }
   | { kind: "npc_inventory_remove"; target: string; itemId: string; delta: -1 }
   | { kind: "npc_flag_set"; target: string; flag: string; delta: boolean | number; before?: boolean | number; after: boolean | number }
-  | { kind: "npc_learn_fact"; target: string; fact: string; delta: 1 };
+  | { kind: "npc_learn_fact"; target: string; fact: string; delta: 1 }
+  // -- Story-engagement W1 additions (Requirements 1, 3, 5). Each is an
+  //    additive union member tagged with a projection `visibility` tier so the
+  //    server's diff-persistence step can filter to the reader-visible set
+  //    (BC10). Existing diff consumers switch on `kind` and ignore these.
+  | { kind: "thread_set"; target: string; note: string | null; visibility: "visible" }
+  | { kind: "thread_fired"; target: string; note: string | null; visibility: "visible" }
+  | { kind: "beat_fired"; target: string; label: string; visibility: "visible" }
+  | { kind: "act_advanced"; target: string; act: number; visibility: "visible" };
 
 export type EngineEvent =
   | { kind: "choice_applied"; choiceId: string }

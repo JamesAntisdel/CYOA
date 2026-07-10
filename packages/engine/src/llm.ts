@@ -1,17 +1,28 @@
 import { z } from "zod";
 
+import {
+  advanceActIfDue,
+  arcAllowsEnding,
+  fireBeat,
+  findArcBeat,
+  nextTargetBeat,
+  normalizeEndingId,
+} from "./arc";
 import { resolveDeath } from "./death";
+import { popDueDelayedEffects, scheduleThread } from "./delayed";
 import { unlockCurrentEnding } from "./endings";
-import { setFlag, unsetFlag } from "./flags";
-import { addItem, removeItem } from "./inventory";
+import { getFlag, setFlag, unsetFlag } from "./flags";
+import { addItem, hasItem, removeItem } from "./inventory";
 import { cloneState } from "./state";
-import { applyStatDelta } from "./stats";
+import { applyStatDelta, getStat } from "./stats";
 import type {
+  Effect,
   EngineContext,
   EngineDiff,
   EngineEvent,
   EngineResult,
   PlayerState,
+  StoryArc,
   Story,
 } from "./types";
 
@@ -26,8 +37,19 @@ const STAT_DELTA_BOUND = 10;
 const CURRENCY_DELTA_BOUND = 100;
 const DELAYED_MAX_HORIZON = 12;
 const MAX_EFFECTS_PER_CHOICE = 6;
+/** A Chekhov thread bundles 1–3 leaf effects (Requirement 3.1). */
+const MAX_DELAYED_LEAF_EFFECTS = 3;
+/** ≤1 delayed thread may be scheduled per applied proposal (Requirement 3.1). */
+const MAX_DELAYED_PER_PROPOSAL = 1;
+/** Foreshadow line clamp on a `delayed` thread (Requirement 3.1). */
+const THREAD_NOTE_MAX = 120;
+/** 0–2 conditions per gated choice (Requirement 4.1). */
+const MAX_CONDITIONS_PER_CHOICE = 2;
+const LOCKED_HINT_MAX = 90;
 const MAX_CHOICES = 4;
 const MIN_CHOICES = 2;
+/** Non-terminal scenes always keep ≥2 available choices (Requirement 4.5). */
+const MIN_VISIBLE_CHOICES = 2;
 // Authoritative bound on the engine's scene prose. With `responseSchema`
 // dropped from the Vertex provider (gemini-3-flash-preview ignores it),
 // the Zod parser is the actual gate. The model self-paces well under
@@ -89,13 +111,38 @@ const leafEffectSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("flag_unset"), flag: clampedString({ min: 1, max: 64 }) }),
 ]);
 
+// Chekhov thread (Requirement 3): a delayed effect carrying a foreshadow
+// `note`. Previously validated-then-dropped in `applyEffect`; now scheduled
+// via the delayed store. Bundles 1–3 leaf effects that fire together after the
+// horizon elapses.
 const delayedEffectSchema = z.object({
   kind: z.literal("delayed"),
   delayNodes: z.number().int().positive().max(DELAYED_MAX_HORIZON),
-  effects: z.array(leafEffectSchema).max(MAX_EFFECTS_PER_CHOICE),
+  effects: z.array(leafEffectSchema).min(1).max(MAX_DELAYED_LEAF_EFFECTS),
+  note: clampedString({ max: THREAD_NOTE_MAX }).optional(),
 });
 
 export const llmEffectSchema = z.union([leafEffectSchema, delayedEffectSchema]);
+
+// Conditions the LLM may attach to a choice to gate it (Requirement 4.1). A
+// strict subset of the engine `Condition` union PLUS `currency_at_least` (the
+// engine's authored-story path has no currency predicate; the llm path adds
+// it here without widening the shared `Condition` type). Each entry is
+// tolerant-dropped individually at parse time, mirroring `effects`.
+const llmChoiceConditionSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("stat_at_least"), statId: clampedString({ min: 1, max: 64 }), value: z.number().finite() }),
+  z.object({ kind: z.literal("stat_at_most"), statId: clampedString({ min: 1, max: 64 }), value: z.number().finite() }),
+  z.object({ kind: z.literal("has_item"), itemId: clampedString({ min: 1, max: 64 }) }),
+  z.object({ kind: z.literal("missing_item"), itemId: clampedString({ min: 1, max: 64 }) }),
+  z.object({
+    kind: z.literal("flag_equals"),
+    flag: clampedString({ min: 1, max: 64 }),
+    value: z.union([z.boolean(), z.number().finite(), clampedString({ max: 240 })]),
+  }),
+  z.object({ kind: z.literal("currency_at_least"), value: z.number().finite() }),
+]);
+
+export type LlmChoiceCondition = z.infer<typeof llmChoiceConditionSchema>;
 
 export const llmChoiceSchema = z.object({
   id: clampedString({ min: 1, max: 64 }),
@@ -120,6 +167,24 @@ export const llmChoiceSchema = z.object({
       }, []),
     )
     .optional(),
+  // Tolerant conditions (Requirement 4.1): 0–2 per choice, each entry
+  // safeParse'd individually so a single malformed condition is dropped
+  // rather than failing the turn (same pattern as `effects`). Server-side
+  // visibility evaluation (`evaluateLlmChoiceVisibility`) turns surviving
+  // conditions into `visible | locked`; the convex parse boundary logs drops.
+  conditions: z
+    .array(z.unknown())
+    .transform((raw) =>
+      raw.reduce<LlmChoiceCondition[]>((kept, candidate) => {
+        if (kept.length >= MAX_CONDITIONS_PER_CHOICE) return kept;
+        const parsed = llmChoiceConditionSchema.safeParse(candidate);
+        if (parsed.success) kept.push(parsed.data);
+        return kept;
+      }, []),
+    )
+    .optional(),
+  /** Caption shown on the 🔒 locked card (Requirement 4.1). */
+  lockedHint: clampedString({ min: 1, max: LOCKED_HINT_MAX }).optional(),
 });
 
 export const llmTerminalSchema = z.object({
@@ -128,11 +193,44 @@ export const llmTerminalSchema = z.object({
   label: clampedString({ min: 1, max: 160 }).optional(),
 });
 
+// Loose turn-1 arc envelope (Requirement 1.1). The schema only shape-checks
+// that the core string fields + arrays are present; full clamping/validation
+// happens later via `validateProposedArc` (convex, turn 1 only). `.catch`
+// tolerantly DROPS a malformed arc (→ undefined) so the scene still parses and
+// the server falls back to `synthesizeFallbackArc` (BC5). Ignored on turns >1,
+// mirroring the one-time `protagonistAnchor` pattern.
+const rawStoryArcSchema = z
+  .object({
+    dramaticQuestion: z.string(),
+    protagonistWant: z.string(),
+    stakes: z.string(),
+    act: z.unknown().optional(),
+    beats: z.array(z.unknown()),
+    candidateEndings: z.array(z.unknown()),
+  })
+  .passthrough();
+
+export type LlmStoryArcProposal = z.infer<typeof rawStoryArcSchema>;
+
 export const llmSceneOutputSchema = z
   .object({
     prose: z.string().min(1).max(MAX_PROSE_CHARS),
     choices: z.array(llmChoiceSchema).min(MIN_CHOICES).max(MAX_CHOICES),
     terminal: llmTerminalSchema.nullable().optional(),
+    /**
+     * Turn-1 story arc (Requirement 1.1). Validated later via
+     * `validateProposedArc`; malformed arcs are dropped here (`.catch`) so the
+     * scene survives and the server synthesizes a fallback. Ignored on turns
+     * >1 (same one-time contract as `protagonistAnchor`).
+     */
+    storyArc: rawStoryArcSchema.optional().catch(undefined),
+    /**
+     * Beat id the model claims this scene landed (Requirement 1.4). The engine
+     * marks it fired (idempotent; unknown/already-fired ids are no-ops). Clamped
+     * to a bounded slug-ish string; tolerant — a stray value is simply not
+     * matched against the arc.
+     */
+    beatFired: clampedString({ min: 1, max: 48 }).optional(),
     /**
      * NPC ids the model believes were mentioned in this scene's prose.
      * Optional — the model is encouraged to populate this but legacy
@@ -195,9 +293,31 @@ export type LlmChoiceProposal = z.infer<typeof llmChoiceSchema>;
 export type LlmTerminalProposal = z.infer<typeof llmTerminalSchema>;
 export type LlmSceneProposal = z.infer<typeof llmSceneOutputSchema>;
 
+/**
+ * Instruction the terminal gate hands back to the prompt builder when it
+ * strips or reshapes a proposed ending (Requirement 2). The server stores it
+ * as `pendingDirective` on the save and clears it after the next prompt build.
+ */
+export type TerminalDirective =
+  | "narrate_costly_survival"
+  | `surface_beat:${string}`;
+
+/** Per-choice visibility result on the llm path (Requirement 4). */
+export type LlmChoiceVisibility = {
+  visibility: "visible" | "locked";
+  lockedHint?: string;
+};
+
+export type LlmSceneChoiceVisibility = LlmChoiceVisibility & { choiceId: string };
+
 export type LlmSceneApplyResult = EngineResult & {
   proposal: LlmSceneProposal;
   terminal: LlmTerminalProposal | null;
+  /**
+   * The prompt directive produced by the terminal gate this turn (Requirement
+   * 2), or null when the terminal was honored / no arc gate applied.
+   */
+  directive: TerminalDirective | null;
   /**
    * The choice the player just took (its effects were already applied).
    * Null when entering the opening scene of an LLM-driven story.
@@ -264,6 +384,11 @@ export function advanceLlmTurnCursor(input: {
   if (priorProposal && choiceId && !freeform) {
     const choice = priorProposal.choices.find((candidate) => candidate.id === choiceId);
     if (!choice) throw new Error(`llm_choice_not_found:${choiceId}`);
+    // Tick pending Chekhov threads BEFORE applying the chosen choice's effects
+    // (Requirement 3.2 / design §1.3 ordering): a thread planted last turn with
+    // delayNodes=1 fires now, and its fired effects clamp identically to direct
+    // effects.
+    tickDelayedThreads(next, diffs, events);
     applyEffects(next, choice.effects ?? [], diffs);
     events.push({ kind: "choice_applied", choiceId });
     appliedChoiceId = choiceId;
@@ -272,7 +397,8 @@ export function advanceLlmTurnCursor(input: {
     // Free-form: caller bypasses the prior-proposal lookup. We still want a
     // `choice_applied` event so the memory-window plumbing sees a turn was
     // taken, and we still increment turnNumber so `llmNodeId` below advances
-    // to the next slot.
+    // to the next slot. Threads still tick — a turn was taken.
+    tickDelayedThreads(next, diffs, events);
     events.push({ kind: "choice_applied", choiceId });
     appliedChoiceId = choiceId;
     next.turnNumber += 1;
@@ -302,14 +428,38 @@ export function recordLlmProposalTerminal(input: {
   story: Story;
   proposal: LlmSceneProposal;
   ctx: EngineContext;
-}): EngineResult & { terminal: LlmTerminalProposal | null } {
+}): EngineResult & { terminal: LlmTerminalProposal | null; directive: TerminalDirective | null } {
   const { state, story, proposal, ctx } = input;
   void ctx;
   const next = cloneState(state);
   const diffs: EngineDiff[] = [];
   const events: EngineEvent[] = [];
-  let terminal: LlmTerminalProposal | null = proposal.terminal ?? null;
 
+  // 1. Beat firing (Requirement 1.4). Only on arc saves; idempotent + tolerant.
+  //    Emits `beat_fired` (and `act_advanced` when the act rolls over).
+  if (next.arc && proposal.beatFired) {
+    const beforeAct = next.arc.act;
+    const target = findArcBeat(next.arc, proposal.beatFired);
+    const { arc: firedArc, fired } = fireBeat(next.arc, proposal.beatFired, next.turnNumber);
+    if (fired && target) {
+      const advanced = advanceActIfDue(firedArc);
+      next.arc = advanced;
+      diffs.push({ kind: "beat_fired", target: target.id, label: target.label, visibility: "visible" });
+      if (advanced.act !== beforeAct) {
+        diffs.push({ kind: "act_advanced", target: "arc", act: advanced.act, visibility: "visible" });
+      }
+    }
+  }
+
+  // 2. Terminal gate (Requirement 2). Pure decision over the (possibly just
+  //    beat-advanced) arc. Arc-less saves pass through untouched — the caller
+  //    keeps `guardEarlyTerminal`. `directive` is surfaced for the prompt.
+  const gate = gateTerminal(next.arc, proposal.terminal ?? null, next.turnNumber, next.vitality);
+  let terminal: LlmTerminalProposal | null = gate.terminal;
+  const directive: TerminalDirective | null = gate.directive;
+
+  // Engine-forced death always wins (vitality 0) — the gate passes vitality-0
+  // through so this override records the death terminal (Requirement 2.2).
   if (next.vitality <= 0) {
     terminal = {
       kind: "death",
@@ -337,7 +487,7 @@ export function recordLlmProposalTerminal(input: {
   }
 
   unlockCurrentEnding(next, story, diffs, events);
-  return { state: next, diffs, events, terminal };
+  return { state: next, diffs, events, terminal, directive };
 }
 
 /**
@@ -373,12 +523,42 @@ export function applyLlmSceneToState(input: {
     events: [...phaseA.events, ...phaseB.events],
     proposal: input.nextProposal,
     terminal: phaseB.terminal,
+    directive: phaseB.directive,
     appliedChoiceId: phaseA.appliedChoiceId,
   };
 }
 
 function applyEffects(state: PlayerState, effects: LlmEffect[], diffs: EngineDiff[]): void {
-  for (const effect of effects) applyEffect(state, effect, diffs);
+  let delayedScheduled = 0;
+  for (const effect of effects) {
+    if (effect.kind === "delayed") {
+      // ≤1 delayed thread per applied proposal (Requirement 3.1); extras drop.
+      if (delayedScheduled >= MAX_DELAYED_PER_PROPOSAL) continue;
+      delayedScheduled += 1;
+    }
+    applyEffect(state, effect, diffs);
+  }
+}
+
+/**
+ * Tick pending Chekhov threads and fire the due ones (Requirement 3.2). Fired
+ * effects are the same leaf shapes the LLM emits directly, so they route back
+ * through `applyEffects` and clamp identically. Each fired thread emits a
+ * `thread_fired` diff carrying its foreshadow note.
+ */
+function tickDelayedThreads(state: PlayerState, diffs: EngineDiff[], events: EngineEvent[]): void {
+  const due = popDueDelayedEffects(state, events);
+  for (const scheduled of due) {
+    // Stored thread effects are leaf-only engine effects (a subset of
+    // `LlmEffect`); apply them through the same clamped path.
+    applyEffects(state, scheduled.effects as unknown as LlmEffect[], diffs);
+    diffs.push({
+      kind: "thread_fired",
+      target: scheduled.id,
+      note: scheduled.note ?? null,
+      visibility: "visible",
+    });
+  }
 }
 
 function applyEffect(state: PlayerState, effect: LlmEffect, diffs: EngineDiff[]): void {
@@ -420,10 +600,16 @@ function applyEffect(state: PlayerState, effect: LlmEffect, diffs: EngineDiff[])
       unsetFlag(state, effect.flag, diffs);
       return;
     case "delayed":
-      // The LLM-driven flow doesn't support delayed effects yet — the engine's
-      // delayed machinery is built around authored node-count horizons that
-      // don't translate cleanly to free-form scenes. Validate the shape and
-      // drop the effect rather than risk applying it at the wrong horizon.
+      // Chekhov thread (Requirement 3.1). Schedule via the shared delayed store
+      // carrying the foreshadow note; it ticks each subsequent turn and fires
+      // through `tickDelayedThreads`. The bundled effects are leaf-only.
+      scheduleThread(
+        state,
+        effect.delayNodes,
+        effect.effects as unknown as Effect[],
+        effect.note ?? null,
+        diffs,
+      );
       return;
   }
 }
@@ -473,4 +659,157 @@ function humanizeStatLabel(statId: string): string {
     .split(/\s+/u)
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
     .join(" ");
+}
+
+// =============================================================================
+// Terminal gate (Requirement 2). Pure decision consumed by the server: it
+// replaces the turn-count `guardEarlyTerminal` for arc saves, deciding whether
+// a proposed ending is earned and, if not, what directive the next prompt
+// should carry. Arc-less saves pass through untouched (legacy branch, BC9).
+// =============================================================================
+
+/** Turn ceiling above which any proposed terminal is honored (runaway guard). */
+const HARD_CAP_TURN = 30;
+
+export function gateTerminal(
+  arc: StoryArc | undefined,
+  terminal: LlmTerminalProposal | null,
+  turnNumber: number,
+  vitality: number,
+): { terminal: LlmTerminalProposal | null; directive: TerminalDirective | null } {
+  // Dying overrides the gate — the caller/engine forces a death terminal.
+  if (vitality <= 0) return { terminal, directive: null };
+  // Arc-less saves keep legacy behavior (caller retains guardEarlyTerminal).
+  if (!arc) return { terminal, directive: null };
+  // Nothing proposed → nothing to gate.
+  if (!terminal) return { terminal: null, directive: null };
+
+  const honored = (): { terminal: LlmTerminalProposal; directive: null } => ({
+    terminal: { ...terminal, endingId: normalizeEndingId(arc, terminal.endingId) },
+    directive: null,
+  });
+
+  // Runaway protection: any terminal is allowed at/after the hard cap.
+  if (turnNumber >= HARD_CAP_TURN) return honored();
+
+  if (terminal.kind === "death") {
+    // Death before the midpoint is converted to a costly survival; after it,
+    // death is a valid dramatic outcome (Requirement 2.2).
+    return pastMidpoint(arc)
+      ? honored()
+      : { terminal: null, directive: "narrate_costly_survival" };
+  }
+
+  // success | safe: honored only once every required beat has fired.
+  if (arcAllowsEnding(arc)) return honored();
+  const beatId = firstUnfiredRequiredBeatId(arc) ?? nextTargetBeat(arc, turnNumber)?.id ?? "";
+  return { terminal: null, directive: `surface_beat:${beatId}` };
+}
+
+function pastMidpoint(arc: StoryArc): boolean {
+  const hasMidpoint = arc.beats.some((beat) => beat.kind === "midpoint");
+  if (!hasMidpoint) return arc.act >= 2;
+  return arc.beats.some((beat) => beat.kind === "midpoint" && beat.status === "fired");
+}
+
+function firstUnfiredRequiredBeatId(arc: StoryArc): string | undefined {
+  return arc.beats.find((beat) => beat.requiredBeforeEnding && beat.status !== "fired")?.id;
+}
+
+// =============================================================================
+// Conditional / locked choices on the llm path (Requirement 4). Self-contained
+// predicate evaluation (the authored path's `visibility.ts` covers the engine
+// `Condition` union; the llm path adds `currency_at_least` and evaluates its
+// own tolerant condition set here without widening the shared type).
+// =============================================================================
+
+export function evaluateLlmChoiceVisibility(
+  choice: LlmChoiceProposal,
+  state: PlayerState,
+): LlmChoiceVisibility {
+  for (const condition of choice.conditions ?? []) {
+    const outcome = evaluateLlmCondition(condition, state);
+    // Unknown-referent conditions are dropped (choice stays available) —
+    // same tolerant intent as effect drops (Requirement 4.2).
+    if (outcome === "drop") continue;
+    if (outcome === "fail") {
+      return choice.lockedHint !== undefined
+        ? { visibility: "locked", lockedHint: choice.lockedHint }
+        : { visibility: "locked" };
+    }
+  }
+  return { visibility: "visible" };
+}
+
+function evaluateLlmCondition(
+  condition: LlmChoiceCondition,
+  state: PlayerState,
+): "pass" | "fail" | "drop" {
+  switch (condition.kind) {
+    case "stat_at_least": {
+      // Unknown stat (the model hallucinated a stat the save never had) →
+      // drop, so the choice is never permanently unsatisfiable.
+      const stat = getStat(state, condition.statId);
+      if (stat === undefined) return "drop";
+      return stat.value >= condition.value ? "pass" : "fail";
+    }
+    case "stat_at_most": {
+      const stat = getStat(state, condition.statId);
+      if (stat === undefined) return "drop";
+      return stat.value <= condition.value ? "pass" : "fail";
+    }
+    case "has_item":
+      return hasItem(state, condition.itemId) ? "pass" : "fail";
+    case "missing_item":
+      return hasItem(state, condition.itemId) ? "fail" : "pass";
+    case "flag_equals":
+      return getFlag(state, condition.flag) === condition.value ? "pass" : "fail";
+    case "currency_at_least":
+      return state.currency >= condition.value ? "pass" : "fail";
+  }
+}
+
+/**
+ * Evaluate a whole scene's choices with the scene-level invariants enforced
+ * (Requirement 4.4–4.5): at most ONE locked choice (extra gated choices beyond
+ * the first are unlocked), and — on non-terminal scenes — at least
+ * `MIN_VISIBLE_CHOICES` available choices (the remaining locked choice is
+ * unlocked if needed). Returns one entry per choice, in order.
+ */
+export function evaluateLlmSceneChoices(
+  choices: LlmChoiceProposal[],
+  state: PlayerState,
+  opts?: { terminal?: boolean },
+): LlmSceneChoiceVisibility[] {
+  const results: LlmSceneChoiceVisibility[] = choices.map((choice) => ({
+    choiceId: choice.id,
+    ...evaluateLlmChoiceVisibility(choice, state),
+  }));
+
+  // ≤1 locked per scene: keep the first locked (array order), unlock the rest.
+  let lockedSeen = false;
+  for (const result of results) {
+    if (result.visibility !== "locked") continue;
+    if (lockedSeen) unlockChoiceResult(result);
+    else lockedSeen = true;
+  }
+
+  // ≥2 available on non-terminal scenes: unlock the remaining locked choice(s).
+  if (opts?.terminal !== true) {
+    for (const result of results) {
+      if (countVisibleChoices(results) >= MIN_VISIBLE_CHOICES) break;
+      if (result.visibility === "locked") unlockChoiceResult(result);
+    }
+  }
+
+  return results;
+}
+
+function unlockChoiceResult(result: LlmSceneChoiceVisibility): void {
+  result.visibility = "visible";
+  delete result.lockedHint;
+}
+
+function countVisibleChoices(results: LlmSceneChoiceVisibility[]): number {
+  return results.reduce((n, result) => (result.visibility === "visible" ? n + 1 : n), 0);
 }

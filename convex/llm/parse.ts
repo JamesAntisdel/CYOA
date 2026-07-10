@@ -143,30 +143,88 @@ export function parseSceneOutput(raw: string): ParsedScene {
 }
 
 /**
- * Observability for the schema's tolerant effect handling: `llmChoiceSchema`
- * silently drops individual malformed effects (an unrecognized `kind`, or more
- * than the per-choice cap) instead of failing the whole scene. Log which kinds
- * were dropped so model drift stays visible — if the model keeps proposing a
- * specific effect we don't support, that's the signal to add it. Best-effort;
+ * Observability for the schema's tolerant handling (BC5). `llmChoiceSchema`
+ * silently drops individual malformed effects/conditions (an unrecognized
+ * `kind`, or more than the per-choice cap) and the scene schema drops a
+ * malformed `storyArc` / `beatFired` instead of failing the whole scene. Log
+ * what was dropped so model drift stays visible — if the model keeps proposing
+ * a specific shape we don't support, that's the signal to add it. Best-effort;
  * never throws (a broken candidate still hits the real parse below).
  */
 function logDroppedLlmEffects(candidate: unknown): void {
   try {
-    const choices = (candidate as { choices?: unknown } | null)?.choices;
-    if (!Array.isArray(choices)) return;
-    const dropped: string[] = [];
-    for (const choice of choices) {
-      const effects = (choice as { effects?: unknown } | null)?.effects;
-      if (!Array.isArray(effects)) continue;
-      for (const effect of effects) {
-        if (!llmEffectSchema.safeParse(effect).success) {
-          dropped.push(String((effect as { kind?: unknown } | null)?.kind ?? "?"));
+    const root = candidate as Record<string, unknown> | null;
+    // Whole-scene parse: reveals which top-level fields (storyArc, beatFired)
+    // and per-choice fields (conditions) the schema kept vs dropped.
+    const sceneParsed = llmSceneOutputSchema.safeParse(candidate);
+    const parsedData = sceneParsed.success
+      ? (sceneParsed.data as unknown as Record<string, unknown>)
+      : null;
+
+    const choices = root?.choices;
+    const droppedEffects: string[] = [];
+    let droppedConditions = 0;
+    const droppedConditionKinds: string[] = [];
+    if (Array.isArray(choices)) {
+      const parsedChoices = Array.isArray(parsedData?.choices)
+        ? (parsedData?.choices as unknown[])
+        : [];
+      choices.forEach((choice, index) => {
+        const effects = (choice as { effects?: unknown } | null)?.effects;
+        if (Array.isArray(effects)) {
+          for (const effect of effects) {
+            if (!llmEffectSchema.safeParse(effect).success) {
+              droppedEffects.push(
+                String((effect as { kind?: unknown } | null)?.kind ?? "?"),
+              );
+            }
+          }
         }
-      }
+        // Conditions are dropped per-entry by the choice schema; compare raw
+        // count vs the parsed choice's kept count. Only inspect when the model
+        // actually emitted a `conditions` array (legacy scenes have none).
+        const rawConditions = (choice as { conditions?: unknown } | null)?.conditions;
+        if (Array.isArray(rawConditions) && rawConditions.length > 0) {
+          const parsedConditions =
+            (parsedChoices[index] as { conditions?: unknown } | undefined)?.conditions;
+          const keptCount = Array.isArray(parsedConditions) ? parsedConditions.length : 0;
+          if (rawConditions.length > keptCount) {
+            droppedConditions += rawConditions.length - keptCount;
+            for (const c of rawConditions) {
+              droppedConditionKinds.push(
+                String((c as { kind?: unknown } | null)?.kind ?? "?"),
+              );
+            }
+          }
+        }
+      });
     }
-    if (dropped.length > 0) {
+
+    // Top-level tolerant-drop signals (only when the model emitted the field).
+    const rawHasStoryArc =
+      root?.storyArc !== undefined && root?.storyArc !== null;
+    const storyArcDropped = rawHasStoryArc && parsedData?.storyArc === undefined;
+    const rawBeatFired = root?.beatFired;
+    const rawHasBeatFired =
+      typeof rawBeatFired === "string" && rawBeatFired.trim().length > 0;
+    const beatFiredDropped = rawHasBeatFired && parsedData?.beatFired === undefined;
+
+    if (droppedEffects.length > 0) {
       console.warn(
-        `[parseScene] dropped ${dropped.length} invalid llm effect(s); kinds=${JSON.stringify(dropped)}`,
+        `[parseScene] dropped ${droppedEffects.length} invalid llm effect(s); kinds=${JSON.stringify(droppedEffects)}`,
+      );
+    }
+    if (droppedConditions > 0) {
+      console.warn(
+        `[parseScene] dropped ${droppedConditions} invalid llm condition(s); kinds=${JSON.stringify(droppedConditionKinds)}`,
+      );
+    }
+    if (storyArcDropped) {
+      console.warn("[parseScene] dropped malformed storyArc (1); scene survives");
+    }
+    if (beatFiredDropped) {
+      console.warn(
+        `[parseScene] dropped invalid beatFired (1); value=${JSON.stringify(String(rawBeatFired).slice(0, 48))}`,
       );
     }
   } catch {

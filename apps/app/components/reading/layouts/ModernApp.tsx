@@ -141,6 +141,7 @@ export function ModernAppLayout({
                 disabled={isStreaming}
                 onChoose={onChoose}
                 pendingChoiceId={pendingChoiceId}
+                reducedMotion={reducedMotion}
                 {...(onFreeformSubmit ? { onFreeformSubmit } : {})}
                 freeformPending={freeformPending}
                 freeformError={freeformError}

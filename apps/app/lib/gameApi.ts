@@ -39,8 +39,72 @@ export type RemoteCreatorSeedItem = {
 export type RemoteChoice = {
   choice: { id: string; label: string };
   visibility: "visible" | "locked" | "hidden";
-  lockedHint?: string;
+  /**
+   * Story-engagement Wave 1 (design §7): the server projects each choice's
+   * gated render-state as `state: "visible" | "locked"` computed from the
+   * choice's `conditions` against current state (R4.3). This is additive to
+   * the legacy `visibility` field — the adapter (`adaptRemoteChoice`) prefers
+   * `state` when present and falls back to `visibility` for older projections.
+   *
+   * NOTE (integrator reconcile): design §7 names this field `state`, while the
+   * pre-existing projection uses `visibility` (which also carries "hidden").
+   * The SERVER agent (W1-S4) emits `state`; keeping both keeps a mixed-version
+   * rollout safe. Server emits null-for-absent → optional here (BC2/BC4).
+   */
+  state?: "visible" | "locked" | null;
+  lockedHint?: string | null;
 };
+
+/**
+ * Story-engagement Wave 1 reader-visible arc summary (design §7). COUNT-ONLY
+ * beat progress — pending beat labels and candidate endings are spoilers and
+ * NEVER reach the client (R1.5 / BC10). Server emits `actLabel: null` for
+ * absent; the adapter maps null→optional (BC2/BC4).
+ *
+ * The first block is the exact §7 wire contract. The second block
+ * (`protagonistWant` / `stakes` / `firedBeats`) is required by the QuestLine
+ * peek-drawer panel per design §4.1 (question/want/stakes/act/fired-beat list
+ * with turns) but is NOT enumerated in §7 — see the integrator flag in the
+ * deliverable. All optional so the one-line strip works with the minimal §7
+ * shape and the drawer degrades gracefully when the richer fields are absent.
+ */
+export type RemoteArc = {
+  dramaticQuestion: string;
+  // Server emits `act: number` (convex/saves.ts ProjectionArc), not the
+  // narrowed `1|2|3` design §7 hints — matched here so the WS `liveScene`
+  // type assigns cleanly (BC2). `romanAct` handles any positive integer.
+  act: number;
+  actLabel?: string | null;
+  beatsFired: number;
+  beatsTotal: number;
+  threadsPending: number;
+  /** W2 doom-clock summary — forward-compat; absent on Wave-1 saves. */
+  clock?: { label: string; value: number; max: number } | null;
+  // --- drawer-only enrichment (design §4.1; not in §7 — flagged) ---
+  protagonistWant?: string | null;
+  stakes?: string | null;
+  firedBeats?: Array<{ label: string; turnNumber: number }> | null;
+};
+
+/**
+ * Story-engagement Wave 1 signed diff record (design §7 `recentDiffs`). The
+ * server persists visible-tier redacted diffs on the turn and projects them
+ * here; the client echo derives signed chips from this union (R5.2). Hidden
+ * stats are dropped server-side (BC10), so this array only ever carries
+ * visible-tier records. W2/W3 kinds (`clock`/`npc`/`check`) are included so
+ * the union matches the full §7 contract; they are inert on Wave-1 saves.
+ */
+export type RemoteRecentDiff =
+  | { kind: "stat"; statId: string; label: string; delta: number }
+  | { kind: "currency"; delta: number }
+  | { kind: "item"; op: "add" | "remove"; label: string }
+  | { kind: "thread"; op: "set" | "fired"; note: string | null }
+  | { kind: "beat"; label: string }
+  | { kind: "act"; act: number }
+  // --- W2 forward-compat (design §7) ---
+  | { kind: "clock"; amount: number; reason: string }
+  | { kind: "npc"; npcId: string; name: string; deltaBand: "up" | "down"; fact: string | null }
+  | { kind: "check"; outcome: "success" | "partial" | "fail"; statId: string; margin: number };
 
 export type RemoteScene = {
   saveId?: string;
@@ -98,6 +162,18 @@ export type RemoteScene = {
    */
   isFallback?: boolean;
   terminal?: { endingId: string; kind: "success" | "death" | "safe" | "other" } | null;
+  /**
+   * Story-engagement Wave 1 reader-visible arc summary (design §7). Present
+   * only on arc-bearing (new) saves; legacy saves omit it (server emits null →
+   * absent here) and the QuestLine / ThreadsPill render nothing (R1.6 / BC9).
+   */
+  arc?: RemoteArc | null;
+  /**
+   * Story-engagement Wave 1 signed diffs for the turn that produced THIS scene
+   * (design §7). Drives the signed echo (R5.2). Absent (null/undefined) on old
+   * turns predating diff persistence → the echo falls back to a stat snapshot.
+   */
+  recentDiffs?: RemoteRecentDiff[] | null;
 };
 
 export function hasRemoteGameApi() {

@@ -228,6 +228,10 @@ export default defineSchema({
      */
     mentionsExtracted: v.optional(v.array(v.string())),
     engineDiffs: v.array(jsonValue),
+    // story-engagement W1 (R5): visible-tier, hidden-stat-redacted signed diffs
+    // for the client echo/consequence reel (`projection.recentDiffs`). Separate
+    // from `engineDiffs` (raw) so the projection never has to re-redact.
+    visibleDiffs: v.optional(v.array(jsonValue)),
     engineEvents: v.array(jsonValue),
     provider: v.union(v.literal("anthropic"), v.literal("vertex"), v.literal("deepseek"), v.literal("deterministic")),
     tokenUsage: v.optional(jsonValue),

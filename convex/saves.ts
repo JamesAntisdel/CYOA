@@ -103,7 +103,67 @@ export type SceneProjection = {
    * Absent on every real-provider scene; clients treat absent as `false`.
    */
   isFallback?: boolean;
+  /**
+   * Reader-visible story-arc summary (R1.5). Present on arc saves only; legacy
+   * saves omit it and the client hides the QuestLine. Beat progress is COUNT
+   * ONLY — pending beat labels and candidate endings are spoilers and NEVER
+   * projected (BC10).
+   */
+  arc?: ProjectionArc;
+  /**
+   * Signed visible-tier changes from the just-completed turn (R5.1), already
+   * redacted (hidden stats dropped) and label-resolved server-side. The client
+   * echo renders these as signed chips. Absent on turns with no visible change
+   * and on legacy pre-diff saves.
+   */
+  recentDiffs?: VisibleDiff[];
   terminal: ReturnType<typeof resolveTerminal>;
+};
+
+/**
+ * Reader-visible arc summary (R1.5 wire shape, design §7). Beat progress is a
+ * COUNT — never the pending beat labels or candidate endings (BC10).
+ */
+export type ProjectionArc = {
+  dramaticQuestion: string;
+  act: number;
+  actLabel: string | null;
+  beatsFired: number;
+  beatsTotal: number;
+  threadsPending: number;
+  // clock?: { label: string; value: number; max: number };  // W2
+};
+
+/**
+ * A single signed change surfaced to the reader's echo (design §7
+ * `recentDiffs`). Redacted + label-resolved server-side; W2 adds `clock`,
+ * `npc`, and `check` kinds.
+ */
+export type VisibleDiff =
+  | { kind: "stat"; statId: string; label: string; delta: number }
+  | { kind: "currency"; delta: number }
+  | { kind: "item"; op: "add" | "remove"; label: string }
+  | { kind: "thread"; op: "set" | "fired"; note: string | null }
+  | { kind: "beat"; label: string }
+  | { kind: "act"; act: number };
+
+/** Max visible diffs surfaced per turn (design §2.3). */
+export const MAX_VISIBLE_DIFFS_PER_TURN = 12;
+
+/**
+ * Structural, engine-version-tolerant view of an EngineDiff. The engine's
+ * `EngineDiff` union is assignable to this; reading fields structurally lets
+ * the redaction below tolerate diff kinds this file predates (W1-ENGINE adds
+ * `thread_set` / `thread_fired` / `beat_fired` / `act_advanced` in parallel).
+ */
+type RawDiff = { kind: string } & Record<string, unknown>;
+
+/** Structural view of `state.arc` (engine adds the typed `PlayerState.arc`). */
+type ArcStateLike = {
+  dramaticQuestion?: unknown;
+  act?: unknown;
+  actLabel?: unknown;
+  beats?: Array<{ status?: unknown }>;
 };
 
 export type SaveMigrationPlan = {
@@ -206,6 +266,124 @@ function inventoryFromState(state: PlayerState): SceneProjection["inventory"] {
 }
 
 /**
+ * Redact + translate engine diffs into the reader-visible `recentDiffs` wire
+ * shape (R5.1, design §7). Hidden-tier changes are DROPPED (BC10): a diff is
+ * hidden when it carries `visibility: "hidden"` or (for stat diffs) targets a
+ * non-visible attribute. Labels are resolved from `state` at write time so the
+ * persisted `turn_history.visibleDiffs` is already client-ready. Capped at
+ * `MAX_VISIBLE_DIFFS_PER_TURN`. Unmappable kinds (flags/nodes/npc/W2) are
+ * silently skipped — the union only grows additively.
+ */
+export function buildVisibleDiffs(
+  diffs: ReadonlyArray<RawDiff>,
+  state: PlayerState,
+  cap: number = MAX_VISIBLE_DIFFS_PER_TURN,
+): VisibleDiff[] {
+  const out: VisibleDiff[] = [];
+  for (const diff of diffs) {
+    if (out.length >= cap) break;
+    // Explicit hidden tag always wins (W1-ENGINE tags hidden-stat diffs).
+    if (diff.visibility === "hidden") continue;
+    const target = typeof diff.target === "string" ? diff.target : "";
+    switch (diff.kind) {
+      case "stat": {
+        const attr = state.attributes[target];
+        // Redact hidden stats: no explicit tag AND the attribute is not
+        // visible → drop (the reader was never shown this stat).
+        if (attr && attr.visibility !== "visible") continue;
+        out.push({
+          kind: "stat",
+          statId: target,
+          label: attr?.label ?? target,
+          delta: typeof diff.delta === "number" ? diff.delta : 0,
+        });
+        break;
+      }
+      case "currency":
+        out.push({
+          kind: "currency",
+          delta: typeof diff.delta === "number" ? diff.delta : 0,
+        });
+        break;
+      case "inventory_add":
+        out.push({
+          kind: "item",
+          op: "add",
+          label: state.inventory.find((i) => i.id === target)?.label ?? target,
+        });
+        break;
+      case "inventory_remove":
+        // The item is already gone from state on a remove, so fall back to the
+        // target id for the label (the echo shows "− <id>").
+        out.push({ kind: "item", op: "remove", label: target });
+        break;
+      case "thread_set":
+      case "delayed_scheduled":
+        // A thread was planted — note is spoiler-adjacent, withheld until it
+        // fires (design §7: note null until fired).
+        out.push({ kind: "thread", op: "set", note: null });
+        break;
+      case "thread_fired":
+        out.push({
+          kind: "thread",
+          op: "fired",
+          note: typeof diff.note === "string" ? diff.note : null,
+        });
+        break;
+      case "beat_fired":
+        out.push({
+          kind: "beat",
+          label: typeof diff.label === "string" ? diff.label : target,
+        });
+        break;
+      case "act_advanced":
+        out.push({
+          kind: "act",
+          act: typeof diff.act === "number" ? diff.act : 0,
+        });
+        break;
+      default:
+        // flag_set/flag_unset (codex is W2), node, ending, npc_* → not a
+        // W1 reader-visible echo. Skip.
+        break;
+    }
+  }
+  return out;
+}
+
+/**
+ * Project `state.arc` down to the reader-visible arc summary (R1.5). Returns
+ * null for legacy arc-less saves (the client hides the QuestLine). Beat
+ * progress is a COUNT only — pending beat labels and candidate endings are
+ * spoilers and are NOT included (BC10).
+ */
+export function projectArcSummary(state: PlayerState): ProjectionArc | null {
+  const arc = (state as unknown as { arc?: ArcStateLike }).arc;
+  if (!arc || typeof arc !== "object") return null;
+  const question =
+    typeof arc.dramaticQuestion === "string" ? arc.dramaticQuestion : "";
+  if (question.length === 0) return null;
+  const beats = Array.isArray(arc.beats) ? arc.beats : [];
+  const beatsFired = beats.filter((b) => b?.status === "fired").length;
+  // Threads pending = scheduled delayed effects not yet fired. Prefer a
+  // dedicated `threads` array when the engine adds one; fall back to `delayed`.
+  const threads = (state as unknown as { threads?: unknown[] }).threads;
+  const threadsPending = Array.isArray(threads)
+    ? threads.length
+    : Array.isArray(state.delayed)
+      ? state.delayed.length
+      : 0;
+  return {
+    dramaticQuestion: question,
+    act: typeof arc.act === "number" ? arc.act : 1,
+    actLabel: typeof arc.actLabel === "string" ? arc.actLabel : null,
+    beatsFired,
+    beatsTotal: beats.length,
+    threadsPending,
+  };
+}
+
+/**
  * Project an LLM-driven scene record (with its persisted proposal) onto the
  * SceneProjection shape that the reader and HTTP layer consume. The engine
  * has already validated the proposal — we only translate it into the
@@ -224,20 +402,52 @@ export function projectLlmDrivenScene(input: {
    * instead of the deterministic placeholder prose + choices.
    */
   isFallback?: boolean;
+  /**
+   * Signed visible-tier changes from the just-completed turn, already redacted
+   * + label-resolved (R5.1). Callers pass the freshly-built diffs (completion
+   * path) or the persisted `turn_history.visibleDiffs` (read path). Omitted →
+   * no echo this turn.
+   */
+  recentDiffs?: VisibleDiff[];
+  /**
+   * Per-choice visibility results (R4.3), precomputed by the caller via engine
+   * `evaluateLlmSceneChoices` (which enforces the ≤1-locked / ≥2-visible scene
+   * invariants). Passed in — rather than imported here — so `convex/saves.ts`
+   * stays free of the engine value-imports W1-ENGINE builds in parallel.
+   * Matched to choices by `choiceId`; a choice with no entry projects visible
+   * (legacy behaviour / arc-less saves).
+   */
+  choiceVisibilities?: ReadonlyArray<{
+    choiceId: string;
+    visibility: "visible" | "locked";
+    lockedHint?: string;
+  }>;
 }): SceneProjection {
   // The reader doesn't render effects on choices — they exist only for the
   // engine's per-turn validation. Strip them from the projection so the
-  // ChoiceEvaluation shape matches the authored contract cleanly.
-  const choices: ChoiceEvaluation[] = (input.proposal?.choices ?? []).map((choice) => ({
-    choice: {
-      id: choice.id,
-      label: choice.label,
-      // synthetic — there is no authored target node for an llm-driven choice;
-      // the engine fabricates `<storyId>:llm:<turn>` on the next turn instead.
-      targetNodeId: `${input.save.storyId}:llm:next`,
-    },
-    visibility: "visible" as const,
-  }));
+  // ChoiceEvaluation shape matches the authored contract cleanly. Each choice's
+  // visibility is recomputed server-side against current state (R4.3): a locked
+  // choice carries its `lockedHint` and renders with the 🔒 affordance.
+  const visibilityById = new Map(
+    (input.choiceVisibilities ?? []).map((entry) => [entry.choiceId, entry]),
+  );
+  const choices: ChoiceEvaluation[] = (input.proposal?.choices ?? []).map((choice) => {
+    const evaluated = visibilityById.get(choice.id);
+    const visibility = evaluated?.visibility ?? "visible";
+    return {
+      choice: {
+        id: choice.id,
+        label: choice.label,
+        // synthetic — there is no authored target node for an llm-driven
+        // choice; the engine fabricates `<storyId>:llm:<turn>` next turn.
+        targetNodeId: `${input.save.storyId}:llm:next`,
+      },
+      visibility,
+      ...(evaluated?.lockedHint ? { lockedHint: evaluated.lockedHint } : {}),
+    };
+  });
+
+  const arc = projectArcSummary(input.save.state);
 
   return {
     ...(input.save._id === undefined ? {} : { saveId: input.save._id }),
@@ -257,6 +467,10 @@ export function projectLlmDrivenScene(input: {
     // omitting the key on real-provider scenes keeps the projection wire
     // shape stable for clients that don't yet read `isFallback`.
     ...(input.isFallback === true ? { isFallback: true } : {}),
+    ...(arc ? { arc } : {}),
+    ...(input.recentDiffs && input.recentDiffs.length > 0
+      ? { recentDiffs: input.recentDiffs }
+      : {}),
     terminal: input.terminal ?? null,
   };
 }

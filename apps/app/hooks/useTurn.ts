@@ -24,8 +24,18 @@ import {
   getRemoteCurrentScene,
   hasRemoteGameApi,
   streamRemoteScene,
+  type RemoteArc,
+  type RemoteRecentDiff,
   type RemoteScene,
 } from "../lib/gameApi";
+import {
+  adaptArc,
+  adaptRecentDiffs,
+  adaptRemoteChoice,
+  deriveSignedEcho,
+  type DerivedEcho,
+} from "../lib/storyEngagement";
+import { useToast } from "./useToast";
 import { getGuestTokenHash, guestAuthArgs, useGuestSession } from "./useGuestSession";
 import { StreamLock } from "./streamLock";
 import type { StreamingScene } from "./useStreamingScene";
@@ -78,6 +88,18 @@ export type ReaderProjection = {
    * until the server populates the field.
    */
   npcs?: Record<string, NpcState>;
+  /**
+   * Story-engagement Wave 1 reader-visible arc summary (design §7). Present
+   * only on arc-bearing saves; legacy saves leave it undefined and the
+   * QuestLine / ThreadsPill render nothing (R1.6 / BC9).
+   */
+  arc?: RemoteArc;
+  /**
+   * Story-engagement Wave 1 signed diffs for the turn that produced the
+   * current scene (design §7). Drives the ThreadsPill fired-toast and the
+   * ChapterEnd act stamp; the echo derivation consumes them per-choice.
+   */
+  recentDiffs?: RemoteRecentDiff[];
   ending?: {
     kind: "safe" | "death" | "escape";
     title: string;
@@ -147,6 +169,11 @@ const CHAPTER_TURNS = 4;
 
 export function useTurn(saveId: string) {
   const guest = useGuestSession();
+  // Toast channel for defensive, out-of-band notices (R4.3): when the server
+  // rejects a submitted choice as `choice_not_available` (a locked choice that
+  // raced a state change since render), we surface a quiet toast rather than
+  // stranding the reader. ReaderScreen always mounts under <ToastProvider>.
+  const toast = useToast();
   const story = useMemo(() => storyForSave(saveId), [saveId]);
   const [engineState, setEngineState] = useState<PlayerState | null>(() =>
     story ? createInitialState(story, "story", engineContext.now, engineContext.rngSeed) : null,
@@ -397,6 +424,11 @@ export function useTurn(saveId: string) {
         if (remote.ok === false) {
           // Genuine server rejection — map the code to reader-safe copy
           // (daily_turns_exhausted, turn_in_progress, safety, …).
+          // A locked-choice race (`choice_not_available`, R4.3) also gets a
+          // quiet toast so the reader understands the door isn't open yet.
+          if (remote.errorCode === "choice_not_available") {
+            toast.push({ message: "That path isn't open to you yet.", tone: "info" });
+          }
           setFreeformError(freeformBookCopyForError(remote.errorCode));
           return;
         }
@@ -408,8 +440,7 @@ export function useTurn(saveId: string) {
               choiceLabel: choice.label,
               fromSceneTitle,
               toSceneTitle: nextProjection.scene.title,
-              tone: "neutral",
-              echo: deriveRemoteEcho(remote.scene),
+              ...remoteEchoFields(remote.scene),
             });
             return;
           }
@@ -437,8 +468,7 @@ export function useTurn(saveId: string) {
               choiceLabel: choice.label,
               fromSceneTitle,
               toSceneTitle: finalProjection.scene.title,
-              tone: "neutral",
-              echo: deriveRemoteEcho(canonicalScene),
+              ...remoteEchoFields(canonicalScene),
             });
             return;
           }
@@ -475,8 +505,7 @@ export function useTurn(saveId: string) {
               choiceLabel: choice.label,
               fromSceneTitle,
               toSceneTitle: finalStub.scene.title,
-              tone: "neutral",
-              echo: deriveRemoteEcho(remote.scene),
+              ...remoteEchoFields(remote.scene),
             });
             return;
           }
@@ -487,8 +516,7 @@ export function useTurn(saveId: string) {
             choiceLabel: choice.label,
             fromSceneTitle,
             toSceneTitle: finalProjection.scene.title,
-            tone: "neutral",
-            echo: deriveRemoteEcho(canonicalScene),
+            ...remoteEchoFields(canonicalScene),
           });
           return;
         }
@@ -551,7 +579,7 @@ export function useTurn(saveId: string) {
       }
       setPendingChoiceId(null);
     }, 360);
-  }, [engineState, guest.session, pendingChoiceId, projection.scene.title, saveId, story]);
+  }, [engineState, guest.session, pendingChoiceId, projection.scene.title, saveId, story, toast]);
 
   const submitFreeformChoice = useCallback(async (rawText: string) => {
     if (!supportsFreeform) {
@@ -623,8 +651,7 @@ export function useTurn(saveId: string) {
           choiceLabel: trimmed,
           fromSceneTitle,
           toSceneTitle: finalProjection.scene.title,
-          tone: "neutral",
-          echo: deriveRemoteEcho(canonicalScene),
+          ...remoteEchoFields(canonicalScene),
         });
         return;
       }
@@ -654,8 +681,7 @@ export function useTurn(saveId: string) {
           choiceLabel: trimmed,
           fromSceneTitle,
           toSceneTitle: finalStub.scene.title,
-          tone: "neutral",
-          echo: deriveRemoteEcho(result.scene),
+          ...remoteEchoFields(result.scene),
         });
         return;
       }
@@ -666,8 +692,7 @@ export function useTurn(saveId: string) {
         choiceLabel: trimmed,
         fromSceneTitle,
         toSceneTitle: finalProjection.scene.title,
-        tone: "neutral",
-        echo: deriveRemoteEcho(canonicalScene),
+        ...remoteEchoFields(canonicalScene),
       });
     } finally {
       freeformInFlightRef.current = false;
@@ -836,6 +861,8 @@ function freeformBookCopyForError(code: string): string {
       return "Write a short action before submitting.";
     case "freeform_not_supported_for_story":
       return "This tale only follows the offered paths.";
+    case "choice_not_available":
+      return "That path isn't open to you yet.";
     case "turn_in_progress":
       return "Another action is still resolving. Try again in a moment.";
     case "daily_turns_exhausted":
@@ -946,13 +973,16 @@ function projectRemoteScene(
       },
     },
     choices: scene.choices
-      .filter((choice) => choice.visibility !== "hidden")
-      .map((choice) => ({
-        id: choice.choice.id,
-        label: choice.choice.label,
-        locked: choice.visibility === "locked",
-        ...(choice.lockedHint ? { hint: choice.lockedHint } : {}),
-      })),
+      .filter((choice) => (choice.state ?? choice.visibility) !== "hidden")
+      .map((choice) => {
+        const model = adaptRemoteChoice(choice);
+        return {
+          id: model.id,
+          label: model.label,
+          locked: model.locked,
+          ...(model.hint ? { hint: model.hint } : {}),
+        };
+      }),
     stats: {
       // Vitality has bounds 0–10 in the engine; clamp here to the same window
       // so a value of 10 doesn't get truncated to 5. Falls back to the legacy
@@ -976,6 +1006,13 @@ function projectRemoteScene(
     },
     inventory: remoteInventoryItems(scene),
     ...(scene.npcs ? { npcs: scene.npcs } : {}),
+    // Story-engagement Wave 1 — adapt the wire arc/diffs (null→optional, BC2)
+    // onto the projection so ReaderScreen can render QuestLine / ThreadsPill
+    // and the ChapterEnd act stamp without re-reading the raw scene.
+    ...(adaptArc(scene.arc) ? { arc: adaptArc(scene.arc)! } : {}),
+    ...(adaptRecentDiffs(scene.recentDiffs)
+      ? { recentDiffs: adaptRecentDiffs(scene.recentDiffs)! }
+      : {}),
     ...(terminal && ending
       ? {
           ending: {
@@ -1210,8 +1247,26 @@ function deriveEngineEcho(
   return { text: fragments.slice(0, 3).join(" · "), tone };
 }
 
-function deriveRemoteEcho(scene: RemoteScene): string {
-  const visibleStats = scene.visibleStats?.slice(0, 2) ?? [];
-  if (visibleStats.length === 0) return "the story remembered";
-  return visibleStats.map((stat) => `${stat.label}: ${stat.value}`).join(" · ");
+/**
+ * Signed echo for a completed remote turn (R5.2). Consumes the projection's
+ * `recentDiffs` → signed chips ("+2 Nerve · −1 ♥ · + Bone Key"); hidden-only
+ * turns collapse to "something shifted…"; old turns without diffs fall back to
+ * a visible-stat snapshot. Returns both the text and the aggregate tone so the
+ * EffectBadge / ConsequenceReel color the echo correctly.
+ */
+function deriveRemoteEcho(scene: RemoteScene): DerivedEcho {
+  return deriveSignedEcho(adaptRecentDiffs(scene.recentDiffs), scene.visibleStats);
+}
+
+/**
+ * Spread-ready `{ echo, tone }` fields for `appendChoiceHistory` so a remote
+ * turn's signed echo and its aggregate tone land on the ChoiceHistoryEntry in
+ * one shot (replacing the old hardcoded `tone: "neutral"`).
+ */
+function remoteEchoFields(scene: RemoteScene): {
+  echo: string;
+  tone: ChoiceHistoryEntry["tone"];
+} {
+  const derived = deriveRemoteEcho(scene);
+  return { echo: derived.text, tone: derived.tone };
 }
