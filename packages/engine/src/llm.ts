@@ -11,11 +11,13 @@ import {
   normalizeEndingId,
   tickClock,
 } from "./arc";
+import { processGatedChoices } from "./bible";
+import type { RegistryEvent, RegistrySnapshot } from "./bible";
 import { resolveDeath } from "./death";
 import { popDueDelayedEffects, scheduleThread } from "./delayed";
 import { unlockCurrentEnding } from "./endings";
 import { getFlag, setFlag, unsetFlag } from "./flags";
-import { addItem, hasItem, hasItemTolerant, removeItem } from "./inventory";
+import { addItem, hasItem, hasItemTolerant, recordEverGranted, removeItem } from "./inventory";
 import { cloneState } from "./state";
 import { applyStatDelta, getStat } from "./stats";
 import type {
@@ -73,8 +75,9 @@ const CLOCK_REASON_MAX = 80;
 const MAX_CLOCK_ADVANCE_PER_PROPOSAL = 1;
 /** Codex entry cap (Requirement 11.1). */
 const CODEX_CAP = 40;
-/** Non-terminal scenes always keep ≥2 available choices (Requirement 4.5). */
-const MIN_VISIBLE_CHOICES = 2;
+// Non-terminal scenes always keep ≥2 available choices (Requirement 4.5) —
+// the invariant now lives in bible.ts's processGatedChoices (story-bible R4),
+// which evaluateLlmSceneChoices delegates to.
 // Authoritative bound on the engine's scene prose. With `responseSchema`
 // dropped from the Vertex provider (gemini-3-flash-preview ignores it),
 // the Zod parser is the actual gate. The model self-paces well under
@@ -445,6 +448,15 @@ export type TerminalDirective =
 export type LlmChoiceVisibility = {
   visibility: "visible" | "locked";
   lockedHint?: string;
+  /**
+   * Near-miss band for a locked NUMERIC gate (stat/currency), where the failing
+   * condition has value + threshold in hand: "near" when the reader is within
+   * 1 point or 20% of the threshold, "far" otherwise. Absent on binary gates
+   * (item/flag) and on visible choices. This is a BAND, never the numbers —
+   * the projection forwards it as a phrase so raw thresholds stay server-side
+   * (BC10, same discipline as the skill-check odds phrase).
+   */
+  nearness?: "near" | "far";
 };
 
 export type LlmSceneChoiceVisibility = LlmChoiceVisibility & { choiceId: string };
@@ -801,6 +813,12 @@ function applyEffect(state: PlayerState, effect: LlmEffect, diffs: EngineDiff[])
         ...(effect.item.description !== undefined ? { description: effect.item.description } : {}),
       };
       addItem(state, item, diffs);
+      // itemsEverGranted ledger (story-bible R4.1): record EVERY llm-path
+      // grant — even when addItem no-ops on a duplicate — so registry gate
+      // enforcement can prove a key existed after it is consumed. Replace the
+      // reference (never push in place): cloneState copies the array, and the
+      // previous turn's snapshot must not see this turn's grants.
+      state.itemsEverGranted = recordEverGranted(state.itemsEverGranted, item);
       return;
     }
     case "inventory_remove":
@@ -1099,9 +1117,14 @@ export function evaluateLlmChoiceVisibility(
     // same tolerant intent as effect drops (Requirement 4.2).
     if (outcome === "drop") continue;
     if (outcome === "fail") {
-      return choice.lockedHint !== undefined
-        ? { visibility: "locked", lockedHint: choice.lockedHint }
-        : { visibility: "locked" };
+      // Near-miss legibility: on the first failing condition we still have the
+      // value + threshold in hand, so band the miss here (numeric gates only).
+      const nearness = conditionNearness(condition, state);
+      return {
+        visibility: "locked",
+        ...(choice.lockedHint !== undefined ? { lockedHint: choice.lockedHint } : {}),
+        ...(nearness !== undefined ? { nearness } : {}),
+      };
     }
   }
   return { visibility: "visible" };
@@ -1138,46 +1161,96 @@ function evaluateLlmCondition(
 }
 
 /**
+ * Band a FAILING numeric condition by how close the reader came. Only the
+ * gates with a value + threshold participate (stat/currency); item and flag
+ * gates are binary — there is no meaningful "almost holds the key" — so they
+ * return undefined and the visibility result omits the band entirely.
+ */
+function conditionNearness(
+  condition: LlmChoiceCondition,
+  state: PlayerState,
+): "near" | "far" | undefined {
+  switch (condition.kind) {
+    case "stat_at_least": {
+      const value = getStat(state, condition.statId)?.value;
+      // Unknown stats are tolerant-dropped before this runs; guard anyway.
+      if (value === undefined) return undefined;
+      return nearnessBand(condition.value - value, condition.value);
+    }
+    case "stat_at_most": {
+      const value = getStat(state, condition.statId)?.value;
+      if (value === undefined) return undefined;
+      return nearnessBand(value - condition.value, condition.value);
+    }
+    case "currency_at_least":
+      return nearnessBand(condition.value - state.currency, condition.value);
+    case "has_item":
+    case "missing_item":
+    case "flag_equals":
+      return undefined;
+  }
+}
+
+/** "near" when the gap is within 1 point or 20% of the threshold, else "far". */
+function nearnessBand(deficit: number, threshold: number): "near" | "far" {
+  return deficit <= 1 || deficit <= Math.abs(threshold) * 0.2 ? "near" : "far";
+}
+
+/** Options for scene-level choice evaluation (story-bible R4). */
+export type LlmSceneChoiceOpts = {
+  terminal?: boolean;
+  /**
+   * Story-bible key-registry snapshot (R4.2–R4.5). Omitted or empty =
+   * bible-less: a locked `has_item` choice whose id matches nothing (not
+   * held, never granted, no sibling grant) auto-unlocks — phantom locks are
+   * impossible by construction, including on legacy saves. When a registry is
+   * present, unresolved gates are instead promised/adopted into the plan (the
+   * engine reports the changes as RegistryEvents; the input is never mutated).
+   */
+  registry?: RegistrySnapshot;
+  /** Turn stamped on registry events; defaults to `state.turnNumber`. */
+  turnNumber?: number;
+};
+
+/**
  * Evaluate a whole scene's choices with the scene-level invariants enforced
- * (Requirement 4.4–4.5): at most ONE locked choice (extra gated choices beyond
- * the first are unlocked), and — on non-terminal scenes — at least
- * `MIN_VISIBLE_CHOICES` available choices (the remaining locked choice is
- * unlocked if needed). Returns one entry per choice, in order.
+ * (Requirements 4.4–4.5 + story-bible R4): registry gate resolution for
+ * locked `has_item` choices (inventory/ledger → sibling grant → registry
+ * promise → adopt → phantom unlock), at most ONE locked choice — keeping the
+ * most ATTAINABLE lock (registry-backed key > smallest stat/currency deficit
+ * > array order) — and, on non-terminal scenes, at least `MIN_VISIBLE_CHOICES`
+ * available choices. Returns one entry per choice, in order. Callers that
+ * need the registry events use {@link evaluateLlmSceneChoicesWithRegistry}.
  */
 export function evaluateLlmSceneChoices(
   choices: LlmChoiceProposal[],
   state: PlayerState,
-  opts?: { terminal?: boolean },
+  opts?: LlmSceneChoiceOpts,
 ): LlmSceneChoiceVisibility[] {
+  return evaluateLlmSceneChoicesWithRegistry(choices, state, opts).results;
+}
+
+/**
+ * As {@link evaluateLlmSceneChoices}, but also surfaces the `RegistryEvent[]`
+ * the gate processor emitted (promise / adopt / phantom_unlock / granted) so
+ * the turn mutation can fold them into the bible row IN THE SAME MUTATION as
+ * the state write (SB4/R2.1).
+ */
+export function evaluateLlmSceneChoicesWithRegistry(
+  choices: LlmChoiceProposal[],
+  state: PlayerState,
+  opts?: LlmSceneChoiceOpts,
+): { results: LlmSceneChoiceVisibility[]; registryEvents: RegistryEvent[] } {
   const results: LlmSceneChoiceVisibility[] = choices.map((choice) => ({
     choiceId: choice.id,
     ...evaluateLlmChoiceVisibility(choice, state),
   }));
-
-  // ≤1 locked per scene: keep the first locked (array order), unlock the rest.
-  let lockedSeen = false;
-  for (const result of results) {
-    if (result.visibility !== "locked") continue;
-    if (lockedSeen) unlockChoiceResult(result);
-    else lockedSeen = true;
-  }
-
-  // ≥2 available on non-terminal scenes: unlock the remaining locked choice(s).
-  if (opts?.terminal !== true) {
-    for (const result of results) {
-      if (countVisibleChoices(results) >= MIN_VISIBLE_CHOICES) break;
-      if (result.visibility === "locked") unlockChoiceResult(result);
-    }
-  }
-
-  return results;
-}
-
-function unlockChoiceResult(result: LlmSceneChoiceVisibility): void {
-  result.visibility = "visible";
-  delete result.lockedHint;
-}
-
-function countVisibleChoices(results: LlmSceneChoiceVisibility[]): number {
-  return results.reduce((n, result) => (result.visibility === "visible" ? n + 1 : n), 0);
+  return processGatedChoices({
+    choices,
+    results,
+    state,
+    registry: opts?.registry ?? { keyRegistry: [] },
+    turnNumber: opts?.turnNumber ?? state.turnNumber,
+    ...(opts?.terminal !== undefined ? { terminal: opts.terminal } : {}),
+  });
 }

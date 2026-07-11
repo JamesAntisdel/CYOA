@@ -1,5 +1,6 @@
 export * from "./apply";
 export * from "./arc";
+export * from "./bible";
 export * from "./death";
 export * from "./delayed";
 export * from "./endings";

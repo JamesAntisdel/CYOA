@@ -10,6 +10,22 @@ type LockedChoiceCopyProps = {
    * flag, stat threshold, or scripted requirement name.
    */
   hint?: string | undefined;
+  /**
+   * Near-miss band on a numeric (stat/currency) gate, precomputed server-side
+   * (BC10 — the client only ever sees the phrase, never value/threshold).
+   * Absent on binary item/flag gates and legacy projections.
+   */
+  nearness?: "near" | "far" | undefined;
+};
+
+/**
+ * Tome-voice near-miss lines. "near" tells the reader their nerve nearly
+ * suffices (come back one scene stronger); "far" warns the door wants real
+ * growth first. No stat names, no numbers — the band is all we know here.
+ */
+const NEARNESS_COPY: Record<"near" | "far", string> = {
+  near: "You nearly suffice — a little more, and this would give way.",
+  far: "This asks far more of you than you yet possess.",
 };
 
 /**
@@ -24,7 +40,7 @@ type LockedChoiceCopyProps = {
  * the regular text color — still secondary to the headline but actually
  * readable.
  */
-export function LockedChoiceCopy({ hint }: LockedChoiceCopyProps) {
+export function LockedChoiceCopy({ hint, nearness }: LockedChoiceCopyProps) {
   const { tokens } = useAppTheme();
 
   return (
@@ -47,6 +63,11 @@ export function LockedChoiceCopy({ hint }: LockedChoiceCopyProps) {
       {hint ? (
         <Text style={{ color: tokens.colors.textMuted }} variant="bodySmall">
           {hint}
+        </Text>
+      ) : null}
+      {nearness ? (
+        <Text style={{ fontStyle: "italic" }} variant="bodySmall">
+          {NEARNESS_COPY[nearness]}
         </Text>
       ) : null}
     </View>

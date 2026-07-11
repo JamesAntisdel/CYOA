@@ -1,0 +1,22 @@
+{
+  "filePath": ".spec-workflow/specs/story-bible/design.md",
+  "currentVersion": 2,
+  "snapshots": [
+    {
+      "version": 1,
+      "filename": "snapshot-001.json",
+      "timestamp": "2026-07-11T05:42:03.668Z",
+      "trigger": "initial",
+      "approvalId": "approval_1783748523658_zonc37cev",
+      "approvalTitle": "Story Bible — Design (parallel bible call, registry enforcement, digest)"
+    },
+    {
+      "version": 2,
+      "filename": "snapshot-002.json",
+      "timestamp": "2026-07-11T05:44:47.950Z",
+      "trigger": "approved",
+      "approvalId": "approval_1783748523658_zonc37cev",
+      "approvalTitle": "Story Bible — Design (parallel bible call, registry enforcement, digest)"
+    }
+  ]
+}

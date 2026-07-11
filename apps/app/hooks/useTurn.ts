@@ -59,6 +59,12 @@ export type ChoiceProjection = {
    * ChoiceList. Absent on plain choices and legacy saves.
    */
   check?: RemoteCheck;
+  /**
+   * Near-miss band on a locked numeric gate (phrase only — BC10). Drives the
+   * "your nerve nearly suffices" line in LockedChoiceCopy. Absent on binary
+   * gates, visible choices, and legacy projections.
+   */
+  nearness?: "near" | "far";
 };
 
 export type ReaderStats = {
@@ -142,6 +148,15 @@ export type ReaderProjection = {
     kind: "safe" | "death" | "escape";
     title: string;
     body: string;
+    /**
+     * Position of this ending within the authored story's ending catalog
+     * (1-based) and the catalog size — drives the death panel's
+     * "Ending #X of Y" line. Present only when the ending resolves against
+     * a known authored catalog; LLM-driven / open-canvas endings omit both
+     * so the panel simply skips the line (core-read-loop Req 8).
+     */
+    endingNumber?: number;
+    endingsTotal?: number;
   };
 };
 
@@ -967,6 +982,22 @@ function isLocalDemoSave(saveId: string): boolean {
   );
 }
 
+/**
+ * "Ending #X of Y" facts for the terminal panel, resolved against the authored
+ * story's ending catalog. Returns `{}` (fields omitted — BC4) when the ending
+ * isn't in the catalog, which is the norm for LLM-driven / open-canvas saves
+ * whose endings are synthesized server-side.
+ */
+function endingCatalogFacts(
+  story: Story,
+  endingId: string,
+): { endingNumber?: number; endingsTotal?: number } {
+  const endingIds = Object.keys(story.endings);
+  const index = endingIds.indexOf(endingId);
+  if (index < 0) return {};
+  return { endingNumber: index + 1, endingsTotal: endingIds.length };
+}
+
 function projectRemoteScene(
   saveId: string,
   scene: RemoteScene,
@@ -1026,6 +1057,7 @@ function projectRemoteScene(
           locked: model.locked,
           ...(model.hint ? { hint: model.hint } : {}),
           ...(model.check ? { check: model.check } : {}),
+          ...(model.nearness ? { nearness: model.nearness } : {}),
         };
       }),
     stats: {
@@ -1077,6 +1109,7 @@ function projectRemoteScene(
               terminal.kind === "death"
                 ? "This path has ended. Return to the library or try a different route."
                 : "This path is complete.",
+            ...endingCatalogFacts(story, terminal.endingId),
           },
         }
       : {}),
@@ -1189,6 +1222,7 @@ function projectEngineState(
               terminal.kind === "death"
                 ? "The training room resets the lesson for another attempt."
                 : "You have completed this training path.",
+            ...endingCatalogFacts(story, terminal.endingId),
           },
         }
       : {}),

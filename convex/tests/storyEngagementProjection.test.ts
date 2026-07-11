@@ -444,3 +444,97 @@ describe("projectLlmDrivenScene W2 (check / codex / spoiler discipline)", () => 
     for (const ending of arc.candidateEndings) expect(serialized).not.toContain(ending.label);
   });
 });
+
+// ===========================================================================
+// Story-bible spoiler absence (story-bible SB-S6, R2.2/BC10). The bible lives
+// in its own table and is never passed to the projection — this test pins
+// that contract at the choke point: NO bible-derived key or content can ever
+// appear in the wire projection, even when the save's engine state carries
+// the bible-adjacent fields the turn loop does maintain (itemsEverGranted,
+// seeded threads). Fails if projectLlmDrivenScene ever grows a bible field.
+// ===========================================================================
+
+describe("projectLlmDrivenScene story-bible spoiler absence (SB-S6, R2.2)", () => {
+  const BIBLE_FIELD_NAMES = [
+    "bible",
+    "storyBible",
+    "keyRegistry",
+    "lockPlan",
+    "twists",
+    "endingHints",
+    "motifs",
+    "opensHint",
+    "surfaceBand",
+    "itemsEverGranted",
+  ];
+  // Content strings a real bible would carry — none may leak even if a field
+  // name were renamed in transit.
+  const BIBLE_CONTENT = [
+    "the Bone Reliquary Key",
+    "opens the crypt gate beneath the chapel",
+    "deserted the Iron Court fleet",
+    "the Drowned Bell tolls itself",
+    "hold the Iron Writ at the gates",
+  ];
+
+  it("emits no bible field name or bible content on a fully-loaded save", () => {
+    const arc = synthesizeFallbackArc("A drowned city waits.");
+    const state = { ...baseState(), arc } as PlayerState;
+    // The bible-adjacent state the turn loop DOES write: the ever-granted
+    // ledger (R4.1) and an engine-seeded key thread (R5.1) with a note
+    // derived from bible label/opensHint.
+    state.itemsEverGranted = ["bonereliquarykey"];
+    state.delayed.push({
+      id: "d1",
+      remainingNodes: 1,
+      effects: [
+        {
+          kind: "inventory_add",
+          item: { id: "bone-reliquary-key", label: "the Bone Reliquary Key" },
+        },
+      ],
+      note: "the Bone Reliquary Key — opens the crypt gate beneath the chapel",
+    } as never);
+    const gated = proposal({
+      prose: "The gate holds.",
+      choices: [
+        { id: "walk", label: "Walk on" },
+        { id: "rest", label: "Rest" },
+        {
+          id: "crypt",
+          label: "Open the crypt gate",
+          conditions: [{ kind: "has_item", itemId: "bone-reliquary-key" }],
+          lockedHint: "The verger keeps it sealed",
+        },
+      ],
+      terminal: null,
+    });
+    const projection = projectLlmDrivenScene({
+      save: saveWith(state),
+      proposal: gated,
+      prose: "The gate holds.",
+      streamStatus: "complete",
+      choiceVisibilities: [
+        { choiceId: "walk", visibility: "visible" },
+        { choiceId: "rest", visibility: "visible" },
+        { choiceId: "crypt", visibility: "locked", lockedHint: "The verger keeps it sealed" },
+      ],
+    });
+    const serialized = JSON.stringify(projection);
+    for (const field of BIBLE_FIELD_NAMES) {
+      expect(serialized, `field "${field}" leaked`).not.toContain(`"${field}"`);
+    }
+    for (const content of BIBLE_CONTENT) {
+      expect(serialized, `content "${content}" leaked`).not.toContain(content);
+    }
+    // The un-fired seeded thread's foreshadow note stays withheld (BC10),
+    // and the ledger never rides the wire.
+    expect(serialized).not.toContain("opens the crypt gate");
+    expect(serialized).not.toContain("bonereliquarykey");
+    // Sanity: the locked door itself IS visible (the reader wants it) —
+    // in-world hint only.
+    const crypt = projection.choices.find((c) => c.choice.id === "crypt");
+    expect(crypt?.visibility).toBe("locked");
+    expect(crypt?.lockedHint).toBe("The verger keeps it sealed");
+  });
+});

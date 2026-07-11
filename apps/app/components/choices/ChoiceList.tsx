@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Animated, Easing, Pressable, View } from "react-native";
 
 import { Choice, Text } from "../primitives";
@@ -6,6 +6,7 @@ import { useAppTheme } from "../../theme";
 import type { ChoiceProjection } from "../../hooks/useTurn";
 import { CheckChip } from "./CheckChip";
 import { FreeformChoice } from "./FreeformChoice";
+import { LOCK_COACH_COPY, hasSeenLockCoach, markLockCoachSeen } from "./lockCoach";
 import { LockedChoiceCopy } from "./LockedChoiceCopy";
 
 type ChoiceListProps = {
@@ -39,6 +40,20 @@ export function ChoiceList({
 }: ChoiceListProps) {
   const { tokens } = useAppTheme();
   const showFreeform = typeof onFreeformSubmit === "function";
+  const firstLockedId = choices.find((choice) => choice.locked)?.id ?? null;
+
+  // First-lock coach: the very first time a locked choice is EVER shown to
+  // this reader, one inline tome-voice line teaches that locked pages open.
+  // One-shot across sessions — the seen flag persists via the same guarded
+  // localStorage discipline as READER_LAYOUT_OVERRIDE_KEY (ReaderScreen.tsx).
+  // The flag is written in an effect (not during render) and the line stays up
+  // for this mount so the reader isn't shown a sentence that vanishes.
+  const [coachVisible, setCoachVisible] = useState(false);
+  useEffect(() => {
+    if (!firstLockedId || coachVisible || hasSeenLockCoach()) return;
+    markLockCoachSeen();
+    setCoachVisible(true);
+  }, [firstLockedId, coachVisible]);
 
   return (
     <View accessibilityLabel="Available choices" style={{ gap: tokens.spacing.sm }}>
@@ -49,11 +64,14 @@ export function ChoiceList({
         // yet — and wants to.
         if (choice.locked) {
           return (
-            <LockedChoiceRow
-              choice={choice}
-              key={choice.id}
-              reducedMotion={reducedMotion}
-            />
+            <View key={choice.id} style={{ gap: tokens.spacing.xs }}>
+              <LockedChoiceRow choice={choice} reducedMotion={reducedMotion} />
+              {coachVisible && choice.id === firstLockedId ? (
+                <Text muted style={{ fontStyle: "italic" }} variant="bodySmall">
+                  {LOCK_COACH_COPY}
+                </Text>
+              ) : null}
+            </View>
           );
         }
         const isPending = pendingChoiceId === choice.id;
@@ -143,8 +161,12 @@ function LockedChoiceRow({
     ]).start();
   };
 
-  const a11yLabel = choice.hint
-    ? `Locked — ${choice.label}. Requires ${choice.hint}.`
+  // Hints like "Needs the Bone Key" carry their own requirement verb, and the
+  // old composition read as "Requires Needs the Bone Key" to screen readers.
+  // Strip one leading Needs/Requires before composing our own "Requires …".
+  const a11yHint = choice.hint?.replace(/^\s*(?:needs|requires)\s+/iu, "");
+  const a11yLabel = a11yHint
+    ? `Locked — ${choice.label}. Requires ${a11yHint}.`
     : `Locked — ${choice.label}.`;
 
   return (
@@ -153,8 +175,12 @@ function LockedChoiceRow({
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={a11yLabel}
-          accessibilityHint="This path is closed for now. Tap to see why."
-          accessibilityState={{ disabled: true }}
+          accessibilityHint="Closed for now. Activating reveals why — it will not submit a choice."
+          // Deliberately NOT announced as a disabled control — that was a lie:
+          // the row IS pressable (it shakes + reveals the why-card) and some
+          // screen readers suppress activation on rows announced that way.
+          // `expanded` is the truthful state: pressing discloses the guidance.
+          accessibilityState={{ expanded: revealed }}
           onPress={shake}
           style={({ pressed }) => ({
             alignItems: "center",
@@ -179,7 +205,7 @@ function LockedChoiceRow({
           </View>
         </Pressable>
       </Animated.View>
-      {revealed ? <LockedChoiceCopy hint={choice.hint} /> : null}
+      {revealed ? <LockedChoiceCopy hint={choice.hint} nearness={choice.nearness} /> : null}
     </View>
   );
 }

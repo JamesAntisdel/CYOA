@@ -13,6 +13,18 @@ export type UnlockedEndingView = {
   mode: "story" | "hardcore";
   path: string[];
   safetyEnding: boolean;
+  /**
+   * Human trophy title persisted at unlock time (panel review — real trophy
+   * labels). Absent on legacy rows; the client falls back to a title-cased
+   * endingId (apps/app/lib/endingLabels.ts).
+   */
+  label?: string;
+  /**
+   * Last few reader choice labels leading into the ending (oldest→newest),
+   * persisted at unlock time. Absent on legacy rows; the client falls back
+   * to prettifying the node-id `path`.
+   */
+  pathLabels?: string[];
 };
 
 /**
@@ -36,6 +48,12 @@ export const listUnlockedEndings = queryGeneric({
       mode: row.mode === "hardcore" ? "hardcore" : "story",
       path: Array.isArray(row.path) ? row.path.map((p: unknown) => String(p)) : [],
       safetyEnding: row.safetyEnding === true,
+      ...(typeof row.label === "string" && row.label.length > 0
+        ? { label: row.label }
+        : {}),
+      ...(Array.isArray(row.pathLabels) && row.pathLabels.length > 0
+        ? { pathLabels: row.pathLabels.map((p: unknown) => String(p)) }
+        : {}),
     }));
   },
 });

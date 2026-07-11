@@ -1,6 +1,6 @@
 import type { ContentPolicyContext } from "@cyoa/shared";
 import { contentPolicyContextSchema } from "@cyoa/shared";
-import type { LlmSceneProposal } from "@cyoa/engine";
+import type { BibleDigest, LlmSceneProposal } from "@cyoa/engine";
 import { z } from "zod";
 
 export type ProviderName = "anthropic" | "vertex" | "deepseek" | "deterministic";
@@ -187,6 +187,17 @@ export type SceneGenerationRequest = {
    * FAILED — narrate it; do not undo it"). Absent otherwise.
    */
   checkOutcome?: CheckOutcomePromptContext;
+  /**
+   * Story-bible digest (story-bible R3.1) built by the engine's
+   * `buildBibleDigest` from the save's attached bible: due/promised registry
+   * keys, planned doors, cast sheet, pending twists, OUTSTANDING KEYS lines.
+   * Present only once the background bible call has landed AND attached
+   * (turn ≥ 2); absent on legacy / bible-less / authored saves — the prompt
+   * then renders byte-identical to today (R3.5/BC9). Spoiler discipline
+   * (BC10): none of this ever reaches the reader; the prompt is the only
+   * consumer.
+   */
+  storyBible?: BibleDigest;
 };
 
 export const sceneGenerationRequestSchema = z.object({
@@ -258,6 +269,57 @@ export const sceneGenerationRequestSchema = z.object({
       statId: z.string(),
       margin: z.number(),
       note: z.string().optional(),
+    })
+    .optional(),
+  storyBible: z
+    .object({
+      keys: z.array(
+        z.object({
+          id: z.string(),
+          label: z.string(),
+          opensHint: z.string(),
+          surfaceBand: z.enum(["early", "mid", "late"]),
+          due: z.boolean(),
+          promised: z.boolean(),
+        }),
+      ),
+      doors: z.array(
+        z.object({
+          id: z.string(),
+          label: z.string(),
+          keyId: z.string(),
+          gateBand: z.enum(["mid", "late"]),
+          note: z.string(),
+        }),
+      ),
+      cast: z.array(
+        z.object({
+          id: z.string(),
+          label: z.string(),
+          want: z.string(),
+          secret: z.string(),
+          bondHint: z.string(),
+        }),
+      ),
+      twists: z.array(
+        z.object({ id: z.string(), label: z.string(), precondition: z.string() }),
+      ),
+      outstanding: z.array(
+        z.discriminatedUnion("state", [
+          z.object({
+            keyId: z.string(),
+            label: z.string(),
+            state: z.literal("promised"),
+            promisedAtTurn: z.number(),
+          }),
+          z.object({
+            keyId: z.string(),
+            label: z.string(),
+            state: z.literal("reoffer"),
+            grantedAtTurn: z.number(),
+          }),
+        ]),
+      ),
     })
     .optional(),
 });

@@ -22,6 +22,30 @@ export type ReaderLayoutProps = {
   onOpenEndings?: () => void;
   onReturnHome?: () => void;
   /**
+   * Terminal-panel promises (core-read-loop Req 8.3 / story-engagement R14.2).
+   * ReaderScreen wires these to what the copy actually says:
+   *
+   *   onBeginAgain — create a FRESH save of the same story and open its reader
+   *                  (falls back to the cover on guest/limit errors).
+   *   onSeeMap     — the per-save path map `/map/[saveId]`.
+   *   onFork       — the run-history fork surface `/read/[saveId]/history`.
+   *
+   * All optional: legacy hosts that only wire onReturnHome/onOpenEndings keep
+   * the previous (home / trophy-crypt) behavior via the builder fallbacks
+   * below.
+   */
+  onBeginAgain?: () => void;
+  onSeeMap?: () => void;
+  onFork?: () => void;
+  /**
+   * The run's visible-choice history from `useTurn`, newest last. Drives the
+   * ConsequenceReel ("your choices echoed") on the terminal ending panel.
+   * Optional — layouts render no reel when absent or empty, so scripted /
+   * freshly-remounted saves (whose history is client-session state) simply
+   * skip it.
+   */
+  choiceHistory?: ChoiceHistoryEntry[];
+  /**
    * Resolved patron tier for the active reader, forwarded to the death-variant
    * dispatcher (gates Cinematic). When omitted, EndingPanel defaults to
    * Wanderer which never qualifies for Cinematic.
@@ -133,9 +157,16 @@ type Nav = (() => void) | undefined;
  * Open library), so the layout-side names are mapped onto EndingPanel's
  * names here:
  *
- *   layout `onReturnHome`   → EndingPanel `onBeginAgain`
- *   layout `onOpenEndings`  → EndingPanel `onSeeMap`
- *   layout `onOpenLibrary`  → EndingPanel `onClose`
+ *   layout `onBeginAgain` (fallback `onReturnHome`) → EndingPanel `onBeginAgain`
+ *   layout `onSeeMap`     (fallback `onOpenEndings`) → EndingPanel `onSeeMap`
+ *   layout `onOpenLibrary`                           → EndingPanel `onClose`
+ *
+ * The dedicated `onBeginAgain` / `onSeeMap` wires exist because the panel's
+ * copy makes promises the old fallbacks broke: "Begin again" must start a
+ * fresh run of the SAME story (Req 8.3), and "See the map" must open the
+ * per-save path map — not the home screen / global trophy crypt. The
+ * fallbacks remain so hosts that only wire the legacy navigation keep
+ * working buttons.
  *
  * `onShareEnding` has no current layout source — the share flow lives in a
  * later wave. Required because the panel's prop types live under
@@ -146,6 +177,8 @@ export function endingPanelHandlers(props: {
   onOpenEndings?: Nav;
   onOpenLibrary?: Nav;
   onReturnHome?: Nav;
+  onBeginAgain?: Nav;
+  onSeeMap?: Nav;
 }): {
   onBeginAgain?: () => void;
   onSeeMap?: () => void;
@@ -158,17 +191,23 @@ export function endingPanelHandlers(props: {
     onShareEnding?: () => void;
     onClose?: () => void;
   } = {};
-  if (props.onReturnHome) handlers.onBeginAgain = props.onReturnHome;
-  if (props.onOpenEndings) handlers.onSeeMap = props.onOpenEndings;
+  const beginAgain = props.onBeginAgain ?? props.onReturnHome;
+  const seeMap = props.onSeeMap ?? props.onOpenEndings;
+  if (beginAgain) handlers.onBeginAgain = beginAgain;
+  if (seeMap) handlers.onSeeMap = seeMap;
   if (props.onOpenLibrary) handlers.onClose = props.onOpenLibrary;
   return handlers;
 }
 
 /**
- * Build the death-variant prop bag (tier, tone, first-find, cinematic URI)
- * from the layout's projection + the ReaderScreen-resolved props. Keeps
- * `exactOptionalPropertyTypes:true` happy by omitting absent keys rather
- * than passing `undefined`.
+ * Build the death-variant prop bag (tier, tone, first-find, cinematic URI,
+ * run facts) from the layout's projection + the ReaderScreen-resolved props.
+ * Keeps `exactOptionalPropertyTypes:true` happy by omitting absent keys
+ * rather than passing `undefined`.
+ *
+ * The run facts (turnNumber + endingNumber/endingsTotal) come straight off
+ * the projection — they feed the variants' "Ending #X of Y · turn N" line,
+ * which renders only when both catalog facts are present (Brutal.tsx).
  */
 export function endingVariantProps(input: {
   projection: ReaderLayoutProps["projection"];
@@ -180,12 +219,18 @@ export function endingVariantProps(input: {
   storyTone?: NonNullable<ReaderLayoutProps["projection"]["storyTone"]>;
   cinematicUri?: string;
   isFirstFind?: boolean;
+  turnNumber?: number;
+  endingNumber?: number;
+  endingsTotal?: number;
 } {
   const out: {
     tier?: NonNullable<ReaderLayoutProps["endingTier"]>;
     storyTone?: NonNullable<ReaderLayoutProps["projection"]["storyTone"]>;
     cinematicUri?: string;
     isFirstFind?: boolean;
+    turnNumber?: number;
+    endingNumber?: number;
+    endingsTotal?: number;
   } = {};
   if (input.tier) out.tier = input.tier;
   if (input.projection.storyTone) out.storyTone = input.projection.storyTone;
@@ -194,18 +239,22 @@ export function endingVariantProps(input: {
   // Until then, treat every ending as a first-find so Cinematic remains
   // reachable for eligible tier+asset combinations during Wave C QA.
   if (input.isFirstFind !== undefined) out.isFirstFind = input.isFirstFind;
+  if (input.projection.turnNumber !== undefined) out.turnNumber = input.projection.turnNumber;
+  const ending = input.projection.ending;
+  if (ending?.endingNumber !== undefined) out.endingNumber = ending.endingNumber;
+  if (ending?.endingsTotal !== undefined) out.endingsTotal = ending.endingsTotal;
   return out;
 }
 
 /**
  * Build the `<WhatMightHaveBeen>` prop bag for the terminal ending panel
- * (story-engagement Wave 3, R14). Reuses the layout's EXISTING ending
- * navigation rather than inventing new flows:
+ * (story-engagement Wave 3, R14):
  *
- *   "Begin again"          → layout `onReturnHome`  (same handler EndingPanel
- *                            surfaces as `onBeginAgain`)
- *   "Fork from a decision" → layout `onOpenEndings` (same "See map" handler
- *                            EndingPanel surfaces as `onSeeMap`)
+ *   "Begin again"          → layout `onBeginAgain` (fresh run of the same
+ *                            story, Req 8.3; falls back to `onReturnHome`)
+ *   "Fork from a decision" → layout `onFork` (the run-history fork surface
+ *                            `/read/[saveId]/history`, R14.2; falls back to
+ *                            `onOpenEndings` for legacy hosts)
  *
  * The component self-gates: it renders nothing unless the save is terminal AND
  * carries unreached candidates (BC9/BC10), so the no-op fallbacks below are
@@ -217,6 +266,8 @@ export function whatMightHaveBeenProps(input: {
   projection: ReaderLayoutProps["projection"];
   onOpenEndings?: Nav;
   onReturnHome?: Nav;
+  onBeginAgain?: Nav;
+  onFork?: Nav;
 }): {
   candidates: RemoteWhatMightHaveBeen[] | undefined;
   terminal: boolean;
@@ -227,7 +278,7 @@ export function whatMightHaveBeenProps(input: {
   return {
     candidates: input.projection.whatMightHaveBeen,
     terminal: Boolean(input.projection.ending),
-    onFork: input.onOpenEndings ?? noop,
-    onBeginAgain: input.onReturnHome ?? noop,
+    onFork: input.onFork ?? input.onOpenEndings ?? noop,
+    onBeginAgain: input.onBeginAgain ?? input.onReturnHome ?? noop,
   };
 }

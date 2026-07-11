@@ -148,7 +148,8 @@ describe("engine state and visibility", () => {
       "locked",
       "hidden",
     ]);
-    expect(choices[1]?.lockedHint).toBe("You do not have the resolve");
+    // Generic on purpose — the old copy named "resolve" for every stat gate.
+    expect(choices[1]?.lockedHint).toBe("You are not yet ready for this");
   });
 
   it("covers all supported condition kinds and default hints", () => {
@@ -166,8 +167,10 @@ describe("engine state and visibility", () => {
     ]);
 
     expect(choices.slice(0, 5).every((choice) => choice.visibility === "visible")).toBe(true);
-    expect(choices[5]).toMatchObject({ visibility: "locked", lockedHint: "Requires missing rusty_key" });
-    expect(choices[6]).toMatchObject({ visibility: "locked", lockedHint: "Needs silver_key" });
+    // Fallback hints humanize raw ids (title-case + article) so the reader
+    // never sees snake_case internals.
+    expect(choices[5]).toMatchObject({ visibility: "locked", lockedHint: "You must part with the Rusty Key" });
+    expect(choices[6]).toMatchObject({ visibility: "locked", lockedHint: "Needs the Silver Key" });
     expect(choices[7]).toMatchObject({ visibility: "locked" });
     expect(choices[7]?.lockedHint).toBeUndefined();
     expect(choices[8]).toMatchObject({ visibility: "locked" });

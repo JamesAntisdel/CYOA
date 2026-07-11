@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "expo-router";
 import { ScrollView, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -8,14 +8,131 @@ import { OPEN_STARTER_ID } from "@cyoa/stories";
 import { SeedStoryFlow } from "../../components/creator";
 import { AppNav } from "../../components/navigation";
 import { Button, Chip, Divider, Stamp, Surface, Text } from "../../components/primitives";
+import { convexClient } from "../../lib/convex";
+import { convexHttp } from "../../lib/convexHttp";
 import { createRemoteCreatorDraft, publishRemoteCreatorSeed } from "../../lib/gameApi";
-import { saveLocalCreatorSeed } from "../../lib/localCreatorSeeds";
+import { listLocalCreatorSeeds, saveLocalCreatorSeed } from "../../lib/localCreatorSeeds";
 import { useBreakpoint } from "../../lib/responsive";
 import { useAccountProfile } from "../../hooks/useAccountProfile";
 import { guestAuthArgs, useGuestSession } from "../../hooks/useGuestSession";
 import { useLibrary } from "../../hooks/useLibrary";
 import { useNarratorVoice } from "../../hooks/useNarratorVoice";
 import { useAppTheme } from "../../theme";
+
+type CreatorSeedStatus = "draft" | "published" | "archived";
+
+/** Form fields the custom-seed builder exposes; `general` catches issues on
+ * story parts the simple form doesn't edit (ending nodes, version, …). */
+type CreatorFormField = "title" | "opening" | "carefulChoice" | "boldChoice" | "general";
+
+type SeedIssue = { path: string; message: string; kind?: "structure" | "safety" };
+
+type ShelfSeed = {
+  seedId: string;
+  title: string;
+  status: CreatorSeedStatus;
+  story: Story;
+  updatedAt: number;
+  source: "remote" | "local";
+};
+
+// ---------------------------------------------------------------------------
+// Remote calls for the creator iteration loop. These live here (not in
+// gameApi.ts) because the creator route is their only consumer; they use the
+// same convexHttp transport + convexClient availability gate as gameApi.
+// ---------------------------------------------------------------------------
+
+async function updateRemoteCreatorDraft(input: {
+  accountId: string;
+  guestTokenHash?: string;
+  seedId: string;
+  title: string;
+  story: Story;
+}): Promise<{ seedId: string; seed: { status: CreatorSeedStatus } } | null> {
+  if (!convexClient) return null;
+  return convexHttp("mutation", "creatorFunctions:updateDraft", input as unknown as Record<string, unknown>);
+}
+
+async function validateRemoteCreatorSeed(input: {
+  accountId: string;
+  guestTokenHash?: string;
+  story: Story;
+}): Promise<{ valid: boolean; issues: SeedIssue[] } | null> {
+  if (!convexClient) return null;
+  return convexHttp("query", "creatorFunctions:validateSeed", input as unknown as Record<string, unknown>);
+}
+
+async function listRemoteCreatorSeeds(input: {
+  accountId: string;
+  guestTokenHash?: string;
+}): Promise<Array<{ _id: string; title: string; status: CreatorSeedStatus; story: Story; updatedAt: number }> | null> {
+  if (!convexClient) return null;
+  return convexHttp("query", "creatorFunctions:listMine", input as unknown as Record<string, unknown>);
+}
+
+async function archiveRemoteCreatorSeed(input: {
+  accountId: string;
+  guestTokenHash?: string;
+  seedId: string;
+}): Promise<{ seedId: string } | null> {
+  if (!convexClient) return null;
+  return convexHttp("mutation", "creatorFunctions:archive", input as unknown as Record<string, unknown>);
+}
+
+/**
+ * Map a validation-issue path (dotted story addressing from
+ * `creatorFunctions:validateSeed`, e.g. `nodes.start.seed`) onto the form
+ * field that produced that part of the generated story. `buildCreatorStory`
+ * derives `id`/`version`/node title from the title field, so those paths
+ * route there; anything outside the four editable fields lands in `general`.
+ */
+export function fieldForIssuePath(path: string): CreatorFormField {
+  if (path === "title" || path === "id" || path === "version" || path === "nodes.start.title") {
+    return "title";
+  }
+  if (path === "nodes.start.seed") return "opening";
+  if (path.startsWith("nodes.start.choices.careful.")) return "carefulChoice";
+  if (path.startsWith("nodes.start.choices.bold.")) return "boldChoice";
+  return "general";
+}
+
+export function groupIssuesByField(issues: SeedIssue[]): Partial<Record<CreatorFormField, string[]>> {
+  const grouped: Partial<Record<CreatorFormField, string[]>> = {};
+  for (const issue of issues) {
+    const field = fieldForIssuePath(issue.path);
+    // General-bucket issues keep their path — without it "Ending is not
+    // registered" gives the author nothing to act on.
+    const message = field === "general" ? `${issue.path}: ${issue.message}` : issue.message;
+    (grouped[field] ??= []).push(message);
+  }
+  return grouped;
+}
+
+/** Remote rows win over local mirrors of the same seedId; archived seeds drop
+ * off the shelf; newest first. */
+export function mergeDraftShelf(remote: ShelfSeed[], local: ShelfSeed[]): ShelfSeed[] {
+  const seen = new Set(remote.map((item) => item.seedId));
+  return [...remote, ...local.filter((item) => !seen.has(item.seedId))]
+    .filter((item) => item.status !== "archived")
+    .sort((left, right) => right.updatedAt - left.updatedAt);
+}
+
+/** Recover the four form fields from a saved story so the shelf can load a
+ * draft back into the builder. Inverse of `buildCreatorStory`. */
+export function formValuesFromStory(story: Story): {
+  title: string;
+  opening: string;
+  carefulChoice: string;
+  boldChoice: string;
+} {
+  const start = story.nodes[story.startNodeId];
+  return {
+    title: story.title,
+    opening: start?.seed ?? "",
+    carefulChoice: start?.choices[0]?.label ?? "",
+    boldChoice: start?.choices[1]?.label ?? "",
+  };
+}
 
 export default function CreatorRoute() {
   const router = useRouter();
@@ -40,13 +157,76 @@ export default function CreatorRoute() {
   const [carefulChoice, setCarefulChoice] = useState("Ask the mapmaker which lantern is safest.");
   const [boldChoice, setBoldChoice] = useState("Follow the brightest lantern into the crowd.");
   const [seedId, setSeedId] = useState<string | null>(null);
+  // Tracks the loaded/saved seed's lifecycle so saveDraft knows whether the
+  // current seedId is an updatable remote draft (published/archived seeds are
+  // immutable — saving from one forks a fresh draft).
+  const [seedStatus, setSeedStatus] = useState<CreatorSeedStatus | null>(null);
   const [publishedSeedId, setPublishedSeedId] = useState<string | null>(null);
   const [status, setStatus] = useState("Ready to save a draft.");
   const [busy, setBusy] = useState(false);
+  // Per-field validation/safety issues from creatorFunctions:validateSeed,
+  // rendered inline next to the inputs they belong to.
+  const [fieldIssues, setFieldIssues] = useState<Partial<Record<CreatorFormField, string[]>>>({});
+  const [shelf, setShelf] = useState<ShelfSeed[]>([]);
+  const [shelfNonce, setShelfNonce] = useState(0);
   const story = useMemo(
     () => buildCreatorStory({ title, opening, carefulChoice, boldChoice }),
     [boldChoice, carefulChoice, opening, title],
   );
+
+  // Drafts shelf: remote seeds from creatorFunctions:listMine merged with
+  // device-local (`local_`) fallback drafts. Re-runs after every save/archive
+  // via shelfNonce.
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      const local: ShelfSeed[] = listLocalCreatorSeeds()
+        .filter((seed) => seed.seedId.startsWith("local_"))
+        .map((seed) => ({
+          seedId: seed.seedId,
+          title: seed.title,
+          status: seed.status,
+          story: seed.story,
+          updatedAt: seed.updatedAt,
+          source: "local" as const,
+        }));
+      let remote: ShelfSeed[] = [];
+      if (guest.session) {
+        const rows = await listRemoteCreatorSeeds({
+          accountId: guest.session.accountId,
+          ...guestAuthArgs(),
+        });
+        remote = (rows ?? []).map((row) => ({
+          seedId: row._id,
+          title: row.title,
+          status: row.status,
+          story: row.story,
+          updatedAt: row.updatedAt,
+          source: "remote" as const,
+        }));
+      }
+      if (!cancelled) setShelf(mergeDraftShelf(remote, local));
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [guest.session, shelfNonce]);
+
+  const refreshShelf = () => setShelfNonce((nonce) => nonce + 1);
+
+  /** Pre-flight the story through the structured validator. Returns true when
+   * saving may proceed; on issues, paints them next to their fields. A null
+   * response (offline / no Convex) lets the local-draft fallback proceed. */
+  const validateBeforeSave = async (accountId: string): Promise<boolean> => {
+    const validation = await validateRemoteCreatorSeed({ accountId, ...guestAuthArgs(), story });
+    if (validation && !validation.valid) {
+      setFieldIssues(groupIssuesByField(validation.issues));
+      setStatus("Fix the highlighted fields before saving.");
+      return false;
+    }
+    return true;
+  };
 
   const saveDraft = async () => {
     if (!guest.session) {
@@ -54,15 +234,36 @@ export default function CreatorRoute() {
       return;
     }
     setBusy(true);
+    setFieldIssues({});
     try {
-      const remote = await createRemoteCreatorDraft({
-        accountId: guest.session.accountId,
-        ...guestAuthArgs(),
-        title,
-        story,
-      });
+      if (!(await validateBeforeSave(guest.session.accountId))) return;
+
+      // Update the current remote draft in place; only create a new row when
+      // there is nothing updatable (first save, local-only draft, or the
+      // loaded seed is published/archived).
+      const updatableDraftId =
+        seedId && !seedId.startsWith("local_") && seedStatus === "draft" ? seedId : null;
+      let remote = updatableDraftId
+        ? await updateRemoteCreatorDraft({
+            accountId: guest.session.accountId,
+            ...guestAuthArgs(),
+            seedId: updatableDraftId,
+            title,
+            story,
+          })
+        : null;
+      const updatedExisting = remote !== null;
+      if (!remote) {
+        remote = await createRemoteCreatorDraft({
+          accountId: guest.session.accountId,
+          ...guestAuthArgs(),
+          title,
+          story,
+        });
+      }
       if (remote) {
         setSeedId(remote.seedId);
+        setSeedStatus("draft");
         saveLocalCreatorSeed({
           seedId: remote.seedId,
           title,
@@ -70,10 +271,12 @@ export default function CreatorRoute() {
           status: "draft",
           updatedAt: Date.now(),
         });
-        setStatus("Draft saved.");
+        setStatus(updatedExisting ? "Draft updated." : "Draft saved.");
+        refreshShelf();
       } else {
         const localId = `local_${story.id}`;
         setSeedId(localId);
+        setSeedStatus("draft");
         saveLocalCreatorSeed({
           seedId: localId,
           title,
@@ -82,6 +285,7 @@ export default function CreatorRoute() {
           updatedAt: Date.now(),
         });
         setStatus("Draft saved on this device.");
+        refreshShelf();
       }
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "creator_draft_failed");
@@ -96,7 +300,10 @@ export default function CreatorRoute() {
       return;
     }
     setBusy(true);
+    setFieldIssues({});
     try {
+      if (!(await validateBeforeSave(guest.session.accountId))) return;
+
       const draftId = seedId;
       if (!draftId) {
         const remote = await createRemoteCreatorDraft({
@@ -112,6 +319,7 @@ export default function CreatorRoute() {
             seedId: remote.seedId,
           });
           setSeedId(remote.seedId);
+          setSeedStatus(published ? "published" : "draft");
           saveLocalCreatorSeed({
             seedId: remote.seedId,
             title,
@@ -121,10 +329,12 @@ export default function CreatorRoute() {
           });
           if (published) setPublishedSeedId(remote.seedId);
           setStatus(published ? "Seed published." : "Draft saved. Publishing is not available yet.");
+          refreshShelf();
           return;
         }
         const localId = `local_${story.id}`;
         setSeedId(localId);
+        setSeedStatus("draft");
         saveLocalCreatorSeed({
           seedId: localId,
           title,
@@ -133,6 +343,7 @@ export default function CreatorRoute() {
           updatedAt: Date.now(),
         });
         setStatus("Seed saved on this device. Publishing is not available yet.");
+        refreshShelf();
         return;
       }
 
@@ -145,14 +356,27 @@ export default function CreatorRoute() {
           updatedAt: Date.now(),
         });
         setStatus("Seed saved on this device. Publishing is not available yet.");
+        refreshShelf();
         return;
       }
 
+      // Best-effort: sync the current form into the draft first so publish
+      // snapshots what's on screen, not the last-saved revision.
+      if (seedStatus === "draft") {
+        await updateRemoteCreatorDraft({
+          accountId: guest.session.accountId,
+          ...guestAuthArgs(),
+          seedId: draftId,
+          title,
+          story,
+        });
+      }
       const published = await publishRemoteCreatorSeed({
         accountId: guest.session.accountId,
         ...guestAuthArgs(),
         seedId: draftId,
       });
+      if (published) setSeedStatus("published");
       saveLocalCreatorSeed({
         seedId: draftId,
         title,
@@ -162,12 +386,56 @@ export default function CreatorRoute() {
       });
       if (published) setPublishedSeedId(draftId);
       setStatus(published ? "Seed published." : "Publishing is not available yet.");
+      refreshShelf();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "creator_publish_failed");
     } finally {
       setBusy(false);
     }
   };
+
+  const loadShelfSeed = (item: ShelfSeed) => {
+    const values = formValuesFromStory(item.story);
+    setTitle(values.title);
+    setOpening(values.opening);
+    setCarefulChoice(values.carefulChoice);
+    setBoldChoice(values.boldChoice);
+    setSeedId(item.seedId);
+    setSeedStatus(item.status);
+    setPublishedSeedId(item.status === "published" ? item.seedId : null);
+    setFieldIssues({});
+    setStatus(`Loaded "${item.title}".`);
+  };
+
+  const archiveShelfSeed = async (item: ShelfSeed) => {
+    if (!guest.session || item.source !== "remote") return;
+    setBusy(true);
+    try {
+      const archived = await archiveRemoteCreatorSeed({
+        accountId: guest.session.accountId,
+        ...guestAuthArgs(),
+        seedId: item.seedId,
+      });
+      if (archived) {
+        if (seedId === item.seedId) {
+          setSeedId(null);
+          setSeedStatus(null);
+          setPublishedSeedId(null);
+        }
+        setStatus(`Archived "${item.title}".`);
+        refreshShelf();
+      } else {
+        setStatus("Archive is not available right now.");
+      }
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "creator_archive_failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const inputBorderColor = (field: CreatorFormField) =>
+    fieldIssues[field]?.length ? tokens.colors.danger : tokens.colors.borderMuted;
 
   return (
     <SafeAreaView style={{ backgroundColor: tokens.colors.background, flex: 1 }}>
@@ -212,6 +480,37 @@ export default function CreatorRoute() {
               </Button>
             ) : null}
           </View>
+
+          <Surface padded style={{ maxWidth: 680, width: "100%" }}>
+            <View style={{ gap: tokens.spacing.md }}>
+              <Text variant="subtitle">Your drafts</Text>
+              {shelf.length === 0 ? (
+                <Text muted>No saved drafts yet. Save one below and it will appear here.</Text>
+              ) : (
+                shelf.map((item) => (
+                  <View
+                    key={item.seedId}
+                    style={{ alignItems: "center", flexDirection: "row", flexWrap: "wrap", gap: tokens.spacing.sm }}
+                  >
+                    <View style={{ flex: 1, minWidth: 140 }}>
+                      <Text>{item.title}</Text>
+                    </View>
+                    <Chip variant={item.status === "published" ? "accent" : "muted"}>{item.status}</Chip>
+                    {item.source === "local" ? <Chip variant="muted">this device</Chip> : null}
+                    <Button disabled={busy} onPress={() => loadShelfSeed(item)}>
+                      Load
+                    </Button>
+                    {item.source === "remote" ? (
+                      <Button disabled={busy} onPress={() => archiveShelfSeed(item)} variant="ghost">
+                        Archive
+                      </Button>
+                    ) : null}
+                  </View>
+                ))
+              )}
+            </View>
+          </Surface>
+
           <View style={{ alignItems: "stretch", flexDirection: isPhone ? "column" : "row", flexWrap: "wrap", gap: tokens.spacing.lg }}>
           <Surface padded style={{ flex: 1, minWidth: isPhone ? undefined : 320, width: "100%" }}>
             <View style={{ gap: tokens.spacing.md }}>
@@ -221,7 +520,7 @@ export default function CreatorRoute() {
                 placeholder="Adventure title"
                 placeholderTextColor={tokens.colors.textFaint}
                 style={{
-                  borderColor: tokens.colors.borderMuted,
+                  borderColor: inputBorderColor("title"),
                   borderRadius: tokens.radii.sm,
                   borderWidth: tokens.borderWidths.regular,
                   color: tokens.colors.text,
@@ -230,6 +529,7 @@ export default function CreatorRoute() {
                 }}
                 value={title}
               />
+              <FieldIssues issues={fieldIssues.title} />
               <TextInput
                 accessibilityLabel="Opening seed"
                 multiline
@@ -237,7 +537,7 @@ export default function CreatorRoute() {
                 placeholder="Opening seed"
                 placeholderTextColor={tokens.colors.textFaint}
                 style={{
-                  borderColor: tokens.colors.borderMuted,
+                  borderColor: inputBorderColor("opening"),
                   borderRadius: tokens.radii.sm,
                   borderWidth: tokens.borderWidths.regular,
                   color: tokens.colors.text,
@@ -247,13 +547,14 @@ export default function CreatorRoute() {
                 }}
                 value={opening}
               />
+              <FieldIssues issues={fieldIssues.opening} />
               <TextInput
                 accessibilityLabel="Careful choice"
                 onChangeText={setCarefulChoice}
                 placeholder="Careful choice"
                 placeholderTextColor={tokens.colors.textFaint}
                 style={{
-                  borderColor: tokens.colors.borderMuted,
+                  borderColor: inputBorderColor("carefulChoice"),
                   borderRadius: tokens.radii.sm,
                   borderWidth: tokens.borderWidths.regular,
                   color: tokens.colors.text,
@@ -262,13 +563,14 @@ export default function CreatorRoute() {
                 }}
                 value={carefulChoice}
               />
+              <FieldIssues issues={fieldIssues.carefulChoice} />
               <TextInput
                 accessibilityLabel="Bold choice"
                 onChangeText={setBoldChoice}
                 placeholder="Bold choice"
                 placeholderTextColor={tokens.colors.textFaint}
                 style={{
-                  borderColor: tokens.colors.borderMuted,
+                  borderColor: inputBorderColor("boldChoice"),
                   borderRadius: tokens.radii.sm,
                   borderWidth: tokens.borderWidths.regular,
                   color: tokens.colors.text,
@@ -277,6 +579,8 @@ export default function CreatorRoute() {
                 }}
                 value={boldChoice}
               />
+              <FieldIssues issues={fieldIssues.boldChoice} />
+              <FieldIssues issues={fieldIssues.general} />
               <Divider />
               <View style={{ flexDirection: "row", flexWrap: "wrap", gap: tokens.spacing.sm }}>
                 <Chip>Validation required</Chip>
@@ -318,6 +622,22 @@ export default function CreatorRoute() {
         </View>
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+/** Inline per-field error list rendered directly under the input it maps to.
+ * (`| undefined` is explicit for exactOptionalPropertyTypes — callers pass
+ * `fieldIssues.<field>` which is `string[] | undefined`.) */
+function FieldIssues({ issues }: { issues?: string[] | undefined }) {
+  if (!issues || issues.length === 0) return null;
+  return (
+    <View accessibilityRole="alert" style={{ gap: 2 }}>
+      {issues.map((message) => (
+        <Text key={message} tone="danger" variant="bodySmall">
+          {message}
+        </Text>
+      ))}
+    </View>
   );
 }
 

@@ -54,6 +54,13 @@ export type RemoteChoice = {
   state?: "visible" | "locked" | null;
   lockedHint?: string | null;
   /**
+   * Near-miss BAND on a locked numeric (stat/currency) gate — "near" when the
+   * reader almost clears the threshold. A phrase only; the server never emits
+   * the value or threshold (BC10). Absent on binary gates, visible choices,
+   * and older projections (BC2/BC4).
+   */
+  nearness?: "near" | "far" | null;
+  /**
    * Story-engagement Wave 2 (design §7 / R7.4): when a choice carries a
    * skill check, the server projects the pre-computed ODDS PHRASE only —
    * never the raw threshold/roll math (BC10). The client renders a CheckChip

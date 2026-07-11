@@ -19,6 +19,7 @@ export * from "./llm/parse";
 export * from "./llm/prompts/scene";
 export * from "./llm/providerPolicy";
 export * from "./llm/router";
+export * from "./llm/storyBible";
 export * from "./llm/summarizer";
 export * from "./llm/types";
 export * from "./llm/vertex";

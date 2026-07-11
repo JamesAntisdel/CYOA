@@ -298,6 +298,16 @@ export type PlayerState = {
    * absent entries default to turn 0. Legacy saves omit it entirely (BC9).
    */
   flagSetTurns?: Record<string, number>;
+  /**
+   * Every item id/label ever granted on the llm path, normalized via
+   * `normalizeItemRef` and deduped (story-bible R4.1). Appended in
+   * `applyEffect`'s `inventory_add` branch; read everywhere with `?? []`.
+   * Registry gate enforcement (`processGatedChoices`) resolves locked
+   * `has_item` choices against it so a granted-then-consumed key still counts
+   * as attainable. Optional + additive: legacy saves omit it entirely — NO
+   * schemaVersion bump, no migration (R16.3/BC9).
+   */
+  itemsEverGranted?: string[];
   schemaVersion: number;
 };
 

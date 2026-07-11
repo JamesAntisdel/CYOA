@@ -207,3 +207,106 @@ export const SCENE_RESPONSE_SCHEMA = {
 
 /** Typed export of the schema so test snapshots can pin it. */
 export type SceneResponseSchema = typeof SCENE_RESPONSE_SCHEMA;
+
+// =============================================================================
+// Story Bible response schema (story-bible R1.2, design §2). Wire mirror of
+// the engine's loose `storyBibleOutputSchema` (packages/engine/src/bible.ts) —
+// keep the two structurally in sync; `storyBibleResponseSchema.test.ts` pins
+// both. Same philosophy as SCENE_RESPONSE_SCHEMA above: the wire schema
+// grammar-constrains Gemini so output always parses; the engine's
+// `validateProposedBible` remains the hard gate (clamps, slug/dedupe, lockPlan
+// key resolution, ≥4-keys salvage rule) so this stays deliberately LOOSE
+// (BC5) — bounds here are pacing hints, not validation.
+// =============================================================================
+
+// Mirror engine bounds (packages/engine/src/bible.ts R1.2 constants).
+const BIBLE_SLUG_MAX = 48;
+const BIBLE_LABEL_MAX = 80;
+const BIBLE_HINT_MAX = 120;
+const BIBLE_REQUIRES_MAX = 160;
+const BIBLE_MOTIF_MAX = 40;
+
+const BIBLE_KEY_ENTRY = {
+  type: "OBJECT",
+  properties: {
+    id: { type: "STRING", minLength: 1, maxLength: BIBLE_SLUG_MAX },
+    label: { type: "STRING", minLength: 1, maxLength: BIBLE_LABEL_MAX },
+    opensHint: { type: "STRING", maxLength: BIBLE_HINT_MAX },
+    surfaceBand: { type: "STRING", enum: ["early", "mid", "late"] },
+  },
+  required: ["id", "label", "opensHint", "surfaceBand"],
+} as const;
+
+const BIBLE_DOOR_ENTRY = {
+  type: "OBJECT",
+  properties: {
+    id: { type: "STRING", minLength: 1, maxLength: BIBLE_SLUG_MAX },
+    label: { type: "STRING", minLength: 1, maxLength: BIBLE_LABEL_MAX },
+    keyId: { type: "STRING", minLength: 1, maxLength: BIBLE_SLUG_MAX },
+    gateBand: { type: "STRING", enum: ["mid", "late"] },
+    note: { type: "STRING", maxLength: BIBLE_HINT_MAX },
+  },
+  required: ["id", "label", "keyId", "gateBand"],
+} as const;
+
+const BIBLE_CAST_ENTRY = {
+  type: "OBJECT",
+  properties: {
+    id: { type: "STRING", minLength: 1, maxLength: BIBLE_SLUG_MAX },
+    label: { type: "STRING", minLength: 1, maxLength: BIBLE_LABEL_MAX },
+    want: { type: "STRING", maxLength: BIBLE_HINT_MAX },
+    secret: { type: "STRING", maxLength: BIBLE_HINT_MAX },
+    bondHint: { type: "STRING", maxLength: BIBLE_HINT_MAX },
+  },
+  required: ["id", "label", "want", "secret"],
+} as const;
+
+const BIBLE_TWIST_ENTRY = {
+  type: "OBJECT",
+  properties: {
+    id: { type: "STRING", minLength: 1, maxLength: BIBLE_SLUG_MAX },
+    label: { type: "STRING", minLength: 1, maxLength: BIBLE_LABEL_MAX },
+    precondition: { type: "STRING", maxLength: BIBLE_HINT_MAX },
+  },
+  required: ["id", "label", "precondition"],
+} as const;
+
+const BIBLE_ENDING_HINT_ENTRY = {
+  type: "OBJECT",
+  properties: {
+    endingId: { type: "STRING", minLength: 1, maxLength: BIBLE_SLUG_MAX },
+    requires: { type: "STRING", maxLength: BIBLE_REQUIRES_MAX },
+  },
+  required: ["endingId", "requires"],
+} as const;
+
+/**
+ * Full Story Bible response schema — mirrors `storyBibleOutputSchema` in the
+ * engine. `keyRegistry` leads via propertyOrdering intent (required-first) so
+ * a truncated response is still salvageable (the ≥4-keys rule is the only hard
+ * gate).
+ */
+export const STORY_BIBLE_RESPONSE_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    keyRegistry: {
+      type: "ARRAY",
+      minItems: 6,
+      maxItems: 12,
+      items: BIBLE_KEY_ENTRY,
+    },
+    lockPlan: { type: "ARRAY", maxItems: 5, items: BIBLE_DOOR_ENTRY },
+    cast: { type: "ARRAY", maxItems: 5, items: BIBLE_CAST_ENTRY },
+    twists: { type: "ARRAY", maxItems: 4, items: BIBLE_TWIST_ENTRY },
+    endingHints: { type: "ARRAY", maxItems: 4, items: BIBLE_ENDING_HINT_ENTRY },
+    motifs: {
+      type: "ARRAY",
+      maxItems: 6,
+      items: { type: "STRING", minLength: 1, maxLength: BIBLE_MOTIF_MAX },
+    },
+  },
+  required: ["keyRegistry"],
+} as const;
+
+/** Typed export so the pin test can snapshot the wire contract. */
+export type StoryBibleResponseSchema = typeof STORY_BIBLE_RESPONSE_SCHEMA;

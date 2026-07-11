@@ -5,25 +5,38 @@ import {
   applyChoiceAndEnterNode,
   applyClockAdvance,
   applyStatDelta,
+  buildBibleDigest,
   clockDirective,
   cloneState,
   createClock,
+  dueKeySeedings,
   evaluateLlmSceneChoices,
+  evaluateLlmSceneChoicesWithRegistry,
   findArcBeat,
+  getStat,
+  hasItemTolerant,
+  keySeedingPlan,
   llmSceneOutputSchema,
+  matchEndingHints,
   nextTargetBeat,
+  normalizeItemRef,
   recordLlmProposalTerminal,
   resolveChoiceCheck,
   resolveTerminal,
+  scheduleThread,
   synthesizeFallbackArc,
   validateProposedArc,
+  type BibleDigest,
   type ChoiceCheckResult,
   type EngineDiff,
+  type LlmChoiceProposal,
   type LlmSceneChoiceVisibility,
   type LlmSceneProposal,
   type NpcRole,
   type NpcState,
   type PlayerState,
+  type RegistryEvent,
+  type RegistrySnapshot,
   type StoryArc,
   type Story,
   type TerminalDirective,
@@ -61,6 +74,7 @@ import { loadAndAuthorizeAccount } from "./lib/authz";
 import { AppError } from "./lib/errors";
 import { makeDayKey } from "./lib/ids";
 import { buildNpcSheets } from "./llm/prompts/scene";
+import { foldRegistryEvents, readStoryBible } from "./llm/storyBible";
 import { guardPromptText } from "./llm/promptGuards";
 import type { CheckOutcomePromptContext, NpcSheetSnapshot } from "./llm/types";
 import { buildMemoryWindow, type MemoryBeat } from "./memory";
@@ -420,6 +434,54 @@ export const createSave = mutationGeneric({
       };
     }
     const newSaveId = await ctx.db.insert("saves", cleanDoc(save));
+    // Story Bible (story-bible R1.1/R1.6): schedule the dedicated background
+    // bible call for llm-driven saves only — it races turn 1 behind the
+    // opening cinematic and NEVER delays this mutation or any reader-facing
+    // response. Authored stories get no row; forks copy their source's row
+    // (talesFunctions.forkTale) instead of scheduling; co-op followers never
+    // reach createSave. Failures are swallowed like the summarizer call site:
+    // a save without a bible plays bible-less forever (BC9).
+    if (storyMode === "llm-driven") {
+      try {
+        await ctx.db.insert(
+          "story_bibles",
+          cleanDoc({
+            saveId: newSaveId,
+            status: "queued" as const,
+            retryCount: 0,
+            createdAt: now,
+            updatedAt: now,
+          }),
+        );
+        if ((ctx as { scheduler?: unknown }).scheduler) {
+          // Same premise/seed precedence as the turn-1 scene request
+          // (getAuthorizedSceneStreamRequest): reader-authored seed wins over
+          // the starter story's hardcoded seed/title/tone.
+          const biblePremise =
+            save.seedPremise ?? story.nodes[story.startNodeId]?.seed ?? "";
+          const bibleTone =
+            save.seedTone ??
+            listStarterStories().find((item) => item.id === story.id)?.tone;
+          await ctx.scheduler.runAfter(
+            0,
+            ("llm/storyBible:generateStoryBible" as unknown) as any,
+            {
+              saveId: newSaveId,
+              accountId: args.accountId,
+              premise: biblePremise,
+              storyTitle: save.seedTitle ?? story.title,
+              ...(bibleTone ? { storyTone: bibleTone } : {}),
+              attempt: 0,
+            },
+          );
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[createSave] bible schedule failed save=${newSaveId} error=${message.slice(0, 240)}`,
+        );
+      }
+    }
     const initialSceneRecord = buildInitialSceneRecord({
       save: { ...save, _id: newSaveId },
       saveId: newSaveId,
@@ -1558,6 +1620,18 @@ export const getAuthorizedSceneStreamRequest = mutationGeneric({
       // `beginStreamingChoice` so the prompt narrates a result it cannot
       // overrule. Absent unless the reader's last choice carried a check.
       const checkOutcome = readPendingCheckOutcome(save.state);
+      // Story-bible digest (R3.1) — attach-once + band-filtered digest. Absent
+      // on bible-less saves so the prompt stays byte-identical (R3.5). This is
+      // assembly site 1 of 2 (SB1); the non-streaming mirror threads the same
+      // helper.
+      const storyBible = await loadStoryBibleDigest(ctx, {
+        state: save.state,
+        turnNumber: save.turnNumber,
+        saveIdValue: args.saveId,
+        accountId: args.accountId,
+        storyId: save.storyId,
+        now,
+      });
       return {
         saveId: args.saveId,
         storyId: story.id,
@@ -1583,6 +1657,7 @@ export const getAuthorizedSceneStreamRequest = mutationGeneric({
         ...(pursuit ? { pursuit } : {}),
         ...(produceArc ? { produceArc: true } : {}),
         ...(checkOutcome ? { checkOutcome } : {}),
+        ...(storyBible ? { storyBible } : {}),
       };
     }
 
@@ -1801,11 +1876,30 @@ export const completeSceneStream = mutationGeneric({
       const terminal = policyForcedSafe
         ? { kind: "safe" as const, endingId: "ending-safe" }
         : (recorded?.terminal ?? null);
-      const choiceVisibilities = computeChoiceVisibilities(
+      // Story-bible turn integration (SB-S5): registry-enforced gate
+      // visibility, due-key seeding onto nextState, RegistryEvent folding into
+      // the bible row IN THIS MUTATION (SB4/R2.1), guarded act refresh, and
+      // the §6 analytics (incl. choice.locked_shown). Bible-less saves pass an
+      // empty registry — phantom `has_item` gates auto-unlock (R4.5).
+      const bibleIntegration = await applyBibleTurnIntegration(ctx, {
         proposal,
-        nextState,
-        terminal !== null,
-      );
+        state: nextState,
+        terminal: terminal !== null,
+        turnNumber: save.turnNumber,
+        saveIdValue: args.saveId,
+        accountId: args.accountId,
+        storyId: save.storyId,
+        premise: save.seedPremise ?? "",
+        storySummary: save.storySummary ?? "",
+        actAdvanced: (recorded?.diffs ?? []).some(
+          (diff) => (diff as { kind?: unknown }).kind === "act_advanced",
+        ),
+        now,
+      });
+      const choiceVisibilities = bibleIntegration.choiceVisibilities;
+      // Seeded-thread diffs join phase B so the reader's echo shows the
+      // planted thread pip (R5.3 — the seeded key rides the existing badge).
+      llmPhaseBDiffs = [...llmPhaseBDiffs, ...bibleIntegration.seedDiffs];
       const projection = projectLlmDrivenScene({
         save: { ...save, state: nextState },
         proposal,
@@ -2996,6 +3090,363 @@ export function buildPursuitContext(
   };
 }
 
+// =============================================================================
+// Story Bible (story-bible spec) — prompt digest loading, registry-enforced
+// gate processing, promise seeding, act-boundary refresh, analytics. The
+// bible row is a per-save side table (`story_bibles`); NO field of it ever
+// reaches the client (R2.2/BC10) — `projectLlmDrivenScene` remains the choke
+// point and never sees it.
+// =============================================================================
+
+/** Structural view of a `story_bibles` row (schema is integrator-owned). */
+type StoryBibleRow = {
+  _id: unknown;
+  status?: string;
+  bible?: unknown;
+  attachedAtTurn?: number;
+  lastRefreshAct?: number;
+};
+
+async function loadStoryBibleRow(
+  ctx: { db: any },
+  saveIdValue: string,
+): Promise<StoryBibleRow | null> {
+  try {
+    const row = await ctx.db
+      .query("story_bibles")
+      .withIndex("by_saveId", (q: any) => q.eq("saveId", saveIdValue))
+      .first();
+    return (row as StoryBibleRow | null) ?? null;
+  } catch {
+    // A missing table / failed read is bible-less behavior, never a failure.
+    return null;
+  }
+}
+
+/**
+ * Load the save's bible and build the prompt digest (R3.1), attaching the
+ * bible on first inclusion (R1.5): `endingHints` are fuzzy-matched to the
+ * turn-1 arc's candidate endings and `attachedAtTurn` is patched — after
+ * which the digest is included on every subsequent request. Shared by BOTH
+ * request-assembly sites (SB1: streaming `getAuthorizedSceneStreamRequest`
+ * and the non-streaming `runLlmDrivenTurn` mirror) so the two paths cannot
+ * drift. Returns undefined (prompt renders exactly as today — R3.5/BC9)
+ * when: the save is on its opening turn (the bible races turn 1; the arc the
+ * hints match against doesn't exist yet), the row is absent/not-ready, or
+ * anything at all goes wrong.
+ */
+export async function loadStoryBibleDigest(
+  ctx: { db: any },
+  input: {
+    state: PlayerState;
+    turnNumber: number;
+    saveIdValue: string;
+    accountId: string;
+    storyId: string;
+    now: number;
+  },
+): Promise<BibleDigest | undefined> {
+  if (input.turnNumber < 1) return undefined;
+  try {
+    const row = await loadStoryBibleRow(ctx, input.saveIdValue);
+    if (!row || row.status !== "ready") return undefined;
+    let bible = readStoryBible(row.bible);
+    if (!bible) return undefined;
+    if (row.attachedAtTurn === undefined) {
+      // First inclusion — attach (R1.5). An arc-less save attaches with
+      // endingHints: [] (design §7); everything else survives untouched.
+      bible = matchEndingHints(bible, input.state.arc);
+      await ctx.db.patch(row._id as any, {
+        bible,
+        attachedAtTurn: input.turnNumber,
+        updatedAt: input.now,
+      });
+      await insertStoryAnalytics(ctx, {
+        eventName: "bible.attached",
+        accountId: input.accountId,
+        saveId: input.saveIdValue,
+        storyId: input.storyId,
+        turnNumber: input.turnNumber,
+        payload: { turn: input.turnNumber, matchedEndings: bible.endingHints.length },
+        now: input.now,
+      });
+    }
+    return buildBibleDigest(bible, input.turnNumber);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Build the RegistrySnapshot the engine's gate processor consumes (SB4). A
+ * bible-less save (row absent / not ready / unreadable) gets an EMPTY
+ * registry — under R4.5 that alone kills phantom locks on legacy saves.
+ */
+function registrySnapshotFromRow(row: StoryBibleRow | null): RegistrySnapshot {
+  if (!row || row.status !== "ready") return { keyRegistry: [] };
+  const bible = readStoryBible(row.bible);
+  if (!bible) return { keyRegistry: [] };
+  return { keyRegistry: bible.keyRegistry, lockPlan: bible.lockPlan };
+}
+
+/**
+ * Mirror of the engine's tolerant per-condition evaluation, reduced to "did
+ * this condition fail against this state?" — used ONLY to describe the
+ * binding condition in `choice.locked_shown` analytics (§6). Unknown-stat
+ * referents never fail (they are tolerant-dropped on the visibility path).
+ */
+function llmConditionFailsForAnalytics(
+  condition: { kind: string } & Record<string, unknown>,
+  state: PlayerState,
+): boolean {
+  switch (condition.kind) {
+    case "stat_at_least": {
+      const stat = getStat(state, String(condition.statId));
+      return stat !== undefined && stat.value < Number(condition.value);
+    }
+    case "stat_at_most": {
+      const stat = getStat(state, String(condition.statId));
+      return stat !== undefined && stat.value > Number(condition.value);
+    }
+    case "has_item":
+      return !hasItemTolerant(state, String(condition.itemId));
+    case "missing_item":
+      return hasItemTolerant(state, String(condition.itemId));
+    case "flag_equals":
+      return state.flags[String(condition.flag)] !== condition.value;
+    case "currency_at_least":
+      return state.currency < Number(condition.value);
+    default:
+      return false;
+  }
+}
+
+/**
+ * Build the `choice.locked_shown` payload (story-engagement R16.1 via
+ * story-bible R4.6): `{conditionKind, itemId?, everGranted, inRegistry,
+ * deficit?}` describing the binding (first failing) condition of a locked
+ * choice as the reader will see it. Exported for the fake-ctx tests.
+ */
+export function buildLockedShownPayload(
+  choice: LlmChoiceProposal | undefined,
+  state: PlayerState,
+  registry: RegistrySnapshot,
+): Record<string, unknown> {
+  const conditions = (choice?.conditions ?? []) as Array<
+    { kind: string } & Record<string, unknown>
+  >;
+  const binding =
+    conditions.find((condition) => llmConditionFailsForAnalytics(condition, state)) ??
+    conditions[0];
+  const conditionKind = binding?.kind ?? "unknown";
+  const itemId =
+    binding && (binding.kind === "has_item" || binding.kind === "missing_item")
+      ? String(binding.itemId)
+      : undefined;
+  const ledger = state.itemsEverGranted ?? [];
+  const everGranted =
+    itemId !== undefined &&
+    (hasItemTolerant(state, itemId) ||
+      (normalizeItemRef(itemId).length > 0 && ledger.includes(normalizeItemRef(itemId))));
+  const target = itemId !== undefined ? normalizeItemRef(itemId) : "";
+  const inRegistry =
+    target.length > 0 &&
+    registry.keyRegistry.some(
+      (key) =>
+        key.status !== "retired" &&
+        (normalizeItemRef(key.id) === target || normalizeItemRef(key.label) === target),
+    );
+  let deficit: number | undefined;
+  if (binding?.kind === "stat_at_least") {
+    const stat = getStat(state, String(binding.statId));
+    const gap = stat === undefined ? 0 : Number(binding.value) - stat.value;
+    if (gap > 0) deficit = gap;
+  } else if (binding?.kind === "currency_at_least") {
+    const gap = Number(binding.value) - state.currency;
+    if (gap > 0) deficit = gap;
+  }
+  return {
+    conditionKind,
+    ...(itemId !== undefined ? { itemId } : {}),
+    everGranted,
+    inRegistry,
+    ...(deficit !== undefined ? { deficit } : {}),
+  };
+}
+
+/**
+ * The per-turn story-bible integration (task SB-S5, design §2 "turn N
+ * application"), shared by BOTH completion paths (`completeSceneStream` and
+ * the non-streaming `runLlmDrivenTurn` mirror — SB1) and executed INSIDE the
+ * turn mutation so every bible write commits atomically with the state write
+ * (SB4/R2.1):
+ *
+ *  1. registry-enforced gate processing of the new proposal's locked choices
+ *     (`evaluateLlmSceneChoicesWithRegistry`, R4.2–R4.5);
+ *  2. promise-keeping: due key seedings ride the EXISTING thread machinery
+ *     (`scheduleThread` with `delayNodes: 1`, R5.1) — MUTATES `input.state`
+ *     in place (the caller persists that state in this same mutation) and
+ *     returns the `thread_set` diffs for the visible-diff echo;
+ *  3. folding all RegistryEvents into the bible row (one patch);
+ *  4. act-boundary refresh scheduling, guarded by `lastRefreshAct` (R6);
+ *  5. §6 analytics: bible.key_promised / key_adopted / key_seeded /
+ *     gate_phantom_unlocked + `choice.locked_shown` once per completed turn
+ *     (never from the read-path projection — re-renders would double-count).
+ *
+ * Every bible-absence branch is a silent no-op: bible-less saves get an
+ * empty registry (R4.5 — phantom gates auto-unlock) and skip steps 2–4.
+ * A failure anywhere degrades to plain visibility computation — the bible is
+ * never a turn-failure source (BC5).
+ */
+export async function applyBibleTurnIntegration(
+  ctx: { db: any; scheduler?: { runAfter: (ms: number, ref: any, args: any) => Promise<any> } },
+  input: {
+    proposal: LlmSceneProposal | null;
+    /** Post-turn state — seeding pushes threads onto it in place. */
+    state: PlayerState;
+    terminal: boolean;
+    turnNumber: number;
+    saveIdValue: string;
+    accountId: string;
+    storyId: string;
+    /** For the refresh call's prompt context (R6). */
+    premise: string;
+    storySummary: string;
+    /** True when this turn's diffs crossed an act boundary. */
+    actAdvanced: boolean;
+    now: number;
+  },
+): Promise<{ choiceVisibilities: LlmSceneChoiceVisibility[]; seedDiffs: EngineDiff[] }> {
+  const fallback = () => ({
+    choiceVisibilities: computeChoiceVisibilities(input.proposal, input.state, input.terminal),
+    seedDiffs: [] as EngineDiff[],
+  });
+  try {
+    const row = await loadStoryBibleRow(ctx, input.saveIdValue);
+    const registry = registrySnapshotFromRow(row);
+    const bible = row && row.status === "ready" ? readStoryBible(row.bible) : null;
+
+    // 1. Gate processing (R4). Bible-less saves pass the empty registry —
+    //    never-granted, never-adoptable gates auto-unlock (R4.5).
+    const evaluated = input.proposal
+      ? evaluateLlmSceneChoicesWithRegistry(input.proposal.choices, input.state, {
+          terminal: input.terminal,
+          registry,
+          turnNumber: input.turnNumber,
+        })
+      : { results: [] as LlmSceneChoiceVisibility[], registryEvents: [] as RegistryEvent[] };
+    const registryEvents = [...evaluated.registryEvents];
+
+    // 2. Promise keeping (R5.1): a promised key ungranted ≥3 completed turns
+    //    after its promise seeds deterministically through the existing
+    //    delayed-thread store — the key arrives narrated as a fired-thread
+    //    callback. Skipped on terminal turns (nothing left to pay off).
+    const seedDiffs: EngineDiff[] = [];
+    if (bible && !input.terminal) {
+      for (const key of dueKeySeedings(registry, input.turnNumber)) {
+        const plan = keySeedingPlan(key);
+        scheduleThread(input.state, plan.delayNodes, plan.effects, plan.note, seedDiffs);
+        registryEvents.push({ kind: "seeded", keyId: key.id, turn: input.turnNumber });
+      }
+    }
+
+    // 3 + 4. Fold events into the bible row and guard-schedule the act
+    //    refresh — ONE patch, in THIS mutation (SB4/R2.1).
+    if (row && bible) {
+      const biblePatch: Record<string, unknown> = {};
+      const folded =
+        registryEvents.length > 0 ? foldRegistryEvents(bible, registryEvents) : bible;
+      if (folded !== bible) biblePatch.bible = folded;
+      const newAct = input.state.arc?.act;
+      if (
+        input.actAdvanced &&
+        typeof newAct === "number" &&
+        (row.lastRefreshAct === undefined || row.lastRefreshAct < newAct) &&
+        ctx.scheduler
+      ) {
+        // Stamp the guard in the same mutation so a duplicate completion
+        // cannot double-schedule (≤1 refresh per act, R6.1).
+        biblePatch.lastRefreshAct = newAct;
+        try {
+          await ctx.scheduler.runAfter(
+            0,
+            ("llm/storyBible:refreshStoryBible" as unknown) as any,
+            {
+              saveId: input.saveIdValue,
+              accountId: input.accountId,
+              act: newAct,
+              premise: input.premise,
+              storySummary: input.storySummary,
+              bible: folded,
+            },
+          );
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.warn(
+            `[bible] refresh schedule failed save=${input.saveIdValue} error=${message.slice(0, 200)}`,
+          );
+        }
+      }
+      if (Object.keys(biblePatch).length > 0) {
+        await ctx.db.patch(row._id as any, { ...biblePatch, updatedAt: input.now });
+      }
+    }
+
+    // 5. Analytics (§6, fire-and-forget). Registry events first…
+    for (const event of registryEvents) {
+      const mapped =
+        event.kind === "promise"
+          ? { eventName: "bible.key_promised", payload: { keyId: event.keyId, turn: event.turn } }
+          : event.kind === "adopt"
+            ? { eventName: "bible.key_adopted", payload: { keyId: event.key.id, turn: event.turn } }
+            : event.kind === "seeded"
+              ? { eventName: "bible.key_seeded", payload: { keyId: event.keyId, turn: event.turn } }
+              : event.kind === "phantom_unlock"
+                ? {
+                    eventName: "bible.gate_phantom_unlocked",
+                    payload: { itemId: event.itemId, turn: event.turn },
+                  }
+                : null;
+      if (!mapped) continue; // granted / door_opened fold silently (no §6 event)
+      await insertStoryAnalytics(ctx, {
+        eventName: mapped.eventName,
+        accountId: input.accountId,
+        saveId: input.saveIdValue,
+        storyId: input.storyId,
+        turnNumber: input.turnNumber,
+        payload: mapped.payload,
+        now: input.now,
+      });
+    }
+    // …then `choice.locked_shown` for each gate the reader will actually see
+    // locked this turn — fired HERE, at turn completion / visibility
+    // computation, never from the read-path projection (double-count hazard).
+    for (const result of evaluated.results) {
+      if (result.visibility !== "locked") continue;
+      const choice = input.proposal?.choices.find(
+        (candidate) => candidate.id === result.choiceId,
+      );
+      await insertStoryAnalytics(ctx, {
+        eventName: "choice.locked_shown",
+        accountId: input.accountId,
+        saveId: input.saveIdValue,
+        storyId: input.storyId,
+        turnNumber: input.turnNumber,
+        payload: buildLockedShownPayload(choice, input.state, registry),
+        now: input.now,
+      });
+    }
+
+    return { choiceVisibilities: evaluated.results, seedDiffs };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[bible] turn integration failed save=${input.saveIdValue} error=${message.slice(0, 200)}`,
+    );
+    return fallback();
+  }
+}
+
 /**
  * Build the prompt-facing clock context (R9.3, W2) from `state.clock`. The
  * escalation `directive` is computed by the engine's `clockDirective` (50%/75%
@@ -3050,14 +3501,25 @@ function threadFiresFromDiffs(diffs: unknown): string[] {
  * visibility list (R4.3), enforcing the scene-level ≤1-locked / ≥2-visible
  * invariants via the engine. Returns [] for arc-less proposals so the
  * projection defaults everything visible (BC9).
+ *
+ * Story-bible: read paths pass the save's `registry` snapshot so their
+ * recomputed visibility agrees with what the turn mutation persisted — a
+ * registry-backed locked gate must not phantom-unlock when re-evaluated by a
+ * query (the engine's empty-registry path auto-unlocks unmatched `has_item`
+ * gates, R4.5). Registry EVENTS from read-path evaluation are discarded —
+ * only the turn mutation folds state (SB4).
  */
 function computeChoiceVisibilities(
   proposal: LlmSceneProposal | null,
   state: PlayerState,
   terminal: boolean,
+  registry?: RegistrySnapshot,
 ): LlmSceneChoiceVisibility[] {
   if (!proposal) return [];
-  return evaluateLlmSceneChoices(proposal.choices, state, { terminal });
+  return evaluateLlmSceneChoices(proposal.choices, state, {
+    terminal,
+    ...(registry ? { registry } : {}),
+  });
 }
 
 /**
@@ -3083,8 +3545,15 @@ async function guardLockedChoiceSubmission(
 ): Promise<void> {
   const prior = await readPriorProposalFromCurrentScene(ctx, save);
   if (!prior) return;
+  // Story-bible: evaluate against the same registry snapshot the render used
+  // so a registry-backed lock is denied consistently (read-only — events
+  // discarded, SB4).
+  const registry = save._id
+    ? registrySnapshotFromRow(await loadStoryBibleRow(ctx, save._id))
+    : undefined;
   const visibilities = evaluateLlmSceneChoices(prior.choices, save.state, {
     terminal: false,
+    ...(registry ? { registry } : {}),
   });
   const entry = visibilities.find((v) => v.choiceId === choiceId);
   if (entry?.visibility === "locked") {
@@ -3385,10 +3854,17 @@ async function projectLlmSceneFromRecord(
   // W1-S4 read path: recompute per-choice visibility against CURRENT state
   // (R4.3 — the guard is state-relative, not baked into the record) and load
   // this turn's persisted redacted diffs for the signed echo (R5.1).
+  // Story-bible: thread the registry snapshot so a registry-backed lock the
+  // turn mutation kept doesn't phantom-unlock on re-read (read-only — events
+  // discarded).
+  const registry = save._id
+    ? registrySnapshotFromRow(await loadStoryBibleRow(ctx as { db: any }, save._id))
+    : undefined;
   const choiceVisibilities = computeChoiceVisibilities(
     proposal,
     save.state,
     terminal !== null,
+    registry,
   );
   const recentDiffs = await loadVisibleDiffsForTurn(ctx, save);
   return projectLlmDrivenScene({
@@ -3709,6 +4185,17 @@ async function runLlmDrivenSubmitChoice(
   );
   const produceArc =
     advanced.state.turnNumber === 0 && advanced.state.arc === undefined;
+  // Story-bible digest (R3.1) — assembly site 2 of 2 (SB1), kept in lockstep
+  // with the streaming site above via the shared helper. Uses the ADVANCED
+  // state/turn (this path assembles after the cursor moves).
+  const storyBible = await loadStoryBibleDigest(ctx, {
+    state: advanced.state,
+    turnNumber: advanced.state.turnNumber,
+    saveIdValue: input.saveIdValue,
+    accountId: input.accountId,
+    storyId: input.story.id,
+    now: input.now,
+  });
   const generated = await router.generateScene({
     saveId: input.saveIdValue,
     storyId: input.story.id,
@@ -3734,6 +4221,7 @@ async function runLlmDrivenSubmitChoice(
     ...(pursuit ? { pursuit } : {}),
     ...(produceArc ? { produceArc: true } : {}),
     ...(checkOutcome ? { checkOutcome } : {}),
+    ...(storyBible ? { storyBible } : {}),
   });
 
   const rawProposal: LlmSceneProposal | null = generated.parsed.proposal ?? null;
@@ -3841,11 +4329,35 @@ async function runLlmDrivenSubmitChoice(
         ? "ended_safely"
         : "ended"
     : nextSave.status;
+  // Story-bible turn integration (SB-S5, non-streaming mirror — SB1): same
+  // helper as completeSceneStream so the two paths cannot drift. Seeds
+  // threads onto nextSave.state BEFORE it is persisted below and before the
+  // visible-diff echo is computed.
+  const bibleIntegration = await applyBibleTurnIntegration(ctx, {
+    proposal,
+    state: nextSave.state,
+    terminal: terminal !== null,
+    turnNumber: nextSave.turnNumber,
+    saveIdValue: input.saveIdValue,
+    accountId: input.accountId,
+    storyId: input.story.id,
+    premise: input.save.seedPremise ?? "",
+    storySummary: input.save.storySummary ?? "",
+    actAdvanced: recorded.diffs.some(
+      (diff) => (diff as { kind?: unknown }).kind === "act_advanced",
+    ),
+    now: input.now,
+  });
   // W1-S4: redacted visible-tier diffs for this turn (check + phase A + phase
-  // B). W2: sanitise clock reasons first (R9.2), compute the hidden-only
-  // sentinel.
+  // B + seeded threads). W2: sanitise clock reasons first (R9.2), compute the
+  // hidden-only sentinel.
   const rawDiffs = sanitizeClockReasons(
-    [...checkDiffs, ...advanced.diffs, ...recorded.diffs] as ReadonlyArray<Record<string, unknown>>,
+    [
+      ...checkDiffs,
+      ...advanced.diffs,
+      ...recorded.diffs,
+      ...bibleIntegration.seedDiffs,
+    ] as ReadonlyArray<Record<string, unknown>>,
     input.contentContext,
   );
   const typedRawDiffs = rawDiffs as unknown as ReadonlyArray<
@@ -3858,11 +4370,7 @@ async function runLlmDrivenSubmitChoice(
       : hasHiddenStateShift(typedRawDiffs)
         ? []
         : undefined;
-  const choiceVisibilities = computeChoiceVisibilities(
-    proposal,
-    nextSave.state,
-    terminal !== null,
-  );
+  const choiceVisibilities = bibleIntegration.choiceVisibilities;
   const projection = projectLlmDrivenScene({
     save: { ...nextSave, _id: input.saveIdValue },
     proposal,
@@ -4238,7 +4746,77 @@ function resolveEndingKeepsake(input: {
   return policy.action === "allow" ? proposed : fallback;
 }
 
-async function recordEndingUnlock(
+/** Synthetic LLM node/ending ids (`<storyId>:llm:<N>`) carry no human meaning. */
+const MACHINE_ENDING_ID = /^.+:llm:\d+$/;
+
+/** "grim-harvest" → "Grim Harvest" (final segment of namespaced ids only). */
+function titleCaseEndingId(endingId: string): string {
+  const slug = endingId.split(":").pop() ?? endingId;
+  return slug
+    .split(/[-_\s]+/)
+    .filter((word) => word.length > 0)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+/**
+ * Human trophy title for an ending unlock (panel review — real trophy
+ * labels). Prefer the matched arc candidateEnding's label (the model authored
+ * it alongside the ending); fall back to a title-cased endingId slug. Machine
+ * ids (`storyId:llm:N`) with no candidate get no label, and safety-forced
+ * exits keep their fixed client-side title — in both cases the client
+ * fallback (apps/app/lib/endingLabels.ts) renders legacy rows too.
+ */
+export function resolveEndingLabel(input: {
+  endingId: string;
+  safetyEnding: boolean;
+  arc?: { candidateEndings?: Array<{ id: string; label: string; hint?: string }> };
+}): string | undefined {
+  if (input.safetyEnding) return undefined;
+  const candidate = input.arc?.candidateEndings?.find((c) => c.id === input.endingId);
+  const candidateLabel = candidate?.label?.trim();
+  if (candidateLabel) return candidateLabel.slice(0, 120);
+  if (MACHINE_ENDING_ID.test(input.endingId)) return undefined;
+  const titled = titleCaseEndingId(input.endingId);
+  return titled.length > 0 ? titled : undefined;
+}
+
+/** Max choice labels persisted as an ending's human path hint. */
+const ENDING_PATH_LABEL_COUNT = 3;
+
+/**
+ * Last few reader choice labels for the save that just hit a terminal,
+ * oldest→newest (panel review — the crypt's path hint should read as choices,
+ * not node ids). `turn_history` is keyed by saveId but recordEndingUnlock's
+ * call sites don't pass one, so we anchor on the account's newest history row
+ * — inside the terminal-turn mutation that row belongs to this save — and
+ * keep only rows from that save. Rows without a `choiceLabel` (opening turns,
+ * pre-label legacy rows) are skipped. Best-effort by design: an empty result
+ * simply persists the unlock without a hint (client falls back to `path`).
+ */
+async function loadRecentChoiceLabels(
+  ctx: { db: any },
+  accountId: string,
+): Promise<string[]> {
+  const rows: Array<Record<string, unknown>> = await ctx.db
+    .query("turn_history")
+    .withIndex("by_accountId", (q: any) => q.eq("accountId", accountId))
+    .order("desc")
+    .take(8);
+  const anchorSaveId = rows[0]?.saveId;
+  if (anchorSaveId === undefined) return [];
+  const labels: string[] = [];
+  for (const row of rows) {
+    if (row.saveId !== anchorSaveId) continue;
+    const label = typeof row.choiceLabel === "string" ? row.choiceLabel.trim() : "";
+    if (label.length === 0) continue;
+    labels.push(label.slice(0, 120));
+    if (labels.length >= ENDING_PATH_LABEL_COUNT) break;
+  }
+  return labels.reverse();
+}
+
+export async function recordEndingUnlock(
   ctx: { db: any },
   input: {
     accountId: string;
@@ -4261,6 +4839,15 @@ async function recordEndingUnlock(
       .first();
     if (existing) return;
     const keepsake = resolveEndingKeepsake(input);
+    // Panel review: real trophy label + choice-label path hint. Optional
+    // fields — legacy rows (and endings we can't title) stay label-less and
+    // render via the client fallback.
+    const label = resolveEndingLabel({
+      endingId: input.unlock.endingId,
+      safetyEnding: input.safetyEnding,
+      ...(input.arc ? { arc: input.arc } : {}),
+    });
+    const pathLabels = await loadRecentChoiceLabels(ctx, input.accountId);
     await ctx.db.insert(
       "endings_unlocked",
       cleanDoc({
@@ -4268,6 +4855,8 @@ async function recordEndingUnlock(
           safetyEnding: input.safetyEnding,
         }),
         ...(keepsake ? { keepsake } : {}),
+        ...(label ? { label } : {}),
+        ...(pathLabels.length > 0 ? { pathLabels } : {}),
       }),
     );
     if (keepsake) {

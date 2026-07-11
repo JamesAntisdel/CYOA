@@ -5,8 +5,26 @@ export function hasItem(state: PlayerState, itemId: string): boolean {
 }
 
 /** Drop case, spaces, and punctuation so "Bone Key" ~ "bone_key" ~ "bonekey". */
-function normalizeItemRef(s: string): string {
+export function normalizeItemRef(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/**
+ * Append an item's normalized id (and label, when it normalizes differently)
+ * to the `itemsEverGranted` ledger (story-bible R4.1). Pure: returns a NEW
+ * array so callers replace the reference and previously-cloned snapshots are
+ * never aliased. Idempotent — refs already present are not re-added.
+ */
+export function recordEverGranted(
+  ledger: string[] | undefined,
+  item: Pick<InventoryItem, "id" | "label">,
+): string[] {
+  const current = ledger ?? [];
+  const additions = [normalizeItemRef(item.id), normalizeItemRef(item.label)].filter(
+    (ref, index, refs) =>
+      ref.length > 0 && refs.indexOf(ref) === index && !current.includes(ref),
+  );
+  return additions.length === 0 ? [...current] : [...current, ...additions];
 }
 
 /**

@@ -23,6 +23,30 @@ export type CreatorSeedValidation = {
   issues: Array<{ path: string; message: string }>;
 };
 
+/**
+ * Combined structural + safety validation result, one issue per offending
+ * story field. `path` uses the same dotted addressing as
+ * `validateCreatorSeedStory` (e.g. `nodes.start.seed`) so clients can map
+ * every issue — including content-policy blocks — back onto the form field
+ * that produced it. `kind` distinguishes structural problems ("fix the
+ * story graph") from safety blocks ("rewrite this text").
+ */
+export type CreatorSeedSubmissionIssue = {
+  path: string;
+  message: string;
+  kind: "structure" | "safety";
+};
+
+export type CreatorSeedSubmissionValidation = {
+  valid: boolean;
+  issues: CreatorSeedSubmissionIssue[];
+};
+
+export type CreatorSeedPolicyEvaluation = {
+  summary: ContentPolicySummary;
+  issues: Array<{ path: string; message: string }>;
+};
+
 export type CreatorPlayTimeEvent = {
   eventName: "creator.play_time";
   accountId: string;
@@ -68,6 +92,27 @@ export function validateCreatorSeedStory(story: Story): CreatorSeedValidation {
   return { valid: issues.length === 0, issues };
 }
 
+/**
+ * Structural validation + per-field policy evaluation in one pass, returning
+ * every issue (instead of throwing on the first) so the creator form can
+ * highlight all offending fields at once. Used by the `validateSeed` query;
+ * the create/update/publish paths run the same checks and throw.
+ */
+export function validateCreatorSeedSubmission(input: {
+  story: Story;
+  owner: AccountRecord & { _id: string };
+}): CreatorSeedSubmissionValidation {
+  const structural: CreatorSeedSubmissionIssue[] = validateCreatorSeedStory(input.story).issues.map(
+    (issue) => ({ ...issue, kind: "structure" }),
+  );
+  const safety: CreatorSeedSubmissionIssue[] = evaluateSeedPolicyByField(
+    input.story,
+    input.owner,
+  ).issues.map((issue) => ({ ...issue, kind: "safety" }));
+  const issues = [...structural, ...safety];
+  return { valid: issues.length === 0, issues };
+}
+
 export function createAuthoredSeedDraft(input: {
   owner: AccountRecord & { _id: string };
   title: string;
@@ -76,16 +121,50 @@ export function createAuthoredSeedDraft(input: {
 }): AuthoredSeedRecord {
   const validation = validateCreatorSeedStory(input.story);
   if (!validation.valid) throw new AppError("creator_seed_invalid", formatIssues(validation));
-  const safetySummary = evaluateSeedPolicy(input.story, input.owner);
-  if (safetySummary.action === "block") throw new AppError("content_blocked");
+  const policy = evaluateSeedPolicyByField(input.story, input.owner);
+  if (policy.summary.action === "block") {
+    throw new AppError("content_blocked", formatBlockedFields(policy));
+  }
 
   return {
     ownerAccountId: input.owner._id,
     title: input.title.trim(),
     status: "draft",
     story: cloneJson(input.story),
-    safetySummary,
+    safetySummary: policy.summary,
     createdAt: input.now,
+    updatedAt: input.now,
+  };
+}
+
+/**
+ * Re-save an existing draft in place. Mirrors `archiveAuthoredSeed`'s
+ * ownership check, then re-runs the same validation + safety gates as
+ * `createAuthoredSeedDraft` against the incoming story. Only `draft` seeds
+ * are updatable — published/archived seeds are immutable snapshots (a new
+ * draft must be created to iterate on them).
+ */
+export function updateAuthoredSeedDraft(input: {
+  seed: AuthoredSeedRecord;
+  owner: AccountRecord & { _id: string };
+  title: string;
+  story: Story;
+  now: number;
+}): AuthoredSeedRecord {
+  if (input.seed.ownerAccountId !== input.owner._id) throw new AppError("creator_seed_forbidden");
+  if (input.seed.status !== "draft") throw new AppError("creator_seed_not_draft");
+  const validation = validateCreatorSeedStory(input.story);
+  if (!validation.valid) throw new AppError("creator_seed_invalid", formatIssues(validation));
+  const policy = evaluateSeedPolicyByField(input.story, input.owner);
+  if (policy.summary.action === "block") {
+    throw new AppError("content_blocked", formatBlockedFields(policy));
+  }
+
+  return {
+    ...input.seed,
+    title: input.title.trim(),
+    story: cloneJson(input.story),
+    safetySummary: policy.summary,
     updatedAt: input.now,
   };
 }
@@ -98,13 +177,15 @@ export function publishAuthoredSeed(input: {
   if (input.seed.ownerAccountId !== input.owner._id) throw new AppError("creator_seed_forbidden");
   const validation = validateCreatorSeedStory(input.seed.story);
   if (!validation.valid) throw new AppError("creator_seed_invalid", formatIssues(validation));
-  const safetySummary = evaluateSeedPolicy(input.seed.story, input.owner);
-  if (safetySummary.action === "block") throw new AppError("content_blocked");
+  const policy = evaluateSeedPolicyByField(input.seed.story, input.owner);
+  if (policy.summary.action === "block") {
+    throw new AppError("content_blocked", formatBlockedFields(policy));
+  }
 
   return {
     ...input.seed,
     status: "published",
-    safetySummary,
+    safetySummary: policy.summary,
     updatedAt: input.now,
   };
 }
@@ -139,24 +220,79 @@ export function buildPlayTimeAttributionEvent(input: {
   };
 }
 
-function evaluateSeedPolicy(story: Story, owner: AccountRecord & { _id: string }): ContentPolicySummary {
-  return evaluateTextPolicy({
-    text: [
-      story.title,
-      ...Object.values(story.nodes).flatMap((node) => [
-        node.title ?? "",
-        node.seed ?? "",
-        ...node.choices.map((choice) => choice.label),
-      ]),
-    ].join("\n"),
-    context: {
-      accountId: owner._id,
-      ageBand: owner.ageBand,
-      entitlementTier: "free",
-      matureContentEnabled: false,
-      surface: "publishing",
+/**
+ * Evaluate the content policy one story field at a time (title, node titles,
+ * node seeds, choice labels) instead of over one concatenated blob, so a
+ * block can name the offending field. The aggregate `summary` unions the
+ * per-field categories and blocks when any single field blocks — the same
+ * outcome as the old whole-story evaluation (the classifiers are per-phrase
+ * and never matched across field boundaries), but now with provenance.
+ */
+export function evaluateSeedPolicyByField(
+  story: Story,
+  owner: AccountRecord & { _id: string },
+): CreatorSeedPolicyEvaluation {
+  const context = {
+    accountId: owner._id,
+    ageBand: owner.ageBand,
+    entitlementTier: "free",
+    matureContentEnabled: false,
+    surface: "publishing",
+  } as const;
+
+  const issues: CreatorSeedPolicyEvaluation["issues"] = [];
+  const safetyCategories = new Set<ContentPolicySummary["safetyCategories"][number]>();
+  const matureCategories = new Set<ContentPolicySummary["matureCategories"][number]>();
+  let blocked = false;
+  let redacted = false;
+
+  for (const field of seedPolicyFields(story)) {
+    const summary = evaluateTextPolicy({ text: field.text, context });
+    for (const category of summary.safetyCategories) safetyCategories.add(category);
+    for (const category of summary.matureCategories) matureCategories.add(category);
+    if (summary.redacted) redacted = true;
+    // On the "publishing" surface the policy only ever emits allow | block.
+    if (summary.action !== "allow") {
+      blocked = true;
+      const categories = [...summary.safetyCategories, ...summary.matureCategories];
+      issues.push({
+        path: field.path,
+        message: `Blocked by content policy (${categories.join(", ") || "policy"})`,
+      });
+    }
+  }
+
+  return {
+    summary: {
+      action: blocked ? "block" : "allow",
+      safetyCategories: [...safetyCategories],
+      matureCategories: [...matureCategories],
+      redacted,
     },
-  });
+    issues,
+  };
+}
+
+function seedPolicyFields(story: Story): Array<{ path: string; text: string }> {
+  const fields: Array<{ path: string; text: string }> = [{ path: "title", text: story.title }];
+  for (const [nodeId, node] of Object.entries(story.nodes)) {
+    if (node.title) fields.push({ path: `nodes.${nodeId}.title`, text: node.title });
+    if (node.seed) fields.push({ path: `nodes.${nodeId}.seed`, text: node.seed });
+    for (const choice of node.choices) {
+      fields.push({ path: `nodes.${nodeId}.choices.${choice.id}.label`, text: choice.label });
+    }
+  }
+  return fields;
+}
+
+/**
+ * AppError messages are plain strings (the HTTP transport surfaces only
+ * `errorMessage`), so the field-level detail rides in the message. The
+ * `content_blocked` code stays first for existing substring matchers.
+ */
+function formatBlockedFields(policy: CreatorSeedPolicyEvaluation): string {
+  const detail = policy.issues.map((issue) => `${issue.path}: ${issue.message}`).join("; ");
+  return detail ? `content_blocked: ${detail}` : "content_blocked";
 }
 
 function formatIssues(validation: CreatorSeedValidation): string {
