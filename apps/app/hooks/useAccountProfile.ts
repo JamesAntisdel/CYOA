@@ -11,6 +11,7 @@ import {
   setRemoteMatureContent,
   setRemoteMediaPrefs,
 } from "../lib/gameApi";
+import { adaptKeepsakes, adaptLibrarianRank } from "../lib/storyEngagementW3";
 import { READER_SETTINGS_CHANGED_EVENT, READER_SETTINGS_KEY, type ReaderSettings } from "./useReaderSettings";
 import { useAuthSession } from "./useAuthSession";
 import { guestAuthArgs, useGuestSession } from "./useGuestSession";
@@ -320,6 +321,12 @@ export function useAccountProfile() {
       toggleArchetypeMute,
       updateDisplayName,
       remoteMediaPrefs: remoteProfile?.mediaPrefs ?? null,
+      // Story-engagement Wave 3 (R12.3): the widened profile projection. Both
+      // are adapted (null-for-absent → optional/empty) so the profile screen
+      // can render the rank chip + keepsakes shelf, or nothing on a fresh
+      // account / pre-W3 server (BC2/BC4).
+      librarianRank: adaptLibrarianRank(remoteProfile?.librarianRank),
+      keepsakes: adaptKeepsakes(remoteProfile?.keepsakes),
     };
   }, [
     archetypes,

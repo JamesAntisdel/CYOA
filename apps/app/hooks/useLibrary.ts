@@ -86,6 +86,17 @@ export function useLibrary(session: GuestSession | null) {
           role: "companion" | "ally" | "rival" | "neutral" | "antagonist";
           description: string;
         }>;
+        /**
+         * Story-engagement Wave 3 (R12.2): the single owned keepsake the reader
+         * chose to carry into this run. Threaded verbatim to `createSave` (BC3
+         * — the server drops it until its args widen). One per save.
+         */
+        keepsakeId?: string;
+        /**
+         * Story-engagement Wave 3 (R13.2): the Daily Tale this run belongs to.
+         * Normally set by the Daily start path; threaded here for completeness.
+         */
+        dailyId?: string;
       },
     ) => {
       if (!session) {
@@ -153,6 +164,11 @@ export function useLibrary(session: GuestSession | null) {
             // the backend can use field-presence as a quick "did the
             // reader bring NPCs?" check.
             ...(seed?.npcs && seed.npcs.length > 0 ? { seedNpcs: seed.npcs } : {}),
+            // Story-engagement Wave 3 (BC3): carry a keepsake / flag a Daily
+            // run. Forwarded only when present so `exactOptionalPropertyTypes`
+            // stays happy and the server can use field-presence as a signal.
+            ...(seed?.keepsakeId ? { keepsakeId: seed.keepsakeId } : {}),
+            ...(seed?.dailyId ? { dailyId: seed.dailyId } : {}),
           })
         : null;
       if (remote) {

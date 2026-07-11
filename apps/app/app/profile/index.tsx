@@ -1,9 +1,13 @@
 import { ScrollView, View } from "react-native";
 
 import { ProfileArchetypes } from "../../components/auth/ProfileArchetypes";
-import { Stamp, Surface, Text } from "../../components/primitives";
+import { Chip, Stamp, Surface, Text } from "../../components/primitives";
 import { useAccountProfile } from "../../hooks/useAccountProfile";
 import { useBreakpoint } from "../../lib/responsive";
+import {
+  librarianRankChipLabel,
+  librarianRankProgressLine,
+} from "../../lib/storyEngagementW3";
 import { useAppTheme } from "../../theme";
 
 export default function ProfileRoute() {
@@ -11,6 +15,8 @@ export default function ProfileRoute() {
   const { isPhone } = useBreakpoint();
   const {
     archetypes,
+    keepsakes,
+    librarianRank,
     profile,
     removeArchetype,
     renameArchetype,
@@ -36,7 +42,48 @@ export default function ProfileRoute() {
             ? `Signed in as ${profile.kind} reader, age band ${profile.ageBand}.`
             : "Start a story and the narrator will begin shaping your reader profile."}
         </Text>
+        {librarianRank ? (
+          <View
+            accessibilityLabel={`Librarian rank: ${librarianRankChipLabel(librarianRank)}. ${librarianRankProgressLine(librarianRank)}.`}
+            style={{ alignItems: "center", flexDirection: "row", flexWrap: "wrap", gap: tokens.spacing.sm }}
+          >
+            <Chip variant="accent">{`▣ ${librarianRankChipLabel(librarianRank)}`}</Chip>
+            <Text muted variant="caption">
+              {librarianRankProgressLine(librarianRank)}
+            </Text>
+          </View>
+        ) : null}
       </Surface>
+
+      {keepsakes.length > 0 ? (
+        <Surface padded style={{ gap: tokens.spacing.sm, maxWidth: 640, width: "100%" }}>
+          <Stamp>keepsakes</Stamp>
+          <Text muted variant="bodySmall">
+            Echoes you've earned. Carry one into a new run to weave it in.
+          </Text>
+          <View style={{ gap: tokens.spacing.sm }}>
+            {keepsakes.map((keepsake) => (
+              <View
+                key={keepsake.id}
+                style={{
+                  borderColor: tokens.colors.borderMuted,
+                  borderRadius: tokens.radii.sm,
+                  borderWidth: tokens.borderWidths.hairline,
+                  gap: 2,
+                  padding: tokens.spacing.md,
+                }}
+              >
+                <Text style={{ fontWeight: "700" }} tone="accent" variant="bodySmall">
+                  {`❖ ${keepsake.label}`}
+                </Text>
+                <Text muted variant="caption">
+                  {keepsake.description}
+                </Text>
+              </View>
+            ))}
+          </View>
+        </Surface>
+      ) : null}
 
       <ProfileArchetypes
         archetypes={archetypes}

@@ -200,6 +200,30 @@ const CHECK_THRESHOLD: Record<ChoiceCheckDifficulty, number> = {
   desperate: 8,
 };
 
+/**
+ * Shift a check one band harder (Requirement 15.1, W3 hardcore): easy → risky →
+ * desperate; desperate stays. Pure + total. Hardcore saves route every check
+ * through this before resolving (via `resolveChoiceCheck({ hardcore: true })`),
+ * so the reader faces stiffer thresholds without the choice author changing.
+ */
+export function bumpDifficulty(difficulty: ChoiceCheckDifficulty): ChoiceCheckDifficulty {
+  if (difficulty === "easy") return "risky";
+  if (difficulty === "risky") return "desperate";
+  return "desperate";
+}
+
+/**
+ * Apply the hardcore difficulty bump to a check when `hardcore` is set, else
+ * return the check unchanged (default = current behavior, backward-compatible).
+ */
+function withHardcore(
+  check: ChoiceSkillCheck,
+  opts?: { hardcore?: boolean },
+): ChoiceSkillCheck {
+  if (opts?.hardcore !== true) return check;
+  return { ...check, difficulty: bumpDifficulty(check.difficulty) };
+}
+
 /** Fail-cost knobs (design §2.5). */
 const FAIL_VITALITY_COST = 1;
 const FAIL_CURRENCY_COST = 10;
@@ -217,9 +241,11 @@ const PARTIAL_VITALITY_COST = 1;
  */
 export function resolveChoiceCheck(
   state: PlayerState,
-  check: ChoiceSkillCheck,
+  rawCheck: ChoiceSkillCheck,
   rngSeed: string,
+  opts?: { hardcore?: boolean },
 ): ChoiceCheckResult {
+  const check = withHardcore(rawCheck, opts);
   const threshold = CHECK_THRESHOLD[check.difficulty];
   const base = resolveSkillCheck(state, {
     statId: check.statId,
@@ -276,7 +302,12 @@ export function resolveChoiceCheck(
  * effective score (0–1 desperate / 2 risky / 3 even / ≥4 likely), shifted one
  * band by difficulty (easy easier, desperate harder).
  */
-export function choiceCheckOdds(state: PlayerState, check: ChoiceSkillCheck): ChoiceCheckOdds {
+export function choiceCheckOdds(
+  state: PlayerState,
+  rawCheck: ChoiceSkillCheck,
+  opts?: { hardcore?: boolean },
+): ChoiceCheckOdds {
+  const check = withHardcore(rawCheck, opts);
   const base = resolveSkillCheck(state, {
     statId: check.statId,
     difficulty: CHECK_THRESHOLD[check.difficulty],

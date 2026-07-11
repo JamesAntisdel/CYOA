@@ -43,4 +43,15 @@ crons.daily(
   { maxDeletes: 500 },
 );
 
+// story-engagement W3 (R13.1, design §6): mint the shared Daily Tale at 00:05
+// UTC — deterministic premise from the date-seeded bank + one router LLM call
+// for the arc (deterministic fallback on failure). Idempotent per date, so a
+// re-run or a hourly retry can't double-insert today's row.
+crons.daily(
+  "mint-daily-tale",
+  { hourUTC: 0, minuteUTC: 5 },
+  makeFunctionReference<"action">("dailyFunctions:mintDailyTale"),
+  {},
+);
+
 export default crons;

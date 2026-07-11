@@ -49,6 +49,14 @@ import {
 } from "./analyticsEvents";
 import { buildAnalyticsEvent, type AnalyticsMetricName } from "./analytics";
 import { endingRecordFromUnlock } from "./endings";
+import {
+  deriveDefaultKeepsake,
+  validateKeepsake,
+  KEEPSAKE_GRANTED,
+  KEEPSAKE_CARRIED,
+} from "./keepsakes";
+import { insertDailyResultIfAbsent } from "./dailyFunctions";
+import { HARDCORE_PURGE_DELAY_MS } from "./hardcore";
 import { loadAndAuthorizeAccount } from "./lib/authz";
 import { AppError } from "./lib/errors";
 import { makeDayKey } from "./lib/ids";
@@ -186,6 +194,13 @@ export const createSave = mutationGeneric({
       ),
       description: v.string(),
     }))),
+    // story-engagement W3 (R12.2). Keepsake carried in from a prior ending —
+    // validated for ownership, then injected as a tagged inventory item.
+    keepsakeId: v.optional(v.string()),
+    // story-engagement W3 (R13.2). When set, this save plays today's Daily
+    // Tale: its fixed arc is injected from `daily_tales` and turn-1 arc
+    // generation is skipped. Set by `dailyFunctions:startDaily`.
+    dailyId: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const account = await loadAndAuthorizeAccount(ctx, args.accountId, args.guestTokenHash);
@@ -329,6 +344,63 @@ export const createSave = mutationGeneric({
       ...(seedTitle ? { seedTitle } : {}),
       ...(seedTone ? { seedTone } : {}),
     };
+    // story-engagement W3 (R13.2): Daily Tale — inject today's FIXED arc from
+    // `daily_tales` BEFORE the llm cursor advance so turn-1 arc generation is
+    // skipped (produceArc guards on `state.arc === undefined`) and every reader
+    // races the same dramatic question.
+    if (args.dailyId) {
+      const daily = await ctx.db.get(args.dailyId as any);
+      const dailyArc = (daily as { storyArc?: unknown } | null)?.storyArc;
+      if (dailyArc) {
+        save = {
+          ...save,
+          dailyId: args.dailyId,
+          state: { ...save.state, arc: dailyArc as NonNullable<typeof save.state.arc> },
+        };
+      }
+    }
+    // story-engagement W3 (R12.2): carry a keepsake earned at a prior ending
+    // into this run as a tagged inventory item. Validate ownership against the
+    // reader's own unlocked endings; the opening prompt weaves it in (scene.ts).
+    if (args.keepsakeId) {
+      const unlocks = await ctx.db
+        .query("endings_unlocked")
+        .withIndex("by_account_ending", (q: any) => q.eq("accountId", args.accountId))
+        .collect();
+      const owned = unlocks
+        .map(
+          (r: { keepsake?: { id: string; label: string; description: string } }) =>
+            r.keepsake,
+        )
+        .find(
+          (k: { id: string; label: string; description: string } | undefined) =>
+            !!k && k.id === args.keepsakeId,
+        );
+      if (!owned) throw new AppError("keepsake_not_owned");
+      save = {
+        ...save,
+        keepsakeCarried: args.keepsakeId,
+        state: {
+          ...save.state,
+          inventory: [
+            ...save.state.inventory,
+            {
+              id: owned.id,
+              label: owned.label,
+              description: owned.description,
+              tags: ["keepsake"],
+            },
+          ],
+        },
+      };
+      await insertStoryAnalytics(ctx, {
+        eventName: KEEPSAKE_CARRIED,
+        accountId: args.accountId,
+        storyId: args.storyId,
+        payload: { keepsakeId: owned.id },
+        now,
+      });
+    }
     // For llm-driven stories, advance the cursor immediately to the synthetic
     // opening node so the first scene needs an LLM call (which the client
     // kicks off via the SSE stream after this mutation returns).
@@ -1819,6 +1891,10 @@ export const completeSceneStream = mutationGeneric({
           accountId: args.accountId,
           unlock: unlockedEndingForTerminal(save, nextState, terminal),
           safetyEnding: policyForcedSafe,
+          ...(proposal?.keepsake ? { proposalKeepsake: proposal.keepsake } : {}),
+          ...(nextState.arc ? { arc: nextState.arc } : {}),
+          storyId: save.storyId,
+          turnNumber: nextState.turnNumber,
         });
         // Endpoint-cinematics: the ending is the highest-value trigger (Req 2.4).
         await maybeScheduleEndingCinematic(ctx, {
@@ -1826,6 +1902,27 @@ export const completeSceneStream = mutationGeneric({
           saveId: args.saveId,
           endingId: terminal.endingId,
         });
+        // W3 (R13.3): a Daily Tale terminal records the reader's result for the
+        // shared distribution (idempotent per account+daily; analytics inside).
+        if (save.dailyId) {
+          await insertDailyResultIfAbsent(ctx, {
+            dailyId: save.dailyId,
+            accountId: args.accountId,
+            endingId: terminal.endingId,
+            turnCount: nextState.turnNumber,
+            finishedAt: now,
+          });
+        }
+        // W3 (R15): hardcore death is permanent — schedule the purge so the
+        // reader still sees the death screen (from this response) before the run
+        // is wiped. Only on death; success/safe hardcore endings survive.
+        if (save.mode === "hardcore" && terminal.kind === "death" && ctx.scheduler) {
+          await ctx.scheduler.runAfter(
+            HARDCORE_PURGE_DELAY_MS,
+            ("hardcore:purgeHardcoreSave" as unknown) as any,
+            { saveId: args.saveId },
+          );
+        }
       }
       // Safe-terminal forced by the safety classifier → redacted safety.ended /
       // safety.redirected row (Req 11.9 / 15.6).
@@ -2619,7 +2716,11 @@ function resolveSubmittedCheck(
   const check = (choice as { skillCheck?: unknown } | undefined)?.skillCheck;
   if (!check || typeof check !== "object") return null;
   try {
-    return resolveChoiceCheck(state, check as never, rngSeed);
+    // Hardcore saves face every check one difficulty band harder (R15.1); the
+    // pure resolver reads the flag off the save's mode via state.mode.
+    return resolveChoiceCheck(state, check as never, rngSeed, {
+      hardcore: state.mode === "hardcore",
+    });
   } catch {
     // Tolerant-drop: a check the engine can't resolve (unknown stat, bad shape)
     // simply doesn't fire — the turn proceeds with the choice's own effects.
@@ -2841,10 +2942,11 @@ export function createArcForOpeningTurn(input: {
     proposed ?? synthesizeFallbackArc(input.save.seedPremise ?? "", input.save.seedTitle);
   const arc = sanitizeArcStrings(rawArc, input.context);
   // W2 (R9.1): seed the doom clock alongside the arc via the engine's
-  // `createClock` (themed label from `arc.clockLabel`, default max, hardcore
-  // reduction hook reserved for W3). The engine auto-advances it +1 every 3rd
-  // turn inside `advanceLlmTurnCursor` and honors LLM `clock_advance` effects.
-  const clock = createClock(arc.clockLabel);
+  // `createClock` (themed label from `arc.clockLabel`, default max). W3 (R15):
+  // hardcore saves get a −25% max so the candle gutters faster. The engine
+  // auto-advances it +1 every 3rd turn inside `advanceLlmTurnCursor` and honors
+  // LLM `clock_advance` effects.
+  const clock = createClock(arc.clockLabel, { hardcore: input.save.mode === "hardcore" });
   return { state: { ...input.state, arc, clock }, source };
 }
 
@@ -3235,6 +3337,9 @@ function snapshotPlayerState(state: PlayerState): {
       id: item.id,
       label: item.label,
       ...(item.description ? { description: item.description } : {}),
+      // Carry keepsake/provenance tags so the prompt can weave a carried
+      // keepsake into the opening (story-engagement W3).
+      ...(item.tags && item.tags.length > 0 ? { tags: item.tags } : {}),
     })),
     flags: state.flags as Record<string, boolean | number | string>,
   };
@@ -3834,6 +3939,10 @@ async function runLlmDrivenSubmitChoice(
       accountId: input.accountId,
       unlock: unlockedEndingForTerminal(nextSave, nextSave.state, terminal),
       safetyEnding: policyForcedSafe,
+      ...(proposal?.keepsake ? { proposalKeepsake: proposal.keepsake } : {}),
+      ...(nextSave.state.arc ? { arc: nextSave.state.arc } : {}),
+      storyId: nextSave.storyId,
+      turnNumber: nextSave.state.turnNumber,
     });
     // Endpoint-cinematics ending trigger (Req 2.4) for the non-streaming
     // llm-driven path. Strategy-gated + best-effort inside the helper.
@@ -3842,6 +3951,25 @@ async function runLlmDrivenSubmitChoice(
       saveId: input.saveIdValue,
       endingId: terminal.endingId,
     });
+    // W3 (R13.3): Daily Tale terminal → record the reader's result (idempotent).
+    if (nextSave.dailyId) {
+      await insertDailyResultIfAbsent(ctx, {
+        dailyId: nextSave.dailyId,
+        accountId: input.accountId,
+        endingId: terminal.endingId,
+        turnCount: nextSave.state.turnNumber,
+        finishedAt: input.now,
+      });
+    }
+    // W3 (R15): schedule the hardcore death purge (keeps this path in lockstep
+    // with the streaming path). Only on death; the response still renders first.
+    if (nextSave.mode === "hardcore" && terminal.kind === "death" && ctx.scheduler) {
+      await ctx.scheduler.runAfter(
+        HARDCORE_PURGE_DELAY_MS,
+        ("hardcore:purgeHardcoreSave" as unknown) as any,
+        { saveId: input.saveIdValue },
+      );
+    }
   }
   if (policyForcedSafe) {
     await insertSafetyAnalytics(ctx, {
@@ -4074,9 +4202,55 @@ function unlockedEndingForTerminal(
  * persists the terminal scene the reader is about to see, so a throw here
  * would roll the whole terminal write back. We swallow + log instead.
  */
+/** Strictest all-ages gate for LLM-authored keepsake text (R16.2). */
+const KEEPSAKE_POLICY_CONTEXT: ContentPolicyContext = {
+  surface: "generation",
+  entitlementTier: "free",
+  matureContentEnabled: false,
+};
+
+/**
+ * Resolve the keepsake earned at a terminal (W3-M1, R12.1): prefer a validated
+ * LLM-authored `proposalKeepsake`, else an ending-derived default. Keepsakes are
+ * a story-engagement reward, so arc-less/legacy saves and safety-forced exits
+ * earn none. An LLM keepsake that trips the all-ages gate falls back to the
+ * trusted ending-derived default rather than being dropped.
+ */
+function resolveEndingKeepsake(input: {
+  unlock: UnlockedEnding;
+  safetyEnding: boolean;
+  proposalKeepsake?: unknown;
+  arc?: { candidateEndings?: Array<{ id: string; label: string; hint?: string }> };
+}): { id: string; label: string; description: string } | undefined {
+  if (input.safetyEnding || !input.arc) return undefined;
+  const candidate = input.arc.candidateEndings?.find((c) => c.id === input.unlock.endingId);
+  const fallback = deriveDefaultKeepsake({
+    id: input.unlock.endingId,
+    label: candidate?.label ?? input.unlock.endingId,
+    ...(candidate?.hint ? { hint: candidate.hint } : {}),
+  });
+  const proposed = validateKeepsake(input.proposalKeepsake);
+  if (!proposed) return fallback;
+  const policy = evaluateTextPolicy({
+    text: `${proposed.label} ${proposed.description}`,
+    context: KEEPSAKE_POLICY_CONTEXT,
+  });
+  return policy.action === "allow" ? proposed : fallback;
+}
+
 async function recordEndingUnlock(
   ctx: { db: any },
-  input: { accountId: string; unlock: UnlockedEnding; safetyEnding: boolean },
+  input: {
+    accountId: string;
+    unlock: UnlockedEnding;
+    safetyEnding: boolean;
+    // W3 keepsake grant (R12.1) — optional; only arc saves attach one.
+    proposalKeepsake?: unknown;
+    arc?: { candidateEndings?: Array<{ id: string; label: string; hint?: string }> };
+    storyId?: string;
+    turnNumber?: number;
+    now?: number;
+  },
 ): Promise<void> {
   try {
     const existing = await ctx.db
@@ -4086,14 +4260,26 @@ async function recordEndingUnlock(
       )
       .first();
     if (existing) return;
+    const keepsake = resolveEndingKeepsake(input);
     await ctx.db.insert(
       "endings_unlocked",
-      cleanDoc(
-        endingRecordFromUnlock(input.accountId, input.unlock, {
+      cleanDoc({
+        ...endingRecordFromUnlock(input.accountId, input.unlock, {
           safetyEnding: input.safetyEnding,
         }),
-      ),
+        ...(keepsake ? { keepsake } : {}),
+      }),
     );
+    if (keepsake) {
+      await insertStoryAnalytics(ctx, {
+        eventName: KEEPSAKE_GRANTED,
+        accountId: input.accountId,
+        ...(input.storyId ? { storyId: input.storyId } : {}),
+        ...(input.turnNumber === undefined ? {} : { turnNumber: input.turnNumber }),
+        payload: { keepsakeId: keepsake.id, endingId: input.unlock.endingId },
+        now: input.now ?? Date.now(),
+      });
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.warn(

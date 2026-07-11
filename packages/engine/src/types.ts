@@ -23,6 +23,12 @@ export type InventoryItem = {
   id: string;
   label: string;
   description?: string;
+  /**
+   * Optional provenance tags. Currently only `"keepsake"` (story-engagement
+   * W3): an item carried in from a prior ending, badged distinctly in the
+   * reader's inventory. Surfaced verbatim in the scene projection.
+   */
+  tags?: string[];
 };
 
 export type FlagMap = Record<string, boolean | number | string>;

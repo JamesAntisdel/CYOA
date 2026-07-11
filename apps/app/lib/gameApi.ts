@@ -141,6 +141,38 @@ export type RemoteRecentDiff =
  */
 export type RemoteCodexEntry = { flag: string; text: string; turnNumber: number };
 
+/**
+ * Story-engagement Wave 3 keepsake (design §7 / R12). Granted on an ending
+ * unlock (account-scoped, dedup by id) and carriable into a new run. Surfaced
+ * in the profile keepsakes shelf and the new-story KeepsakePicker. Server emits
+ * these on the widened profile projection; the adapter (`adaptKeepsakes`) maps
+ * a null/absent array to an empty list (BC2/BC4).
+ */
+export type RemoteKeepsake = { id: string; label: string; description: string };
+
+/**
+ * Story-engagement Wave 3 Librarian Rank (design §7 / R12.3). Display-only,
+ * server-computed from lifetime (endings, beats, tales). The client never
+ * computes the tier — it renders `label` + the counts. Server emits it on the
+ * widened profile projection (null-for-absent on fresh accounts).
+ */
+export type RemoteLibrarianRank = {
+  tier: string;
+  label: string;
+  endings: number;
+  beats: number;
+  tales: number;
+};
+
+/**
+ * Story-engagement Wave 3 what-might-have-been candidate (design §7 / R14).
+ * One UNREACHED candidate ending surfaced (label + hint only — never a full
+ * spoiler) on the terminal ending panel + as a fogged ghost on the endings map.
+ * The server projects these ONLY post-terminal (BC10); pre-terminal saves never
+ * carry them.
+ */
+export type RemoteWhatMightHaveBeen = { label: string; hint: string };
+
 export type RemoteScene = {
   saveId?: string;
   storyId: string;
@@ -174,7 +206,17 @@ export type RemoteScene = {
    * fabricated dummy-label list the client used to build off `inventoryCount`.
    * Optional for the same backwards-compat reason as `vitality`.
    */
-  inventory?: Array<{ id: string; label: string }>;
+  inventory?: Array<{
+    id: string;
+    label: string;
+    /**
+     * Story-engagement Wave 3 (R12.2): item tags. A carried keepsake is
+     * injected as an inventory item tagged `keepsake`; the client renders a
+     * small badge on it in the inventory list. Optional — legacy items and
+     * older projections omit tags (BC9).
+     */
+    tags?: string[];
+  }>;
   /**
    * NPC roster mirrored from `PlayerState.npcs` (Requirement 31). Optional
    * for backwards compatibility — servers that haven't yet plumbed
@@ -215,6 +257,14 @@ export type RemoteScene = {
    * legacy saves and turns predating codex projection → the tab hides (BC9).
    */
   codex?: RemoteCodexEntry[] | null;
+  /**
+   * Story-engagement Wave 3 ending reflection (design §7 / R14). Present ONLY
+   * on a terminal (arc) save; carries 1–2 UNREACHED candidate endings
+   * (label + hint) for the What-Might-Have-Been cards and the fogged endings-map
+   * ghosts. Server emits `null` pre-terminal / on legacy saves (BC9/BC10) → the
+   * surfaces render nothing.
+   */
+  ending?: { whatMightHaveBeen?: RemoteWhatMightHaveBeen[] | null } | null;
 };
 
 export function hasRemoteGameApi() {
@@ -242,6 +292,23 @@ export async function createRemoteSave(input: {
   guestTokenHash?: string;
   storyId: string;
   mode: Mode;
+  /**
+   * Story-engagement Wave 3 (R12.2, BC3): the single owned keepsake the reader
+   * chose to carry into this new run. The server validates ownership and
+   * injects it as an inventory item tagged `keepsake` + an opening prompt line.
+   * Omitted when the reader carries nothing. `createSave` args go through an
+   * untyped `callConvexHttp<any>` input so this rides along without waiting on
+   * the server arg-widening (BC3) — the server drops it until it widens.
+   */
+  keepsakeId?: string;
+  /**
+   * Story-engagement Wave 3 (R13.2, BC3): the Daily Tale this run belongs to.
+   * When set the server injects the daily's fixed arc (`source:"daily"`, turn-1
+   * arc generation skipped) and records a `daily_results` row on terminal.
+   * Normally the reader starts a Daily via `dailyFunctions:startDaily`; this is
+   * threaded for completeness of the create path.
+   */
+  dailyId?: string;
   /**
    * Narrator voice id chosen by the reader on the cover screen. Sent at save
    * creation only — the backend persists it on the save record so subsequent
@@ -605,6 +672,16 @@ export async function getRemoteProfile(input: {
     audioEnabled: boolean;
     videoEnabled: boolean;
   };
+  /**
+   * Story-engagement Wave 3 (design §7 / R12.3): the widened profile projection
+   * adds the Librarian Rank (display-only, server-computed) and the account's
+   * owned keepsakes. Both are optional here — the server emits null-for-absent
+   * (fresh accounts), and the profile lib may run against a pre-W3 server that
+   * doesn't project them yet (BC2/BC4). Consumers adapt via `adaptKeepsakes` /
+   * `adaptLibrarianRank` in `storyEngagementW3.ts`.
+   */
+  librarianRank?: RemoteLibrarianRank | null;
+  keepsakes?: RemoteKeepsake[] | null;
 } | null> {
   if (!convexClient) return null;
   return callConvexHttp<any>("query", "accountFunctions:getProfile", input as unknown as Record<string, unknown>) as any;

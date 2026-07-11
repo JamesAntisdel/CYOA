@@ -7,6 +7,15 @@ import type {
   StoryClock,
 } from "./types";
 
+// W3 barrel bridge: re-export the Librarian Rank helper (Requirement 12.3) so it
+// reaches consumers through `@cyoa/engine` WITHOUT editing the reserved barrel
+// (`index.ts`, BC7). `index.ts` already does `export * from "./arc"`, so this
+// line surfaces `librarianRank` on the package entry. If the integrator later
+// adds a dedicated `export * from "./rank"` to the barrel, REMOVE this line to
+// avoid a duplicate-export conflict (see HANDOFF).
+export { librarianRank } from "./rank";
+export type { LibrarianRank, LibrarianTier } from "./rank";
+
 // =============================================================================
 // Story Arc engine module (Requirement 1). Pure — no `console`, no Date.now
 // (BC6). Every function is total: malformed input returns null/fallback rather
@@ -339,24 +348,44 @@ export function normalizeEndingId(arc: StoryArc, proposedId: string): string {
 export const CLOCK_MAX_DEFAULT = 12;
 /** Hardcore shrinks the ceiling ~25% (Requirement 15.1 — wired W3 via param). */
 export const CLOCK_HARDCORE_MAX_REDUCTION = 0.25;
+/** Sensible floor for a hardcore-reduced clock — a doom clock needs segments. */
+export const CLOCK_HARDCORE_MIN = 4;
 const CLOCK_LABEL_DEFAULT = "The candle burns";
 /** The engine auto-advances +1 every this-many completed turns (Requirement 9.2). */
 const CLOCK_TURNS_PER_TICK = 3;
 
 /**
+ * Compute the hardcore clock ceiling from a base max (Requirement 15.1, W3):
+ * −25% rounded, floored at {@link CLOCK_HARDCORE_MIN} so the doom clock keeps a
+ * usable number of segments. Pure — the server calls this (or passes
+ * `hardcore: true` to {@link createClock}) so game.ts never re-implements the
+ * math. Default max 12 → 9.
+ */
+export function hardcoreClockMax(baseMax: number = CLOCK_MAX_DEFAULT): number {
+  const base = Math.max(1, Math.trunc(Number.isFinite(baseMax) ? baseMax : CLOCK_MAX_DEFAULT));
+  const reduced = Math.round(base * (1 - CLOCK_HARDCORE_MAX_REDUCTION));
+  return Math.max(CLOCK_HARDCORE_MIN, reduced);
+}
+
+/**
  * Build a fresh clock (Requirement 9.1). `label` defaults to the themed
  * fallback; `max` defaults to {@link CLOCK_MAX_DEFAULT}. `maxReduction` (0..1)
  * shrinks the ceiling — hardcore passes {@link CLOCK_HARDCORE_MAX_REDUCTION}
- * (W3). The result is never below 1.
+ * (W3). Alternatively pass `hardcore: true` to apply the standard hardcore
+ * ceiling ({@link hardcoreClockMax}) without the caller doing the math — this is
+ * the turnkey W3 entry point for the server. `hardcore` wins when both it and an
+ * explicit `maxReduction` are given. The result is never below 1 (or the
+ * hardcore floor when `hardcore` is set).
  */
 export function createClock(
   label?: string,
-  opts?: { max?: number; maxReduction?: number },
+  opts?: { max?: number; maxReduction?: number; hardcore?: boolean },
 ): StoryClock {
   const baseMax = Math.max(1, Math.trunc(opts?.max ?? CLOCK_MAX_DEFAULT));
-  const reduction = clampUnit(opts?.maxReduction ?? 0);
-  const max = Math.max(1, Math.round(baseMax * (1 - reduction)));
   const trimmed = (label ?? "").trim();
+  const max = opts?.hardcore
+    ? hardcoreClockMax(baseMax)
+    : Math.max(1, Math.round(baseMax * (1 - clampUnit(opts?.maxReduction ?? 0))));
   return {
     label: trimmed.length > 0 ? trimmed : CLOCK_LABEL_DEFAULT,
     value: 0,

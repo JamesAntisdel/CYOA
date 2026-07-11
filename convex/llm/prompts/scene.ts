@@ -475,13 +475,17 @@ function playerStateSummary(state: PlayerStateSnapshot | undefined): string {
   // Lead each item with its id in brackets so the model can copy the EXACT id
   // when gating a later choice on `has_item`/`missing_item` (a re-spelled id
   // silently locks the door forever — see ITEM-ID CONSISTENCY in the rules).
+  // A keepsake-tagged item (story-engagement W3) was carried in from a prior
+  // ending — flag it so the model weaves it into the opening as an echo of the
+  // reader's other life, not a random prop.
   const inventory = state.inventory.length > 0
     ? state.inventory
-        .map((i) =>
-          i.description
-            ? `[${i.id}] ${i.label} — ${i.description}`
-            : `[${i.id}] ${i.label}`,
-        )
+        .map((i) => {
+          const keepsake = i.tags?.includes("keepsake") ? " (KEEPSAKE — a relic of the reader's other life; weave it in meaningfully)" : "";
+          return i.description
+            ? `[${i.id}] ${i.label} — ${i.description}${keepsake}`
+            : `[${i.id}] ${i.label}${keepsake}`;
+        })
         .join("; ")
     : "empty";
   const visible = state.visibleStats.length > 0

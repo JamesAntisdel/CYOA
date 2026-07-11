@@ -53,6 +53,10 @@ export type SaveRecord = {
   // visually consistent across scenes.
   anchorProtagonistAssetId?: string;
   anchorSettingAssetId?: string;
+  // story-engagement W3: the Daily Tale this save plays (R13.2) and the
+  // keepsake id carried in from a prior ending (R12.2). Both optional.
+  dailyId?: string;
+  keepsakeCarried?: string;
   createdAt: number;
   updatedAt: number;
 };
@@ -82,7 +86,7 @@ export type SceneProjection = {
    * The description is intentionally omitted from the projection — it's only
    * useful inside the LLM prompt's player-state summary.
    */
-  inventory: Array<{ id: string; label: string }>;
+  inventory: Array<{ id: string; label: string; tags?: string[] }>;
   /**
    * NPC roster currently in player state. Empty `{}` when no NPCs have been
    * spawned. Surfaced to the reader's character sheet (NpcRoster). Mirrors
@@ -126,6 +130,14 @@ export type SceneProjection = {
    * mechanics. Absent on legacy saves + turns with no string flags.
    */
   codex?: CodexEntry[];
+  /**
+   * Post-terminal replay bait (R14 / design §7). On an arc save that has
+   * REACHED a terminal, 1–2 UNREACHED candidate endings (label + hint only) for
+   * the What-Might-Have-Been cards. POST-TERMINAL ONLY — absent while the save
+   * is still live (BC10: candidate endings are spoilers pre-terminal). Legacy /
+   * arc-less saves omit it entirely.
+   */
+  ending?: { whatMightHaveBeen: Array<{ label: string; hint: string }> };
   terminal: ReturnType<typeof resolveTerminal>;
 };
 
@@ -315,7 +327,13 @@ function visibleStatsFromState(state: PlayerState): SceneProjection["visibleStat
 }
 
 function inventoryFromState(state: PlayerState): SceneProjection["inventory"] {
-  return state.inventory.map((item) => ({ id: item.id, label: item.label }));
+  return state.inventory.map((item) => ({
+    id: item.id,
+    label: item.label,
+    // Surface keepsake/provenance tags so the reader's inventory can badge a
+    // carried keepsake (story-engagement W3). Omitted when the item has none.
+    ...(item.tags && item.tags.length > 0 ? { tags: item.tags } : {}),
+  }));
 }
 
 /**
@@ -652,8 +670,47 @@ export function projectLlmDrivenScene(input: {
     // shifted…" sentinel for a hidden-only turn; `undefined` (not passed, or a
     // legacy turn with no diff record) omits the field entirely.
     ...(input.recentDiffs !== undefined ? { recentDiffs: input.recentDiffs } : {}),
+    // R14 (W3): post-terminal What-Might-Have-Been. Empty pre-terminal (BC10),
+    // so the key is only emitted once the save has actually ended.
+    ...(() => {
+      const whatMightHaveBeen = projectWhatMightHaveBeen(input.save.state, input.terminal ?? null);
+      return whatMightHaveBeen.length > 0 ? { ending: { whatMightHaveBeen } } : {};
+    })(),
     terminal: input.terminal ?? null,
   };
+}
+
+/** Structural view of `state.arc.candidateEndings` (engine adds the typed arc). */
+type CandidateEndingLike = { id?: unknown; label?: unknown; hint?: unknown };
+
+/**
+ * Derive the post-terminal What-Might-Have-Been cards (R14 / design §7): 1–2
+ * UNREACHED candidate endings (label + hint only) from the save's arc, MINUS
+ * the ending actually reached. POST-TERMINAL ONLY — returns `[]` when `terminal`
+ * is null (the save is still live), so candidate endings never leak
+ * pre-terminal (BC10). Also `[]` for arc-less / legacy saves.
+ */
+export function projectWhatMightHaveBeen(
+  state: PlayerState,
+  terminal: TerminalResult | null,
+): Array<{ label: string; hint: string }> {
+  if (!terminal) return [];
+  const candidates = (state as { arc?: { candidateEndings?: unknown } }).arc?.candidateEndings;
+  if (!Array.isArray(candidates)) return [];
+  const reached = terminal.endingId;
+  const unreached: Array<{ label: string; hint: string }> = [];
+  for (const raw of candidates as CandidateEndingLike[]) {
+    if (unreached.length >= 2) break;
+    if (!raw || typeof raw !== "object") continue;
+    const id = typeof raw.id === "string" ? raw.id : "";
+    const label = typeof raw.label === "string" ? raw.label : "";
+    if (label.length === 0) continue;
+    // Skip the ending the reader actually reached (terminal.endingId is already
+    // normalized to a candidate id by the engine gate).
+    if (id.length > 0 && id === reached) continue;
+    unreached.push({ label, hint: typeof raw.hint === "string" ? raw.hint : "" });
+  }
+  return unreached;
 }
 
 /**

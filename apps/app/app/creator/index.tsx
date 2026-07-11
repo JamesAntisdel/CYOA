@@ -11,6 +11,7 @@ import { Button, Chip, Divider, Stamp, Surface, Text } from "../../components/pr
 import { createRemoteCreatorDraft, publishRemoteCreatorSeed } from "../../lib/gameApi";
 import { saveLocalCreatorSeed } from "../../lib/localCreatorSeeds";
 import { useBreakpoint } from "../../lib/responsive";
+import { useAccountProfile } from "../../hooks/useAccountProfile";
 import { guestAuthArgs, useGuestSession } from "../../hooks/useGuestSession";
 import { useLibrary } from "../../hooks/useLibrary";
 import { useNarratorVoice } from "../../hooks/useNarratorVoice";
@@ -20,6 +21,9 @@ export default function CreatorRoute() {
   const router = useRouter();
   const guest = useGuestSession();
   const library = useLibrary(guest.session);
+  // Story-engagement Wave 3 (R12.2): the account's owned keepsakes feed the
+  // new-story KeepsakePicker inside SeedStoryFlow.
+  const { keepsakes } = useAccountProfile();
   // Creator route also launches starters via SeedStoryFlow → forward the
   // reader's pinned voice so the save record gets a voiceId at create time.
   const narrator = useNarratorVoice(null);
@@ -177,18 +181,21 @@ export default function CreatorRoute() {
           </View>
 
           <SeedStoryFlow
-            onLaunchSeed={({ title, premise, tone, npcCast }) =>
+            keepsakes={keepsakes}
+            onLaunchSeed={({ title, premise, tone, npcCast, mode, keepsakeId }) =>
               // Reader-authored open seeds always launch from the open-canvas
               // starter shell. Pass title as both titleOverride (so the
               // library row shows the reader-authored title) and inside the
               // seed object (so the backend persists it as the LLM
               // `storyTitle` field). The optional cast is forwarded to the
-              // backend as `seedNpcs` via useLibrary → gameApi.
-              library.createSave(OPEN_STARTER_ID, "story", title, narrator.voiceId, {
+              // backend as `seedNpcs` via useLibrary → gameApi. Wave 3 threads
+              // the chosen mode (Story/Hardcore) + carried keepsakeId (BC3).
+              library.createSave(OPEN_STARTER_ID, mode, title, narrator.voiceId, {
                 premise,
                 title,
                 tone,
                 npcs: npcCast,
+                ...(keepsakeId ? { keepsakeId } : {}),
               })
             }
             onSeedLaunched={(save) => router.push(`/read/${save.saveId}`)}

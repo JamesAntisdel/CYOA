@@ -37,7 +37,7 @@ export type PlayerStateSnapshot = {
    * the description in the prompt snapshot, the model only sees the bare
    * label and forgets that the ticket isn't in the protagonist's hand.
    */
-  inventory: Array<{ id: string; label: string; description?: string }>;
+  inventory: Array<{ id: string; label: string; description?: string; tags?: string[] }>;
   flags: Record<string, boolean | number | string>;
 };
 

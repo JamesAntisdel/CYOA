@@ -292,6 +292,19 @@ export const llmTerminalSchema = z.object({
   label: clampedString({ min: 1, max: 160 }).optional(),
 });
 
+// Keepsake earned at an ending (Requirement 12.1, W3). Only HONORED on terminal
+// scenes — the scene-level transform below strips a keepsake proposed on a
+// non-terminal scene. Length-clamped (`label ≤48`, `description ≤160`, id a
+// bounded slug). Tolerant: a malformed keepsake is DROPPED (`.catch`) so the
+// terminal scene — and the turn — still parses (BC5).
+const keepsakeSchema = z.object({
+  id: clampedString({ min: 1, max: 64 }),
+  label: clampedString({ min: 1, max: 48 }),
+  description: clampedString({ min: 1, max: 160 }),
+});
+
+export type LlmKeepsakeProposal = z.infer<typeof keepsakeSchema>;
+
 // Loose turn-1 arc envelope (Requirement 1.1). The schema only shape-checks
 // that the core string fields + arrays are present; full clamping/validation
 // happens later via `validateProposedArc` (convex, turn 1 only). `.catch`
@@ -330,6 +343,16 @@ export const llmSceneOutputSchema = z
      * matched against the arc.
      */
     beatFired: clampedString({ min: 1, max: 48 }).optional(),
+    /**
+     * Keepsake earned at this ending (Requirement 12.1, W3). Honored ONLY on
+     * terminal scenes — the transform below strips it when `terminal` is
+     * absent/null so a non-terminal scene can never mint a keepsake (the engine
+     * clamps it, per the W3 contract). Malformed keepsakes are dropped
+     * (`.catch`) so the scene still parses (BC5). Persisted onto the
+     * `endings_unlocked` row by `recordEndingUnlock` (convex), which derives a
+     * default from the ending when this is absent.
+     */
+    keepsake: keepsakeSchema.optional().catch(undefined),
     /**
      * NPC ids the model believes were mentioned in this scene's prose.
      * Optional — the model is encouraged to populate this but legacy
@@ -388,6 +411,9 @@ export const llmSceneOutputSchema = z
   })
   // ≤1 checked choice per scene (Requirement 7.1): keep the first choice that
   // carries a `skillCheck` (array order), strip the check from any others.
+  // W3 (Requirement 12.1): a `keepsake` is honored ONLY on terminal scenes — a
+  // keepsake proposed on a non-terminal scene is clamped away here so it can
+  // never be minted mid-run.
   .transform((scene) => {
     let checkSeen = false;
     const choices = scene.choices.map((choice) => {
@@ -396,7 +422,9 @@ export const llmSceneOutputSchema = z
       checkSeen = true;
       return choice;
     });
-    return { ...scene, choices };
+    const { keepsake, ...base } = scene;
+    const honoredKeepsake = base.terminal ? keepsake : undefined;
+    return { ...base, choices, ...(honoredKeepsake ? { keepsake: honoredKeepsake } : {}) };
   });
 
 export type LlmEffect = z.infer<typeof llmEffectSchema>;

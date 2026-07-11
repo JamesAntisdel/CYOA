@@ -69,6 +69,12 @@ export type ReaderStats = {
 export type ReaderInventoryItem = {
   id: string;
   label: string;
+  /**
+   * Story-engagement Wave 3 (R12.2): item tags mirrored from the projection.
+   * A carried keepsake is tagged `keepsake`; the inventory list renders a badge
+   * on it. Optional — legacy items omit tags (BC9).
+   */
+  tags?: string[];
 };
 
 export type ReaderProjection = {
@@ -1078,7 +1084,13 @@ function remoteInventoryItems(scene: RemoteScene): ReaderInventoryItem[] {
   // dummy list for old projections so the HUD doesn't go blank during a
   // mixed-version rollout.
   if (Array.isArray(scene.inventory) && scene.inventory.length > 0) {
-    return scene.inventory.map((item) => ({ id: item.id, label: item.label }));
+    return scene.inventory.map((item) => ({
+      id: item.id,
+      label: item.label,
+      // Carry item tags (e.g. `keepsake`) through so the inventory list can
+      // badge a carried keepsake (R12.2). Only when present (BC4).
+      ...(Array.isArray(item.tags) && item.tags.length > 0 ? { tags: item.tags } : {}),
+    }));
   }
   const count = Math.max(0, scene.inventoryCount);
   return Array.from({ length: count }, (_, index) => ({
