@@ -11,7 +11,13 @@ import { useAppTheme } from "../../../theme";
 import { EffectBadge } from "../EffectBadge";
 import { FallbackTurnPanel } from "../FallbackTurnPanel";
 import { ProseRenderer } from "../ProseRenderer";
-import { endingPanelHandlers, endingVariantProps, type ReaderLayoutProps } from "./types";
+import { WhatMightHaveBeen } from "../WhatMightHaveBeen";
+import {
+  endingPanelHandlers,
+  endingVariantProps,
+  whatMightHaveBeenProps,
+  type ReaderLayoutProps,
+} from "./types";
 
 /**
  * GraphicNovel — canvas § 19 B. Pro variant. Full-bleed illustration plate
@@ -162,6 +168,12 @@ export function GraphicNovelLayout({
                   ...(endingIsFirstFind !== undefined ? { isFirstFind: endingIsFirstFind } : {}),
                 })}
                 {...endingPanelHandlers({ onOpenEndings, onOpenLibrary, onReturnHome })}
+              />
+              {/* Story-engagement Wave 3 (R14) — fogged "what might have been"
+                  cards for unreached candidate endings. Self-gates on terminal
+                  + candidates; renders nothing on live / legacy saves. */}
+              <WhatMightHaveBeen
+                {...whatMightHaveBeenProps({ projection, onOpenEndings, onReturnHome })}
               />
             </>
           ) : (

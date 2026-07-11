@@ -89,6 +89,103 @@ test("EndingsMap renders fogged candidate ghosts", () => {
   assert.match(src, /node\.ghost/, "EndingsMap must render ghosts distinctly from hidden endings");
 });
 
+test("useTurn projects whatMightHaveBeen only from a terminal remote scene's ending (BC9/BC10)", () => {
+  const src = read("hooks/useTurn.ts");
+  // The projection field carries the UNREACHED candidates separately from the
+  // death-screen `ending` object.
+  assert.match(
+    src,
+    /whatMightHaveBeen\?: RemoteWhatMightHaveBeen\[\];/,
+    "ReaderProjection must expose a whatMightHaveBeen field",
+  );
+  // Populated ONLY from the remote scene's ending projection, conditional-
+  // spread (BC4) so a null/absent projection omits the field.
+  assert.match(
+    src,
+    /scene\.ending\?\.whatMightHaveBeen/,
+    "projectRemoteScene must source whatMightHaveBeen from the remote scene ending",
+  );
+  assert.match(
+    src,
+    /\{ whatMightHaveBeen: scene\.ending!\.whatMightHaveBeen! \}/,
+    "whatMightHaveBeen must be conditional-spread (BC4 — no `: undefined`)",
+  );
+  // The local-engine projection (training-room / legacy saves) must NOT set
+  // the field — legacy saves stay unaffected.
+  const engineProjection = src.slice(src.indexOf("function projectEngineState"));
+  assert.doesNotMatch(
+    engineProjection,
+    /whatMightHaveBeen/,
+    "the local-engine projection must never set whatMightHaveBeen (legacy unaffected)",
+  );
+});
+
+test("layout ending panels mount WhatMightHaveBeen with the reused fork/begin-again handlers", () => {
+  // The shared prop-bag builder gates on terminal + reuses the existing ending
+  // navigation (no new flows): Begin again → onReturnHome, Fork → onOpenEndings.
+  const types = read("components/reading/layouts/types.ts");
+  assert.match(types, /export function whatMightHaveBeenProps/, "types.ts must export the prop bag builder");
+  assert.match(
+    types,
+    /terminal: Boolean\(input\.projection\.ending\)/,
+    "whatMightHaveBeenProps must derive `terminal` from projection.ending so fog never shows on a live save",
+  );
+  assert.match(
+    types,
+    /candidates: input\.projection\.whatMightHaveBeen/,
+    "whatMightHaveBeenProps must forward the projected unreached candidates",
+  );
+  assert.match(
+    types,
+    /onFork: input\.onOpenEndings \?\? noop/,
+    "Fork must reuse the existing See-map handler (no new navigation)",
+  );
+  assert.match(
+    types,
+    /onBeginAgain: input\.onReturnHome \?\? noop/,
+    "Begin again must reuse the existing return-home handler",
+  );
+
+  // All five layouts must mount the surface at the ending render site so the
+  // fog appears regardless of the reader's chosen layout.
+  for (const layout of ["Book", "Mobile", "ModernApp", "GraphicNovel", "Journal"]) {
+    const src = read(`components/reading/layouts/${layout}.tsx`);
+    assert.match(
+      src,
+      /import \{ WhatMightHaveBeen \} from "\.\.\/WhatMightHaveBeen";/,
+      `${layout} must import WhatMightHaveBeen`,
+    );
+    assert.match(
+      src,
+      /<WhatMightHaveBeen\s+\{\.\.\.whatMightHaveBeenProps\(\{ projection, onOpenEndings, onReturnHome \}\)\}/,
+      `${layout} must mount WhatMightHaveBeen with the shared prop bag`,
+    );
+    // It sits inside the same terminal-only branch as EndingPanel — the
+    // `projection.ending ? (…) : <ChoiceList/>` conditional — so a pre-terminal
+    // turn renders the choices, never the fog.
+    const endingBranch = src.slice(src.indexOf("projection.ending ?"));
+    assert.ok(
+      endingBranch.indexOf("<WhatMightHaveBeen") < endingBranch.indexOf("<ChoiceList"),
+      `${layout} must render WhatMightHaveBeen in the terminal branch, before the ChoiceList fallback`,
+    );
+  }
+});
+
+test("path map fogs a terminal save's unreached candidates as EndingsMap ghosts", () => {
+  const src = read("app/map/[saveId]/index.tsx");
+  assert.match(src, /getRemoteCurrentScene\(/, "map route must fetch the current scene for the ending projection");
+  assert.match(
+    src,
+    /whatMightHaveBeenCards\(scene\.ending\?\.whatMightHaveBeen, \{\s*terminal: Boolean\(scene\.terminal\),/,
+    "map route must derive ghosts terminal-gated from the scene ending (BC10)",
+  );
+  assert.match(
+    src,
+    /\{\.\.\.\(ghostCandidates\.length > 0 \? \{ ghostCandidates \} : \{\}\)\}/,
+    "map route must pass ghostCandidates only when present (BC4)",
+  );
+});
+
 test("profile screen shows the librarian rank chip + keepsakes shelf", () => {
   const src = read("app/profile/index.tsx");
   assert.match(src, /librarianRankChipLabel\(librarianRank\)/, "profile must show the rank chip");

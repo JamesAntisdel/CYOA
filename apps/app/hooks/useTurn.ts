@@ -29,6 +29,7 @@ import {
   type RemoteCodexEntry,
   type RemoteRecentDiff,
   type RemoteScene,
+  type RemoteWhatMightHaveBeen,
 } from "../lib/gameApi";
 import {
   adaptArc,
@@ -129,6 +130,14 @@ export type ReaderProjection = {
    * legacy projections.
    */
   turnNumber?: number;
+  /**
+   * Story-engagement Wave 3 (R14) — UNREACHED candidate endings for the
+   * What-Might-Have-Been cards on the terminal ending panel. Populated ONLY
+   * post-terminal from `remoteScene.ending.whatMightHaveBeen` (BC10); absent on
+   * live / legacy / local saves so the surface renders nothing (BC9). This is
+   * SEPARATE from `ending` below (the UI death-screen kind/title/body).
+   */
+  whatMightHaveBeen?: RemoteWhatMightHaveBeen[];
   ending?: {
     kind: "safe" | "death" | "escape";
     title: string;
@@ -1051,6 +1060,14 @@ function projectRemoteScene(
       : {}),
     ...(adaptCodex(scene.codex) ? { codex: adaptCodex(scene.codex)! } : {}),
     ...(typeof scene.turnNumber === "number" ? { turnNumber: scene.turnNumber } : {}),
+    // Story-engagement Wave 3 (R14) — the server projects the UNREACHED
+    // candidate endings ONLY post-terminal (BC10). Mirror them onto the
+    // projection so the terminal ending panel can raise WhatMightHaveBeen and
+    // the path map can fog its candidate ghosts. Conditional-spread (BC4) so a
+    // null/absent projection (pre-terminal / legacy) omits the field entirely.
+    ...(Array.isArray(scene.ending?.whatMightHaveBeen) && scene.ending!.whatMightHaveBeen!.length > 0
+      ? { whatMightHaveBeen: scene.ending!.whatMightHaveBeen! }
+      : {}),
     ...(terminal && ending
       ? {
           ending: {

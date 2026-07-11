@@ -268,7 +268,7 @@ so the "something shifted…" echo fires (R5.2). All tasks below done.
 
 ---
 
-## WAVE 3 — RETURN
+## WAVE 3 — RETURN  ✅ SHIPPED 2026-07-11 (keepsakes, Daily Tale, hardcore, librarian rank, what-might-have-been)
 
 ### Agent W3-SERVER-META — owns keepsakes, hardcore, librarian rank + tests
 

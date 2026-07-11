@@ -7,12 +7,14 @@ import { AppNav, BackToSceneButton } from "../../../components/navigation";
 import { Text } from "../../../components/primitives";
 import { guestAuthArgs, useGuestSession } from "../../../hooks/useGuestSession";
 import {
+  getRemoteCurrentScene,
   getRemoteRunHistory,
   hasRemoteGameApi,
   type RemoteRunHistory,
   type RemoteRunHistoryTurn,
 } from "../../../lib/gameApi";
 import { useBreakpoint } from "../../../lib/responsive";
+import { whatMightHaveBeenCards } from "../../../lib/storyEngagementW3";
 import { useAppTheme } from "../../../theme";
 
 /**
@@ -89,6 +91,12 @@ export default function SaveMapRoute() {
   const saveId = typeof params.saveId === "string" ? params.saveId : "";
   const [state, setState] = useState<FetchState>({ status: "loading" });
   const [view, setView] = useState<MapView>("graph");
+  // Story-engagement Wave 3 (R14.2): fogged candidate-ending ghosts for this
+  // save. Empty until the current scene is fetched and confirmed terminal with
+  // unreached candidates (BC9/BC10) — a live / legacy save shows no ghosts.
+  const [ghostCandidates, setGhostCandidates] = useState<
+    Array<{ label: string; hint: string }>
+  >([]);
 
   useEffect(() => {
     if (!saveId) {
@@ -121,6 +129,25 @@ export default function SaveMapRoute() {
           err instanceof Error ? err.message : "Unknown error loading map.";
         setState({ status: "error", message });
       });
+
+    // Fetch the current scene alongside the run history so we can fog this
+    // save's UNREACHED candidate endings as ghosts (R14.2). The run-history
+    // projection doesn't carry `ending.whatMightHaveBeen`; the current-scene
+    // projection does, and only post-terminal (BC10).
+    void getRemoteCurrentScene({
+      accountId: guest.session.accountId,
+      saveId,
+      ...guestAuthArgs(),
+    }).then((scene) => {
+      if (cancelled) return;
+      setGhostCandidates(
+        scene
+          ? whatMightHaveBeenCards(scene.ending?.whatMightHaveBeen, {
+              terminal: Boolean(scene.terminal),
+            })
+          : [],
+      );
+    });
 
     return () => {
       cancelled = true;
@@ -208,7 +235,10 @@ export default function SaveMapRoute() {
         <>
           <ViewToggle current={view} onChange={setView} />
           {view === "graph" ? (
-            <EndingsMap nodes={visitedNodes} />
+            <EndingsMap
+              nodes={visitedNodes}
+              {...(ghostCandidates.length > 0 ? { ghostCandidates } : {})}
+            />
           ) : (
             <Storyboard turns={state.status === "ready" ? state.history.turns : []} />
           )}
