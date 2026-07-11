@@ -39,8 +39,139 @@ export type RemoteCreatorSeedItem = {
 export type RemoteChoice = {
   choice: { id: string; label: string };
   visibility: "visible" | "locked" | "hidden";
-  lockedHint?: string;
+  /**
+   * Story-engagement Wave 1 (design §7): the server projects each choice's
+   * gated render-state as `state: "visible" | "locked"` computed from the
+   * choice's `conditions` against current state (R4.3). This is additive to
+   * the legacy `visibility` field — the adapter (`adaptRemoteChoice`) prefers
+   * `state` when present and falls back to `visibility` for older projections.
+   *
+   * NOTE (integrator reconcile): design §7 names this field `state`, while the
+   * pre-existing projection uses `visibility` (which also carries "hidden").
+   * The SERVER agent (W1-S4) emits `state`; keeping both keeps a mixed-version
+   * rollout safe. Server emits null-for-absent → optional here (BC2/BC4).
+   */
+  state?: "visible" | "locked" | null;
+  lockedHint?: string | null;
+  /**
+   * Story-engagement Wave 2 (design §7 / R7.4): when a choice carries a
+   * skill check, the server projects the pre-computed ODDS PHRASE only —
+   * never the raw threshold/roll math (BC10). The client renders a CheckChip
+   * (`⚄ Nerve — risky`) from `label` + `odds`. Server emits null-for-absent →
+   * optional here (BC2/BC4). Mutually exclusive with a locked `state` on the
+   * server side (conditions win, per W2-E1) but the client tolerates either.
+   */
+  check?: RemoteCheck | null;
 };
+
+/**
+ * Story-engagement Wave 2 skill-check descriptor projected onto a choice
+ * (design §7). `odds` is the server-computed phrase (BC10 — the client is
+ * NEVER given the stat total, roll, or threshold). `difficulty` is surfaced
+ * for the a11y label / future styling; `label` is the human stat name.
+ */
+export type OddsPhrase = "likely" | "even" | "risky" | "desperate";
+export type RemoteCheck = {
+  statId: string;
+  label: string;
+  difficulty: "easy" | "risky" | "desperate";
+  odds: OddsPhrase;
+};
+
+/**
+ * Story-engagement Wave 1 reader-visible arc summary (design §7). COUNT-ONLY
+ * beat progress — pending beat labels and candidate endings are spoilers and
+ * NEVER reach the client (R1.5 / BC10). Server emits `actLabel: null` for
+ * absent; the adapter maps null→optional (BC2/BC4).
+ *
+ * The first block is the exact §7 wire contract. The second block
+ * (`protagonistWant` / `stakes` / `firedBeats`) is required by the QuestLine
+ * peek-drawer panel per design §4.1 (question/want/stakes/act/fired-beat list
+ * with turns) but is NOT enumerated in §7 — see the integrator flag in the
+ * deliverable. All optional so the one-line strip works with the minimal §7
+ * shape and the drawer degrades gracefully when the richer fields are absent.
+ */
+export type RemoteArc = {
+  dramaticQuestion: string;
+  // Server emits `act: number` (convex/saves.ts ProjectionArc), not the
+  // narrowed `1|2|3` design §7 hints — matched here so the WS `liveScene`
+  // type assigns cleanly (BC2). `romanAct` handles any positive integer.
+  act: number;
+  actLabel?: string | null;
+  beatsFired: number;
+  beatsTotal: number;
+  threadsPending: number;
+  /** W2 doom-clock summary — forward-compat; absent on Wave-1 saves. */
+  clock?: { label: string; value: number; max: number } | null;
+  // --- drawer-only enrichment (design §4.1; not in §7 — flagged) ---
+  protagonistWant?: string | null;
+  stakes?: string | null;
+  firedBeats?: Array<{ label: string; turnNumber: number }> | null;
+};
+
+/**
+ * Story-engagement Wave 1 signed diff record (design §7 `recentDiffs`). The
+ * server persists visible-tier redacted diffs on the turn and projects them
+ * here; the client echo derives signed chips from this union (R5.2). Hidden
+ * stats are dropped server-side (BC10), so this array only ever carries
+ * visible-tier records. W2/W3 kinds (`clock`/`npc`/`check`) are included so
+ * the union matches the full §7 contract; they are inert on Wave-1 saves.
+ */
+export type RemoteRecentDiff =
+  | { kind: "stat"; statId: string; label: string; delta: number }
+  | { kind: "currency"; delta: number }
+  | { kind: "item"; op: "add" | "remove"; label: string }
+  | { kind: "thread"; op: "set" | "fired"; note: string | null }
+  | { kind: "beat"; label: string }
+  | { kind: "act"; act: number }
+  // --- W2 (design §7); shapes match convex/saves.ts VisibleDiff exactly ---
+  // NOTE (SERVER-reconciled): the server types `clock.reason` as string|null
+  // (null on a reason-less advance) and `npc.deltaBand` as OPTIONAL (absent on
+  // a fact-only diff). Matched here so `liveScene` (SceneProjection) assigns to
+  // RemoteScene cleanly (BC2). `fact` is string|null (null on a pure shift).
+  | { kind: "clock"; amount: number; reason: string | null }
+  | { kind: "npc"; npcId: string; name: string; deltaBand?: "up" | "down"; fact: string | null }
+  | { kind: "check"; outcome: "success" | "partial" | "fail"; statId: string; margin: number };
+
+/**
+ * Story-engagement Wave 2 codex entry (design §7 / R11.2). Each is a
+ * string-valued flag the LLM set as a recorded "truth", surfaced newest-first
+ * in the Codex tab. `turnNumber` is when the truth was recorded. Server emits
+ * `codex: null` for absent (legacy / arc-less saves) → optional client-side.
+ */
+export type RemoteCodexEntry = { flag: string; text: string; turnNumber: number };
+
+/**
+ * Story-engagement Wave 3 keepsake (design §7 / R12). Granted on an ending
+ * unlock (account-scoped, dedup by id) and carriable into a new run. Surfaced
+ * in the profile keepsakes shelf and the new-story KeepsakePicker. Server emits
+ * these on the widened profile projection; the adapter (`adaptKeepsakes`) maps
+ * a null/absent array to an empty list (BC2/BC4).
+ */
+export type RemoteKeepsake = { id: string; label: string; description: string };
+
+/**
+ * Story-engagement Wave 3 Librarian Rank (design §7 / R12.3). Display-only,
+ * server-computed from lifetime (endings, beats, tales). The client never
+ * computes the tier — it renders `label` + the counts. Server emits it on the
+ * widened profile projection (null-for-absent on fresh accounts).
+ */
+export type RemoteLibrarianRank = {
+  tier: string;
+  label: string;
+  endings: number;
+  beats: number;
+  tales: number;
+};
+
+/**
+ * Story-engagement Wave 3 what-might-have-been candidate (design §7 / R14).
+ * One UNREACHED candidate ending surfaced (label + hint only — never a full
+ * spoiler) on the terminal ending panel + as a fogged ghost on the endings map.
+ * The server projects these ONLY post-terminal (BC10); pre-terminal saves never
+ * carry them.
+ */
+export type RemoteWhatMightHaveBeen = { label: string; hint: string };
 
 export type RemoteScene = {
   saveId?: string;
@@ -75,7 +206,17 @@ export type RemoteScene = {
    * fabricated dummy-label list the client used to build off `inventoryCount`.
    * Optional for the same backwards-compat reason as `vitality`.
    */
-  inventory?: Array<{ id: string; label: string }>;
+  inventory?: Array<{
+    id: string;
+    label: string;
+    /**
+     * Story-engagement Wave 3 (R12.2): item tags. A carried keepsake is
+     * injected as an inventory item tagged `keepsake`; the client renders a
+     * small badge on it in the inventory list. Optional — legacy items and
+     * older projections omit tags (BC9).
+     */
+    tags?: string[];
+  }>;
   /**
    * NPC roster mirrored from `PlayerState.npcs` (Requirement 31). Optional
    * for backwards compatibility — servers that haven't yet plumbed
@@ -98,6 +239,32 @@ export type RemoteScene = {
    */
   isFallback?: boolean;
   terminal?: { endingId: string; kind: "success" | "death" | "safe" | "other" } | null;
+  /**
+   * Story-engagement Wave 1 reader-visible arc summary (design §7). Present
+   * only on arc-bearing (new) saves; legacy saves omit it (server emits null →
+   * absent here) and the QuestLine / ThreadsPill render nothing (R1.6 / BC9).
+   */
+  arc?: RemoteArc | null;
+  /**
+   * Story-engagement Wave 1 signed diffs for the turn that produced THIS scene
+   * (design §7). Drives the signed echo (R5.2). Absent (null/undefined) on old
+   * turns predating diff persistence → the echo falls back to a stat snapshot.
+   */
+  recentDiffs?: RemoteRecentDiff[] | null;
+  /**
+   * Story-engagement Wave 2 codex (design §7). The reader-visible list of
+   * recorded truths, surfaced in the Codex tab. Absent (null/undefined) on
+   * legacy saves and turns predating codex projection → the tab hides (BC9).
+   */
+  codex?: RemoteCodexEntry[] | null;
+  /**
+   * Story-engagement Wave 3 ending reflection (design §7 / R14). Present ONLY
+   * on a terminal (arc) save; carries 1–2 UNREACHED candidate endings
+   * (label + hint) for the What-Might-Have-Been cards and the fogged endings-map
+   * ghosts. Server emits `null` pre-terminal / on legacy saves (BC9/BC10) → the
+   * surfaces render nothing.
+   */
+  ending?: { whatMightHaveBeen?: RemoteWhatMightHaveBeen[] | null } | null;
 };
 
 export function hasRemoteGameApi() {
@@ -125,6 +292,23 @@ export async function createRemoteSave(input: {
   guestTokenHash?: string;
   storyId: string;
   mode: Mode;
+  /**
+   * Story-engagement Wave 3 (R12.2, BC3): the single owned keepsake the reader
+   * chose to carry into this new run. The server validates ownership and
+   * injects it as an inventory item tagged `keepsake` + an opening prompt line.
+   * Omitted when the reader carries nothing. `createSave` args go through an
+   * untyped `callConvexHttp<any>` input so this rides along without waiting on
+   * the server arg-widening (BC3) — the server drops it until it widens.
+   */
+  keepsakeId?: string;
+  /**
+   * Story-engagement Wave 3 (R13.2, BC3): the Daily Tale this run belongs to.
+   * When set the server injects the daily's fixed arc (`source:"daily"`, turn-1
+   * arc generation skipped) and records a `daily_results` row on terminal.
+   * Normally the reader starts a Daily via `dailyFunctions:startDaily`; this is
+   * threaded for completeness of the create path.
+   */
+  dailyId?: string;
   /**
    * Narrator voice id chosen by the reader on the cover screen. Sent at save
    * creation only — the backend persists it on the save record so subsequent
@@ -488,6 +672,16 @@ export async function getRemoteProfile(input: {
     audioEnabled: boolean;
     videoEnabled: boolean;
   };
+  /**
+   * Story-engagement Wave 3 (design §7 / R12.3): the widened profile projection
+   * adds the Librarian Rank (display-only, server-computed) and the account's
+   * owned keepsakes. Both are optional here — the server emits null-for-absent
+   * (fresh accounts), and the profile lib may run against a pre-W3 server that
+   * doesn't project them yet (BC2/BC4). Consumers adapt via `adaptKeepsakes` /
+   * `adaptLibrarianRank` in `storyEngagementW3.ts`.
+   */
+  librarianRank?: RemoteLibrarianRank | null;
+  keepsakes?: RemoteKeepsake[] | null;
 } | null> {
   if (!convexClient) return null;
   return callConvexHttp<any>("query", "accountFunctions:getProfile", input as unknown as Record<string, unknown>) as any;

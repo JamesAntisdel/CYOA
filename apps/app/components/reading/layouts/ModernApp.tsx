@@ -11,7 +11,13 @@ import { useAppTheme } from "../../../theme";
 import { EffectBadge } from "../EffectBadge";
 import { FallbackTurnPanel } from "../FallbackTurnPanel";
 import { ProseRenderer } from "../ProseRenderer";
-import { endingPanelHandlers, endingVariantProps, type ReaderLayoutProps } from "./types";
+import { WhatMightHaveBeen } from "../WhatMightHaveBeen";
+import {
+  endingPanelHandlers,
+  endingVariantProps,
+  whatMightHaveBeenProps,
+  type ReaderLayoutProps,
+} from "./types";
 
 const RAIL_BREAKPOINT = 760;
 
@@ -134,6 +140,12 @@ export function ModernAppLayout({
                   })}
                   {...endingPanelHandlers({ onOpenEndings, onOpenLibrary, onReturnHome })}
                 />
+                {/* Story-engagement Wave 3 (R14) — fogged "what might have been"
+                    cards for unreached candidate endings. Self-gates on terminal
+                    + candidates; renders nothing on live / legacy saves. */}
+                <WhatMightHaveBeen
+                  {...whatMightHaveBeenProps({ projection, onOpenEndings, onReturnHome })}
+                />
               </>
             ) : (
               <ChoiceList
@@ -141,6 +153,7 @@ export function ModernAppLayout({
                 disabled={isStreaming}
                 onChoose={onChoose}
                 pendingChoiceId={pendingChoiceId}
+                reducedMotion={reducedMotion}
                 {...(onFreeformSubmit ? { onFreeformSubmit } : {})}
                 freeformPending={freeformPending}
                 freeformError={freeformError}
@@ -168,6 +181,9 @@ export function ModernAppLayout({
             stats={projection.stats}
             {...(accountId ? { accountId } : {})}
             saveId={projection.saveId}
+            {...(projection.codex ? { codex: projection.codex } : {})}
+            {...(projection.recentDiffs ? { recentDiffs: projection.recentDiffs } : {})}
+            {...(projection.turnNumber !== undefined ? { turnNumber: projection.turnNumber } : {})}
           />
         </Surface>
       ) : !showRails && showHud ? (
@@ -181,6 +197,9 @@ export function ModernAppLayout({
             stats={projection.stats}
             {...(accountId ? { accountId } : {})}
             saveId={projection.saveId}
+            {...(projection.codex ? { codex: projection.codex } : {})}
+            {...(projection.recentDiffs ? { recentDiffs: projection.recentDiffs } : {})}
+            {...(projection.turnNumber !== undefined ? { turnNumber: projection.turnNumber } : {})}
           />
         </>
       ) : null}

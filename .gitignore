@@ -15,9 +15,14 @@ test-results/
 .env.*
 !.env.example
 *.local
-convex/_generated/
 convex/convex/_generated/
 convex/**/*.js
+# The generated Convex api/types ARE committed: CI has no Convex deployment, so
+# it cannot run `convex codegen`, and apps/app imports `../convex/_generated/api`
+# — without these files the app typecheck fails. Regenerate with
+# `pnpm convex:codegen` after changing convex functions or the schema.
+!convex/_generated/
+!convex/_generated/**
 apps/app/.expo/
 apps/app/web-build/
 infra/bin/

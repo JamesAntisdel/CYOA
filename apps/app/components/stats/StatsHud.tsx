@@ -3,6 +3,7 @@ import { View } from "react-native";
 
 import type { NpcState } from "@cyoa/engine";
 
+import type { RemoteCodexEntry, RemoteRecentDiff } from "../../lib/gameApi";
 import type { ReaderInventoryItem, ReaderStats } from "../../hooks/useTurn";
 import { useReaderSettings } from "../../hooks/useReaderSettings";
 import { useAppTheme } from "../../theme";
@@ -45,6 +46,10 @@ type StatsHudProps = {
    */
   accountId?: string;
   saveId?: string;
+  /** W2 codex — recorded truths for the FullSheet "Truths" section. */
+  codex?: RemoteCodexEntry[];
+  /** W2 turn diffs — the FullSheet derives NPC disposition trend arrows. */
+  recentDiffs?: RemoteRecentDiff[];
 };
 
 /**
@@ -63,10 +68,12 @@ type StatsHudProps = {
 export function StatsHud({
   accountId,
   characterName,
+  codex,
   hiddenStatIds,
   inventory,
   mode,
   npcs,
+  recentDiffs,
   saveId,
   stats,
   turnNumber,
@@ -115,6 +122,8 @@ export function StatsHud({
         npcs?: Record<string, NpcState>;
         accountId?: string;
         saveId?: string;
+        codex?: RemoteCodexEntry[];
+        recentDiffs?: RemoteRecentDiff[];
       } = {};
       if (hiddenStatIds !== undefined) extras.hiddenStatIds = hiddenStatIds;
       if (characterName !== undefined) extras.characterName = characterName;
@@ -122,9 +131,11 @@ export function StatsHud({
       if (npcs !== undefined) extras.npcs = npcs;
       if (accountId !== undefined) extras.accountId = accountId;
       if (saveId !== undefined) extras.saveId = saveId;
+      if (codex !== undefined) extras.codex = codex;
+      if (recentDiffs !== undefined) extras.recentDiffs = recentDiffs;
       return { ...base, ...extras };
     },
-    [accountId, characterName, hiddenStatIds, inventory, npcs, saveId, stats, turnNumber],
+    [accountId, characterName, codex, hiddenStatIds, inventory, npcs, recentDiffs, saveId, stats, turnNumber],
   );
 
   return (

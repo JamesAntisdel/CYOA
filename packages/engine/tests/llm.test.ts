@@ -196,28 +196,24 @@ describe("LLM scene parser", () => {
     expect(parsed.choices[0]?.effects).toEqual([{ kind: "stat", statId: "resolve", delta: 2 }]);
   });
 
-  it("drops npc_* effect kinds so the LLM can never mutate NPC state (Requirement 31.2)", () => {
-    // The LLM MUST NOT mutate NPC state — those flow through engine-authored
-    // effects only. The LLM effect union excludes npc_* kinds, so any such
-    // effect is DROPPED (never applied) rather than failing the whole turn.
-    // Dropping preserves the security guarantee AND keeps the read loop alive
-    // on model drift. Mirrors Requirement 9: no direct state patches from model
-    // output.
+  it("still drops the non-W2 npc_* effect kinds (Requirement 31.2 — updated for W2-E4)", () => {
+    // W2 opens EXACTLY npc_spawn / npc_disposition_delta / npc_learn_fact to the
+    // LLM (asserted in the next test). Every OTHER npc_* kind — the ones that
+    // relocate/despawn or mutate NPC attributes/inventory/flags — STAYS out of
+    // the LLM effect union and is tolerant-dropped, preserving the guarantee
+    // that the model can't arbitrarily patch NPC state.
     for (const kind of [
-      "npc_spawn",
       "npc_despawn",
       "npc_relocate",
-      "npc_disposition_delta",
       "npc_attribute_delta",
       "npc_inventory_add",
       "npc_inventory_remove",
       "npc_flag_set",
-      "npc_learn_fact",
     ]) {
       const parsed = llmSceneOutputSchema.parse({
         prose: "p",
         choices: [
-          { id: "a", label: "A", effects: [{ kind, npcId: "mira", delta: 1 }] },
+          { id: "a", label: "A", effects: [{ kind, npcId: "mira", delta: 1, attributeId: "x", itemId: "y", flag: "f", value: 1, item: { id: "y", label: "Y" } }] },
           { id: "b", label: "B" },
         ],
       });
@@ -225,6 +221,31 @@ describe("LLM scene parser", () => {
       expect(parsed.choices[0]?.effects).toEqual([]);
       expect(parsed.choices).toHaveLength(2);
     }
+  });
+
+  it("accepts the W2 npc_* effect kinds spawn/disposition/fact (Requirement 8.1)", () => {
+    // These three are now LLM-legal (engine clamps/caps them at apply time).
+    const parsed = llmSceneOutputSchema.parse({
+      prose: "p",
+      choices: [
+        {
+          id: "a",
+          label: "A",
+          effects: [
+            { kind: "npc_disposition_delta", npcId: "mira", delta: 99 }, // clamped to ±15
+            { kind: "npc_learn_fact", npcId: "mira", fact: "z".repeat(200) }, // clamped to 120
+            { kind: "npc_spawn", id: "orin", name: "Orin", role: "rival", description: "A wary sellsword." },
+          ],
+        },
+        { id: "b", label: "B" },
+      ],
+    });
+    const effects = parsed.choices[0]?.effects ?? [];
+    expect(effects).toHaveLength(3);
+    expect(effects[0]).toEqual({ kind: "npc_disposition_delta", npcId: "mira", delta: 15 });
+    const fact = effects[1];
+    expect(fact?.kind === "npc_learn_fact" ? fact.fact.length : 0).toBe(120);
+    expect(effects[2]).toEqual({ kind: "npc_spawn", id: "orin", name: "Orin", role: "rival", description: "A wary sellsword." });
   });
 
   it("clamps absurd stat deltas to engine-safe bounds", () => {

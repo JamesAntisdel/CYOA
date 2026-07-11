@@ -1,6 +1,9 @@
 import { mutationGeneric, queryGeneric } from "convex/server";
 
+import { librarianRank } from "@cyoa/engine";
+
 import { accountFromDoc, cleanDoc } from "./lib/docs";
+import { dedupeKeepsakes, type Keepsake } from "./keepsakes";
 import type { GenericMutationCtx, GenericQueryCtx } from "convex/server";
 import type { GenericId } from "convex/values";
 import { v } from "convex/values";
@@ -38,12 +41,85 @@ export const getProfile = queryGeneric({
       .query("entitlements")
       .withIndex("by_accountId", (q) => q.eq("accountId", args.accountId))
       .first();
-    return buildAccountProfile({
+    const profile = buildAccountProfile({
       account: accountFromDoc(account),
       entitlement: entitlement ?? buildDefaultEntitlement(args.accountId, account.lastActiveAt),
     });
+    // W3 (R12.3): widen the profile projection with the Librarian Rank +
+    // owned keepsakes (BC3/BC4). Both are display-only, derived from what's
+    // cheaply queryable per account. Server emits concrete values (never null)
+    // so the client adapter maps them straight through.
+    const meta = await buildProfileMetaAdditions(ctx, args.accountId);
+    return { ...profile, ...meta };
   },
 });
+
+/**
+ * Compute the W3 profile additions (Requirement 12.3): the Librarian Rank +
+ * the account's deduped owned keepsakes. Gathered from `endings_unlocked`
+ * (count + carried keepsakes), `published_tales` (active tale count), and the
+ * account's saves (lifetime arc beats fired). All three are account-indexed so
+ * this stays a bounded read.
+ */
+async function buildProfileMetaAdditions(
+  ctx: QueryCtx,
+  accountIdValue: GenericId<"accounts">,
+): Promise<{
+  librarianRank: ReturnType<typeof librarianRank>;
+  keepsakes: Keepsake[];
+}> {
+  const [endingRows, taleRows, saveRows] = await Promise.all([
+    ctx.db
+      .query("endings_unlocked")
+      .withIndex("by_account_story", (q) => q.eq("accountId", accountIdValue))
+      .collect(),
+    ctx.db
+      .query("published_tales")
+      .withIndex("by_ownerAccountId", (q) => q.eq("ownerAccountId", accountIdValue))
+      .collect(),
+    ctx.db
+      .query("saves")
+      .withIndex("by_accountId", (q) => q.eq("accountId", accountIdValue))
+      .collect(),
+  ]);
+
+  const endings = endingRows.length;
+  // Active (non-revoked) published tales only — a revoked tale no longer counts
+  // toward the rank.
+  const tales = taleRows.filter(
+    (tale) => (tale as { accessRevokedAt?: unknown }).accessRevokedAt === undefined,
+  ).length;
+  // Lifetime arc beats fired: sum the `fired` beats inside each save's arc.
+  // Read structurally so the projection tolerates legacy / arc-less saves.
+  const beats = saveRows.reduce((sum, save) => sum + countFiredBeats(save), 0);
+
+  const keepsakes = dedupeKeepsakes(
+    endingRows
+      .map((row) => (row as { keepsake?: unknown }).keepsake)
+      .filter(isKeepsake),
+  );
+
+  return { librarianRank: librarianRank({ endings, beats, tales }), keepsakes };
+}
+
+function countFiredBeats(save: unknown): number {
+  const beats = (save as { state?: { arc?: { beats?: unknown } } })?.state?.arc?.beats;
+  if (!Array.isArray(beats)) return 0;
+  return beats.reduce(
+    (n, beat) => (beat && (beat as { status?: unknown }).status === "fired" ? n + 1 : n),
+    0,
+  );
+}
+
+function isKeepsake(value: unknown): value is Keepsake {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    typeof (value as Keepsake).id === "string" &&
+    typeof (value as Keepsake).label === "string" &&
+    typeof (value as Keepsake).description === "string"
+  );
+}
 
 export const exportAccount = queryGeneric({
   args: { accountId, guestTokenHash },

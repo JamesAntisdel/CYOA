@@ -37,7 +37,7 @@ export type PlayerStateSnapshot = {
    * the description in the prompt snapshot, the model only sees the bare
    * label and forgets that the ticket isn't in the protagonist's hand.
    */
-  inventory: Array<{ id: string; label: string; description?: string }>;
+  inventory: Array<{ id: string; label: string; description?: string; tags?: string[] }>;
   flags: Record<string, boolean | number | string>;
 };
 
@@ -53,6 +53,75 @@ export type NpcSheetSnapshot = {
   vibe: string;
   knownFacts: string[];
   attributes: Array<{ label: string; value: number }>;
+};
+
+/**
+ * Story-arc "pursuit" context threaded onto the scene prompt (Requirements
+ * R1.3, R6.1). The Convex request builder fills this from `state.arc` (the
+ * arc created on turn 1 — see `convex/game.ts`); the prompt-builder renders it
+ * as the `== YOUR PURSUIT ==` section ABOVE the memory window so the spine
+ * outranks variety. Absent on legacy (arc-less) saves — the prompt then skips
+ * the whole section and behaves exactly as before (BC9).
+ *
+ * Spoiler discipline (BC10): the candidate-ending labels appear ONLY in the
+ * ENDINGS output rule; the single steer-toward beat label appears ONLY in the
+ * steer line. Neither reaches the reader (the projection strips them) — this is
+ * the LLM's private planning surface.
+ */
+export type PursuitPromptContext = {
+  dramaticQuestion: string;
+  protagonistWant: string;
+  stakes: string;
+  act: number;
+  /** Labels of beats already fired (safe to name — the reader lived them). */
+  firedBeatLabels: string[];
+  /** The single beat to steer toward this scene, or null when none pending. */
+  targetBeatLabel: string | null;
+  /** Id the model must set on `beatFired` when it lands the target beat. */
+  targetBeatId: string | null;
+  /** Candidate endings the final scene must choose from (R2.4). */
+  candidateEndings: Array<{ id: string; label: string }>;
+  /**
+   * One-shot directive from the terminal gate (R2), consumed + cleared by the
+   * prompt build that surfaces it. `surface_beat` → the story tried to end
+   * early; `narrate_costly_survival` → an early death was converted to a
+   * severe setback.
+   */
+  directive?: "surface_beat" | "narrate_costly_survival";
+  /** Beat label to put on stage when `directive === "surface_beat"`. */
+  surfaceBeatLabel?: string;
+  /**
+   * Foreshadow notes of delayed threads that fired on the just-completed turn
+   * (R3.3) — the next scene must narrate the callback. Empty when none fired.
+   */
+  threadFires: string[];
+  /**
+   * The doom clock (R9, W2). Present on arc saves that have seeded a clock; the
+   * prompt renders escalation copy keyed off `directive` (50%/75%/expired
+   * bands, computed server-side by the engine's `clockDirective`). Absent on
+   * legacy / arc-less / pre-clock saves — the escalation line is skipped.
+   */
+  clock?: {
+    label: string;
+    value: number;
+    max: number;
+    directive: "none" | "escalate_50" | "escalate_75" | "climax_now";
+  };
+};
+
+/**
+ * Resolved skill-check outcome (R7.2, W2) threaded onto the NEXT scene request
+ * after the reader picks a checked choice. The engine resolves the check at
+ * submission (`beginStreamingChoice`), applies the outcome-table engine effects
+ * immediately, and stashes this so the prompt narrates a result it cannot
+ * overrule. `note` is the success/fail flavor line the LLM authored on the
+ * choice. Absent when the picked choice carried no check.
+ */
+export type CheckOutcomePromptContext = {
+  outcome: "success" | "partial" | "fail";
+  statId: string;
+  margin: number;
+  note?: string;
 };
 
 export type SceneGenerationRequest = {
@@ -98,6 +167,26 @@ export type SceneGenerationRequest = {
    * summarizer.
    */
   storySummary?: string;
+  /**
+   * Story-arc pursuit context (R1.3 / R6.1). Present on arc saves; the
+   * prompt-builder renders the `== YOUR PURSUIT ==` section from it. Absent on
+   * legacy saves — the section is skipped entirely.
+   */
+  pursuit?: PursuitPromptContext;
+  /**
+   * True only on an arc save's OPENING turn (turn 1) when the arc has NOT yet
+   * been authored — the prompt then carries the STORY ARC production block
+   * instructing the model to emit a `storyArc` object (R1.1). Absent/false on
+   * every later turn and on daily saves (arc is pre-injected).
+   */
+  produceArc?: boolean;
+  /**
+   * Resolved skill-check outcome for the choice the reader just picked (R7.2,
+   * W2). Present only on the scene generated immediately after a checked choice
+   * was submitted; the prompt renders a CHECK OUTCOME block ("the attempt
+   * FAILED — narrate it; do not undo it"). Absent otherwise.
+   */
+  checkOutcome?: CheckOutcomePromptContext;
 };
 
 export const sceneGenerationRequestSchema = z.object({
@@ -139,6 +228,38 @@ export const sceneGenerationRequestSchema = z.object({
     )
     .optional(),
   storySummary: z.string().optional(),
+  pursuit: z
+    .object({
+      dramaticQuestion: z.string(),
+      protagonistWant: z.string(),
+      stakes: z.string(),
+      act: z.number(),
+      firedBeatLabels: z.array(z.string()),
+      targetBeatLabel: z.string().nullable(),
+      targetBeatId: z.string().nullable(),
+      candidateEndings: z.array(z.object({ id: z.string(), label: z.string() })),
+      directive: z.enum(["surface_beat", "narrate_costly_survival"]).optional(),
+      surfaceBeatLabel: z.string().optional(),
+      threadFires: z.array(z.string()),
+      clock: z
+        .object({
+          label: z.string(),
+          value: z.number(),
+          max: z.number(),
+          directive: z.enum(["none", "escalate_50", "escalate_75", "climax_now"]),
+        })
+        .optional(),
+    })
+    .optional(),
+  produceArc: z.boolean().optional(),
+  checkOutcome: z
+    .object({
+      outcome: z.enum(["success", "partial", "fail"]),
+      statId: z.string(),
+      margin: z.number(),
+      note: z.string().optional(),
+    })
+    .optional(),
 });
 
 export type TokenChunk = {

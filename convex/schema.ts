@@ -141,13 +141,23 @@ export default defineSchema({
     // does not conflict on phantom inserts into an empty asset range, so the
     // asset-query dedupe alone can't stop a same-instant double-fire.
     lastCinematicQueuedAt: v.optional(v.number()),
+    // story-engagement W3 (R13). When this save was started from a Daily Tale,
+    // the `daily_tales` row id it belongs to. Set at createSave; drives the
+    // one-per-day guard and the terminal `daily_results` insert. Absent on
+    // every non-daily save (BC9).
+    dailyId: v.optional(v.string()),
+    // story-engagement W3 (R12.2). The keepsake id the reader carried into
+    // this run from a prior ending (injected as a tagged inventory item at
+    // createSave). Absent when no keepsake was carried.
+    keepsakeCarried: v.optional(v.string()),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
     .index("by_accountId", ["accountId"])
     .index("by_storyId", ["storyId"])
     .index("by_status", ["status"])
-    .index("by_activeTurnRequestId", ["activeTurnRequestId"]),
+    .index("by_activeTurnRequestId", ["activeTurnRequestId"])
+    .index("by_dailyId", ["dailyId"]),
 
   scenes: defineTable({
     saveId,
@@ -228,6 +238,10 @@ export default defineSchema({
      */
     mentionsExtracted: v.optional(v.array(v.string())),
     engineDiffs: v.array(jsonValue),
+    // story-engagement W1 (R5): visible-tier, hidden-stat-redacted signed diffs
+    // for the client echo/consequence reel (`projection.recentDiffs`). Separate
+    // from `engineDiffs` (raw) so the projection never has to re-redact.
+    visibleDiffs: v.optional(v.array(jsonValue)),
     engineEvents: v.array(jsonValue),
     provider: v.union(v.literal("anthropic"), v.literal("vertex"), v.literal("deepseek"), v.literal("deterministic")),
     tokenUsage: v.optional(jsonValue),
@@ -248,6 +262,17 @@ export default defineSchema({
     // Set true when the unlock was a safety-forced safe ending (Req 11.4), so
     // the trophy crypt can distinguish it from an earned ending.
     safetyEnding: v.optional(v.boolean()),
+    // story-engagement W3 (R12.1). The keepsake earned at this ending — either
+    // an LLM-authored terminal keepsake (validated) or an ending-derived
+    // default. Carriable into a future run (see saves.keepsakeCarried). Absent
+    // on unlocks written before W3 (BC9).
+    keepsake: v.optional(
+      v.object({
+        id: v.string(),
+        label: v.string(),
+        description: v.string(),
+      }),
+    ),
   })
     .index("by_account_story", ["accountId", "storyId"])
     .index("by_account_ending", ["accountId", "endingId"]),
@@ -397,6 +422,33 @@ export default defineSchema({
   })
     .index("by_account_day", ["accountId", "dayKey"])
     .index("by_resetAt", ["resetAt"]),
+
+  // story-engagement W3 (R13, design §6). One shared "Daily Tale" per UTC day,
+  // minted by the `mint-daily-tale` cron. `date` is the yyyy-mm-dd key (unique
+  // via by_date). `storyArc` is the LLM-authored (or deterministic-fallback)
+  // arc injected into every reader's daily save so all readers race the same
+  // dramatic question.
+  daily_tales: defineTable({
+    date: v.string(),
+    premise: v.string(),
+    tone: v.string(),
+    title: v.string(),
+    storyArc: jsonValue,
+    createdAt: v.number(),
+  }).index("by_date", ["date"]),
+
+  // story-engagement W3 (R13.3). One row per (account, daily) recording the
+  // ending a reader reached — powers the results distribution + first-finder
+  // badge. Idempotent per (accountId, dailyId).
+  daily_results: defineTable({
+    dailyId: v.string(),
+    accountId,
+    endingId: v.string(),
+    turnCount: v.number(),
+    finishedAt: v.number(),
+  })
+    .index("by_daily", ["dailyId"])
+    .index("by_daily_account", ["dailyId", "accountId"]),
 
   assets: defineTable({
     accountId,

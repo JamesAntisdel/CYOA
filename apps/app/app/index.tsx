@@ -1,14 +1,21 @@
+import { useEffect, useState } from "react";
 import { useRouter } from "expo-router";
 import { Image, Pressable, ScrollView, View } from "react-native";
 import type { StorySummary } from "@cyoa/stories";
 
 import { AgeGate } from "../components/account/AgeGate";
+import { DailyCard } from "../components/daily";
 import { AppNav } from "../components/navigation";
 import { Button, Text } from "../components/primitives";
 import { brandAssets, getStoryCoverSource } from "../lib/designAssets";
+import {
+  getRemoteDailyToday,
+  startRemoteDaily,
+  type RemoteDailyToday,
+} from "../lib/dailyApi";
 import { useBreakpoint } from "../lib/responsive";
 import { getTutorialStory, useLibrary, type LibrarySave } from "../hooks/useLibrary";
-import { useGuestSession, type AgeSelection } from "../hooks/useGuestSession";
+import { guestAuthArgs, useGuestSession, type AgeSelection } from "../hooks/useGuestSession";
 import { useNarratorVoice } from "../hooks/useNarratorVoice";
 import { useAppTheme } from "../theme";
 
@@ -44,6 +51,25 @@ export default function IndexRoute() {
   const openSave = (saveId: string) => {
     router.push(`/read/${saveId}`);
   };
+
+  // Story-engagement Wave 3 (R13.4): today's Daily Tale card. Fetched once the
+  // guest session exists; hidden when there's no row for today (the card
+  // returns null). BC1 paths live in `lib/dailyApi.ts`.
+  const [dailyToday, setDailyToday] = useState<RemoteDailyToday | null>(null);
+  const accountId = guest.session?.accountId;
+  useEffect(() => {
+    if (!accountId) {
+      setDailyToday(null);
+      return;
+    }
+    let cancelled = false;
+    void getRemoteDailyToday({ accountId, ...guestAuthArgs() }).then((today) => {
+      if (!cancelled) setDailyToday(today);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [accountId]);
 
   const launchTutorial = async () => {
     const save = await library.launchTutorialSave(narrator.voiceId);
@@ -101,6 +127,17 @@ export default function IndexRoute() {
             for the cover, and highlighting an unrelated tab would feel
             misleading. */}
         <AppNav />
+
+        <DailyCard
+          daily={dailyToday}
+          onOpenReader={openSave}
+          onOpenResults={(dailyId) => router.push(`/daily/${dailyId}`)}
+          onStart={() =>
+            accountId
+              ? startRemoteDaily({ accountId, ...guestAuthArgs() })
+              : Promise.resolve(null)
+          }
+        />
 
         <View
           accessibilityLabel="The Unwritten story cover"

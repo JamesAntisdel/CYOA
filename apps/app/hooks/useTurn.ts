@@ -24,8 +24,24 @@ import {
   getRemoteCurrentScene,
   hasRemoteGameApi,
   streamRemoteScene,
+  type RemoteArc,
+  type RemoteCheck,
+  type RemoteCodexEntry,
+  type RemoteRecentDiff,
   type RemoteScene,
+  type RemoteWhatMightHaveBeen,
 } from "../lib/gameApi";
+import {
+  adaptArc,
+  adaptCodex,
+  adaptRecentDiffs,
+  adaptRemoteChoice,
+  checkResultFromDiffs,
+  deriveSignedEcho,
+  type CheckOutcome,
+  type DerivedEcho,
+} from "../lib/storyEngagement";
+import { useToast } from "./useToast";
 import { getGuestTokenHash, guestAuthArgs, useGuestSession } from "./useGuestSession";
 import { StreamLock } from "./streamLock";
 import type { StreamingScene } from "./useStreamingScene";
@@ -37,6 +53,12 @@ export type ChoiceProjection = {
   label: string;
   locked?: boolean;
   hint?: string;
+  /**
+   * Story-engagement Wave 2 skill-check descriptor (odds phrase only — BC10).
+   * Present when picking this choice triggers a check; drives the CheckChip in
+   * ChoiceList. Absent on plain choices and legacy saves.
+   */
+  check?: RemoteCheck;
 };
 
 export type ReaderStats = {
@@ -48,6 +70,12 @@ export type ReaderStats = {
 export type ReaderInventoryItem = {
   id: string;
   label: string;
+  /**
+   * Story-engagement Wave 3 (R12.2): item tags mirrored from the projection.
+   * A carried keepsake is tagged `keepsake`; the inventory list renders a badge
+   * on it. Optional — legacy items omit tags (BC9).
+   */
+  tags?: string[];
 };
 
 export type ReaderProjection = {
@@ -78,6 +106,38 @@ export type ReaderProjection = {
    * until the server populates the field.
    */
   npcs?: Record<string, NpcState>;
+  /**
+   * Story-engagement Wave 1 reader-visible arc summary (design §7). Present
+   * only on arc-bearing saves; legacy saves leave it undefined and the
+   * QuestLine / ThreadsPill render nothing (R1.6 / BC9).
+   */
+  arc?: RemoteArc;
+  /**
+   * Story-engagement Wave 1 signed diffs for the turn that produced the
+   * current scene (design §7). Drives the ThreadsPill fired-toast and the
+   * ChapterEnd act stamp; the echo derivation consumes them per-choice.
+   */
+  recentDiffs?: RemoteRecentDiff[];
+  /**
+   * Story-engagement Wave 2 codex — recorded "truths" (design §7 / R11.2).
+   * Surfaced in the FullSheet Codex tab. Absent on legacy / arc-less saves.
+   */
+  codex?: RemoteCodexEntry[];
+  /**
+   * Current turn number (from the remote scene). Threaded to the StatsHud so
+   * the FullSheet Codex can fire its "✒️ New truth recorded" pip when the
+   * newest codex entry was recorded on this turn (W2-C4). Absent on local /
+   * legacy projections.
+   */
+  turnNumber?: number;
+  /**
+   * Story-engagement Wave 3 (R14) — UNREACHED candidate endings for the
+   * What-Might-Have-Been cards on the terminal ending panel. Populated ONLY
+   * post-terminal from `remoteScene.ending.whatMightHaveBeen` (BC10); absent on
+   * live / legacy / local saves so the surface renders nothing (BC9). This is
+   * SEPARATE from `ending` below (the UI death-screen kind/title/body).
+   */
+  whatMightHaveBeen?: RemoteWhatMightHaveBeen[];
   ending?: {
     kind: "safe" | "death" | "escape";
     title: string;
@@ -108,6 +168,12 @@ export type ChoiceHistoryEntry = {
   choiceLabel: string;
   echo: string;
   tone: "positive" | "neutral" | "negative";
+  /**
+   * Story-engagement Wave 2 (W2-C1): when the turn that produced this scene
+   * resolved a skill check, its outcome + margin ride here so the inline
+   * EffectBadge can raise a CheckBanner. Absent when no check resolved.
+   */
+  check?: { outcome: CheckOutcome; statId: string; margin: number };
 };
 
 const tutorialProjection: ReaderProjection = {
@@ -147,6 +213,11 @@ const CHAPTER_TURNS = 4;
 
 export function useTurn(saveId: string) {
   const guest = useGuestSession();
+  // Toast channel for defensive, out-of-band notices (R4.3): when the server
+  // rejects a submitted choice as `choice_not_available` (a locked choice that
+  // raced a state change since render), we surface a quiet toast rather than
+  // stranding the reader. ReaderScreen always mounts under <ToastProvider>.
+  const toast = useToast();
   const story = useMemo(() => storyForSave(saveId), [saveId]);
   const [engineState, setEngineState] = useState<PlayerState | null>(() =>
     story ? createInitialState(story, "story", engineContext.now, engineContext.rngSeed) : null,
@@ -397,6 +468,11 @@ export function useTurn(saveId: string) {
         if (remote.ok === false) {
           // Genuine server rejection — map the code to reader-safe copy
           // (daily_turns_exhausted, turn_in_progress, safety, …).
+          // A locked-choice race (`choice_not_available`, R4.3) also gets a
+          // quiet toast so the reader understands the door isn't open yet.
+          if (remote.errorCode === "choice_not_available") {
+            toast.push({ message: "That path isn't open to you yet.", tone: "info" });
+          }
           setFreeformError(freeformBookCopyForError(remote.errorCode));
           return;
         }
@@ -408,8 +484,7 @@ export function useTurn(saveId: string) {
               choiceLabel: choice.label,
               fromSceneTitle,
               toSceneTitle: nextProjection.scene.title,
-              tone: "neutral",
-              echo: deriveRemoteEcho(remote.scene),
+              ...remoteEchoFields(remote.scene),
             });
             return;
           }
@@ -437,8 +512,7 @@ export function useTurn(saveId: string) {
               choiceLabel: choice.label,
               fromSceneTitle,
               toSceneTitle: finalProjection.scene.title,
-              tone: "neutral",
-              echo: deriveRemoteEcho(canonicalScene),
+              ...remoteEchoFields(canonicalScene),
             });
             return;
           }
@@ -475,8 +549,7 @@ export function useTurn(saveId: string) {
               choiceLabel: choice.label,
               fromSceneTitle,
               toSceneTitle: finalStub.scene.title,
-              tone: "neutral",
-              echo: deriveRemoteEcho(remote.scene),
+              ...remoteEchoFields(remote.scene),
             });
             return;
           }
@@ -487,8 +560,7 @@ export function useTurn(saveId: string) {
             choiceLabel: choice.label,
             fromSceneTitle,
             toSceneTitle: finalProjection.scene.title,
-            tone: "neutral",
-            echo: deriveRemoteEcho(canonicalScene),
+            ...remoteEchoFields(canonicalScene),
           });
           return;
         }
@@ -551,7 +623,7 @@ export function useTurn(saveId: string) {
       }
       setPendingChoiceId(null);
     }, 360);
-  }, [engineState, guest.session, pendingChoiceId, projection.scene.title, saveId, story]);
+  }, [engineState, guest.session, pendingChoiceId, projection.scene.title, saveId, story, toast]);
 
   const submitFreeformChoice = useCallback(async (rawText: string) => {
     if (!supportsFreeform) {
@@ -623,8 +695,7 @@ export function useTurn(saveId: string) {
           choiceLabel: trimmed,
           fromSceneTitle,
           toSceneTitle: finalProjection.scene.title,
-          tone: "neutral",
-          echo: deriveRemoteEcho(canonicalScene),
+          ...remoteEchoFields(canonicalScene),
         });
         return;
       }
@@ -654,8 +725,7 @@ export function useTurn(saveId: string) {
           choiceLabel: trimmed,
           fromSceneTitle,
           toSceneTitle: finalStub.scene.title,
-          tone: "neutral",
-          echo: deriveRemoteEcho(result.scene),
+          ...remoteEchoFields(result.scene),
         });
         return;
       }
@@ -666,8 +736,7 @@ export function useTurn(saveId: string) {
         choiceLabel: trimmed,
         fromSceneTitle,
         toSceneTitle: finalProjection.scene.title,
-        tone: "neutral",
-        echo: deriveRemoteEcho(canonicalScene),
+        ...remoteEchoFields(canonicalScene),
       });
     } finally {
       freeformInFlightRef.current = false;
@@ -836,6 +905,8 @@ function freeformBookCopyForError(code: string): string {
       return "Write a short action before submitting.";
     case "freeform_not_supported_for_story":
       return "This tale only follows the offered paths.";
+    case "choice_not_available":
+      return "That path isn't open to you yet.";
     case "turn_in_progress":
       return "Another action is still resolving. Try again in a moment.";
     case "daily_turns_exhausted":
@@ -946,13 +1017,17 @@ function projectRemoteScene(
       },
     },
     choices: scene.choices
-      .filter((choice) => choice.visibility !== "hidden")
-      .map((choice) => ({
-        id: choice.choice.id,
-        label: choice.choice.label,
-        locked: choice.visibility === "locked",
-        ...(choice.lockedHint ? { hint: choice.lockedHint } : {}),
-      })),
+      .filter((choice) => (choice.state ?? choice.visibility) !== "hidden")
+      .map((choice) => {
+        const model = adaptRemoteChoice(choice);
+        return {
+          id: model.id,
+          label: model.label,
+          locked: model.locked,
+          ...(model.hint ? { hint: model.hint } : {}),
+          ...(model.check ? { check: model.check } : {}),
+        };
+      }),
     stats: {
       // Vitality has bounds 0–10 in the engine; clamp here to the same window
       // so a value of 10 doesn't get truncated to 5. Falls back to the legacy
@@ -976,6 +1051,23 @@ function projectRemoteScene(
     },
     inventory: remoteInventoryItems(scene),
     ...(scene.npcs ? { npcs: scene.npcs } : {}),
+    // Story-engagement Wave 1 — adapt the wire arc/diffs (null→optional, BC2)
+    // onto the projection so ReaderScreen can render QuestLine / ThreadsPill
+    // and the ChapterEnd act stamp without re-reading the raw scene.
+    ...(adaptArc(scene.arc) ? { arc: adaptArc(scene.arc)! } : {}),
+    ...(adaptRecentDiffs(scene.recentDiffs)
+      ? { recentDiffs: adaptRecentDiffs(scene.recentDiffs)! }
+      : {}),
+    ...(adaptCodex(scene.codex) ? { codex: adaptCodex(scene.codex)! } : {}),
+    ...(typeof scene.turnNumber === "number" ? { turnNumber: scene.turnNumber } : {}),
+    // Story-engagement Wave 3 (R14) — the server projects the UNREACHED
+    // candidate endings ONLY post-terminal (BC10). Mirror them onto the
+    // projection so the terminal ending panel can raise WhatMightHaveBeen and
+    // the path map can fog its candidate ghosts. Conditional-spread (BC4) so a
+    // null/absent projection (pre-terminal / legacy) omits the field entirely.
+    ...(Array.isArray(scene.ending?.whatMightHaveBeen) && scene.ending!.whatMightHaveBeen!.length > 0
+      ? { whatMightHaveBeen: scene.ending!.whatMightHaveBeen! }
+      : {}),
     ...(terminal && ending
       ? {
           ending: {
@@ -1009,7 +1101,13 @@ function remoteInventoryItems(scene: RemoteScene): ReaderInventoryItem[] {
   // dummy list for old projections so the HUD doesn't go blank during a
   // mixed-version rollout.
   if (Array.isArray(scene.inventory) && scene.inventory.length > 0) {
-    return scene.inventory.map((item) => ({ id: item.id, label: item.label }));
+    return scene.inventory.map((item) => ({
+      id: item.id,
+      label: item.label,
+      // Carry item tags (e.g. `keepsake`) through so the inventory list can
+      // badge a carried keepsake (R12.2). Only when present (BC4).
+      ...(Array.isArray(item.tags) && item.tags.length > 0 ? { tags: item.tags } : {}),
+    }));
   }
   const count = Math.max(0, scene.inventoryCount);
   return Array.from({ length: count }, (_, index) => ({
@@ -1210,8 +1308,33 @@ function deriveEngineEcho(
   return { text: fragments.slice(0, 3).join(" · "), tone };
 }
 
-function deriveRemoteEcho(scene: RemoteScene): string {
-  const visibleStats = scene.visibleStats?.slice(0, 2) ?? [];
-  if (visibleStats.length === 0) return "the story remembered";
-  return visibleStats.map((stat) => `${stat.label}: ${stat.value}`).join(" · ");
+/**
+ * Signed echo for a completed remote turn (R5.2). Consumes the projection's
+ * `recentDiffs` → signed chips ("+2 Nerve · −1 ♥ · + Bone Key"); hidden-only
+ * turns collapse to "something shifted…"; old turns without diffs fall back to
+ * a visible-stat snapshot. Returns both the text and the aggregate tone so the
+ * EffectBadge / ConsequenceReel color the echo correctly.
+ */
+function deriveRemoteEcho(scene: RemoteScene): DerivedEcho {
+  return deriveSignedEcho(adaptRecentDiffs(scene.recentDiffs), scene.visibleStats);
+}
+
+/**
+ * Spread-ready echo fields for `appendChoiceHistory` so a remote turn's signed
+ * echo, its aggregate tone, and any resolved skill-check (W2-C1) land on the
+ * ChoiceHistoryEntry in one shot. The `check` field is conditionally spread so
+ * `exactOptionalPropertyTypes` stays happy (BC4) and non-check turns omit it.
+ */
+function remoteEchoFields(scene: RemoteScene): {
+  echo: string;
+  tone: ChoiceHistoryEntry["tone"];
+  check?: { outcome: CheckOutcome; statId: string; margin: number };
+} {
+  const derived = deriveRemoteEcho(scene);
+  const check = checkResultFromDiffs(adaptRecentDiffs(scene.recentDiffs));
+  return {
+    echo: derived.text,
+    tone: derived.tone,
+    ...(check ? { check } : {}),
+  };
 }

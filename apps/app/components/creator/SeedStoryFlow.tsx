@@ -4,8 +4,12 @@ import { getLocalStorage as getStorage } from "../../lib/storage";
 import { TextInput, View } from "react-native";
 
 import type { LibrarySave } from "../../hooks/useLibrary";
+import type { RemoteKeepsake } from "../../lib/gameApi";
+import { canStartMode, type SaveMode } from "../../lib/storyEngagementW3";
 import { Button, Chip, Divider, Note, Stamp, Surface, Text } from "../primitives";
 import { useAppTheme } from "../../theme";
+import { HardcoreSelect } from "./HardcoreSelect";
+import { KeepsakePicker } from "./KeepsakePicker";
 import {
   NpcCastEditor,
   validateNpcCast,
@@ -121,26 +125,44 @@ export type SeedStoryFlowProps = {
      * fall back to its own NPC introduction cadence.
      */
     npcCast: SeedNpcDraft[];
+    /** Story-engagement Wave 3 (R15): Story (default) or Hardcore. */
+    mode: SaveMode;
+    /** Story-engagement Wave 3 (R12.2): the single keepsake to carry, if any. */
+    keepsakeId?: string;
   }) => LibrarySave | null | Promise<LibrarySave | null>;
   /** Called after a successful local validation + save creation. */
   onSeedLaunched: (save: LibrarySave, draft: SeedDraftMetadata) => void;
+  /**
+   * Story-engagement Wave 3 (R12.2): the account's owned keepsakes for the
+   * carry picker. Absent/empty → the picker hides. Server-projected via the
+   * widened profile projection.
+   */
+  keepsakes?: RemoteKeepsake[] | null;
 };
 
 export function SeedStoryFlow({
   onLaunchSeed,
   onSeedLaunched,
+  keepsakes,
 }: SeedStoryFlowProps) {
   const { tokens } = useAppTheme();
   const [title, setTitle] = useState("");
   const [premise, setPremise] = useState("");
   const [tone, setTone] = useState<SeedTone | null>(null);
   const [npcCast, setNpcCast] = useState<SeedNpcDraft[]>([]);
+  const [mode, setMode] = useState<SaveMode>("story");
+  const [consented, setConsented] = useState(false);
+  const [keepsakeId, setKeepsakeId] = useState<string | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const [safetyWarning, setSafetyWarning] = useState<string | null>(null);
 
+  // Launch is gated on the base fields AND the Hardcore consent (R15.3 —
+  // canStartMode returns false for hardcore until acknowledged).
   const canLaunch = useMemo(
-    () => Boolean(title.trim() && premise.trim().length >= 24 && tone),
-    [premise, title, tone],
+    () =>
+      Boolean(title.trim() && premise.trim().length >= 24 && tone) &&
+      canStartMode(mode, consented),
+    [premise, title, tone, mode, consented],
   );
 
   const handlePremiseChange = useCallback((next: string) => {
@@ -188,6 +210,11 @@ export function SeedStoryFlow({
       return;
     }
 
+    if (!canStartMode(mode, consented)) {
+      setError("Acknowledge the Hardcore consent before launching.");
+      return;
+    }
+
     let save;
     try {
       save = await onLaunchSeed({
@@ -195,6 +222,8 @@ export function SeedStoryFlow({
         premise: trimmedPremise,
         tone,
         npcCast,
+        mode,
+        ...(keepsakeId ? { keepsakeId } : {}),
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : "seed_launch_failed";
@@ -235,7 +264,7 @@ export function SeedStoryFlow({
     };
     persistSeedDraft(save.saveId, draft);
     onSeedLaunched(save, draft);
-  }, [npcCast, onLaunchSeed, onSeedLaunched, premise, title, tone]);
+  }, [consented, keepsakeId, mode, npcCast, onLaunchSeed, onSeedLaunched, premise, title, tone]);
 
   return (
     <View style={{ gap: tokens.spacing.lg }}>
@@ -291,6 +320,24 @@ export function SeedStoryFlow({
           <Divider />
 
           <NpcCastEditor onChange={setNpcCast} value={npcCast} />
+
+          <Divider />
+
+          {/* Story-engagement Wave 3: carry a keepsake (hidden when the account
+              owns none) + choose Story / Hardcore mode with its consent gate. */}
+          <KeepsakePicker keepsakes={keepsakes} onChange={setKeepsakeId} selectedId={keepsakeId} />
+
+          <HardcoreSelect
+            consented={consented}
+            mode={mode}
+            onConsentChange={setConsented}
+            onModeChange={(next) => {
+              setMode(next);
+              // Reset consent whenever the reader flips modes so choosing
+              // Hardcore always re-requires an explicit acknowledgment.
+              if (next === "story") setConsented(false);
+            }}
+          />
 
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: tokens.spacing.sm }}>
             <Chip>Validation required</Chip>

@@ -3,6 +3,7 @@ import type { ChoiceHistoryEntry, ReaderProjection } from "../../../hooks/useTur
 import type { ChoiceProjection } from "../../../hooks/useTurn";
 import type { PatronTier } from "../../../lib/billingConfig";
 import type { RemoteCinematicView } from "../../../lib/cinematicApi";
+import type { RemoteWhatMightHaveBeen } from "../../../lib/gameApi";
 
 /**
  * Every reading layout consumes the same projection + streaming state and
@@ -194,4 +195,39 @@ export function endingVariantProps(input: {
   // reachable for eligible tier+asset combinations during Wave C QA.
   if (input.isFirstFind !== undefined) out.isFirstFind = input.isFirstFind;
   return out;
+}
+
+/**
+ * Build the `<WhatMightHaveBeen>` prop bag for the terminal ending panel
+ * (story-engagement Wave 3, R14). Reuses the layout's EXISTING ending
+ * navigation rather than inventing new flows:
+ *
+ *   "Begin again"          → layout `onReturnHome`  (same handler EndingPanel
+ *                            surfaces as `onBeginAgain`)
+ *   "Fork from a decision" → layout `onOpenEndings` (same "See map" handler
+ *                            EndingPanel surfaces as `onSeeMap`)
+ *
+ * The component self-gates: it renders nothing unless the save is terminal AND
+ * carries unreached candidates (BC9/BC10), so the no-op fallbacks below are
+ * only ever reached on a render that returns null. `terminal` is derived from
+ * `projection.ending` (present only on a terminal projection) so the fogged
+ * cards never appear on a live / legacy save.
+ */
+export function whatMightHaveBeenProps(input: {
+  projection: ReaderLayoutProps["projection"];
+  onOpenEndings?: Nav;
+  onReturnHome?: Nav;
+}): {
+  candidates: RemoteWhatMightHaveBeen[] | undefined;
+  terminal: boolean;
+  onFork: () => void;
+  onBeginAgain: () => void;
+} {
+  const noop = () => undefined;
+  return {
+    candidates: input.projection.whatMightHaveBeen,
+    terminal: Boolean(input.projection.ending),
+    onFork: input.onOpenEndings ?? noop,
+    onBeginAgain: input.onReturnHome ?? noop,
+  };
 }

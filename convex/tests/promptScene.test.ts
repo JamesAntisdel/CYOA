@@ -356,3 +356,236 @@ describe("buildScenePrompt opener + premise anchor (coherence fixes)", () => {
     expect(prompt).toContain("unless the reader's choice explicitly forces a death");
   });
 });
+
+// ===========================================================================
+// Story-arc pursuit section + rules (W1-S3, R1.3 / R6.1 / R2.5 / R3.3 / R4).
+// ===========================================================================
+
+import type { PursuitPromptContext } from "../llm/types";
+
+function pursuitFixture(
+  overrides: Partial<PursuitPromptContext> = {},
+): PursuitPromptContext {
+  return {
+    dramaticQuestion: "Will you free the drowned city or drown with it?",
+    protagonistWant: "to break the tide-curse before the last bell",
+    stakes: "the drowned city and every soul still breathing in it",
+    act: 2,
+    firedBeatLabels: ["The bargain struck"],
+    targetBeatLabel: "The flood gate breaks",
+    targetBeatId: "flood-gate-breaks",
+    candidateEndings: [
+      { id: "drowned-crown", label: "The Drowned Crown" },
+      { id: "risen-city", label: "The Risen City" },
+    ],
+    threadFires: [],
+    ...overrides,
+  };
+}
+
+describe("buildScenePrompt pursuit section (W1-S3)", () => {
+  it("renders the pursuit section ABOVE the memory window", () => {
+    const prompt = buildScenePrompt(llmRequest({ pursuit: pursuitFixture() }));
+    const pursuitIdx = prompt.indexOf("== YOUR PURSUIT");
+    const memoryIdx = prompt.indexOf("Recent story memory");
+    expect(pursuitIdx).toBeGreaterThan(-1);
+    expect(memoryIdx).toBeGreaterThan(-1);
+    expect(pursuitIdx).toBeLessThan(memoryIdx);
+    expect(prompt).toContain("Dramatic question: Will you free the drowned city");
+    expect(prompt).toContain("Act 2. Beats already landed: The bargain struck.");
+  });
+
+  it("omits the whole pursuit section on arc-less (legacy) saves", () => {
+    const prompt = buildScenePrompt(llmRequest());
+    expect(prompt).not.toContain("== YOUR PURSUIT");
+    expect(prompt).not.toContain("STEER TOWARD");
+  });
+
+  it("surfaces the steer-toward beat + beatFired instruction", () => {
+    const prompt = buildScenePrompt(llmRequest({ pursuit: pursuitFixture() }));
+    expect(prompt).toContain('STEER TOWARD (subtly, within 1-2 scenes): "The flood gate breaks".');
+    expect(prompt).toContain('set "beatFired": "flood-gate-breaks"');
+  });
+
+  it("injects the surface_beat directive line", () => {
+    const prompt = buildScenePrompt(
+      llmRequest({
+        pursuit: pursuitFixture({
+          directive: "surface_beat",
+          surfaceBeatLabel: "The flood gate breaks",
+        }),
+      }),
+    );
+    expect(prompt).toContain("The story tried to end too early");
+    expect(prompt).toContain('must put "The flood gate breaks" on stage');
+  });
+
+  it("injects the costly-survival directive line", () => {
+    const prompt = buildScenePrompt(
+      llmRequest({
+        pursuit: pursuitFixture({ directive: "narrate_costly_survival" }),
+      }),
+    );
+    expect(prompt).toContain("The reader survives, barely");
+    expect(prompt).toContain("do NOT set terminal this scene");
+  });
+
+  it("narrates fired-thread callbacks", () => {
+    const prompt = buildScenePrompt(
+      llmRequest({
+        pursuit: pursuitFixture({ threadFires: ["the ferryman's coin, still cold in your pocket"] }),
+      }),
+    );
+    expect(prompt).toContain(
+      'A THREAD FIRES THIS SCENE: "the ferryman\'s coin, still cold in your pocket" — narrate the callback.',
+    );
+  });
+
+  it("emits the arc rules only on arc saves", () => {
+    const withArc = buildScenePrompt(llmRequest({ pursuit: pursuitFixture() }));
+    expect(withArc).toContain("CHOICE CONSEQUENCE");
+    expect(withArc).toContain("GATED CHOICE");
+    expect(withArc).toContain("THREADS (foreshadowing");
+    expect(withArc).toContain("ENDINGS — when this scene is the ending");
+    const withoutArc = buildScenePrompt(llmRequest());
+    expect(withoutArc).not.toContain("CHOICE CONSEQUENCE");
+    expect(withoutArc).not.toContain("GATED CHOICE");
+  });
+
+  it("emits the STORY ARC production block only when produceArc is set", () => {
+    const producing = buildScenePrompt(llmRequest({ produceArc: true }));
+    expect(producing).toContain("STORY ARC (REQUIRED on turn 1 ONLY");
+    expect(producing).toContain("dramaticQuestion");
+    const notProducing = buildScenePrompt(llmRequest());
+    expect(notProducing).not.toContain("STORY ARC (REQUIRED on turn 1 ONLY");
+  });
+
+  it("keeps the existing anti-repetition + stat-narration rules alongside the arc rules", () => {
+    const prompt = buildScenePrompt(llmRequest({ pursuit: pursuitFixture() }));
+    expect(prompt).toContain("ANTI-REPETITION");
+    expect(prompt).toContain("STAT CHANGES MUST BE NARRATED");
+  });
+});
+
+describe("W2 prompt sections (W2-S3)", () => {
+  it("renders clock escalation copy by directive, above the memory window", () => {
+    const at75 = buildScenePrompt(
+      llmRequest({
+        pursuit: pursuitFixture({
+          clock: { label: "The candle burns", value: 9, max: 12, directive: "escalate_75" },
+        }),
+      }),
+    );
+    expect(at75).toContain("The candle burns is at 9/12 — time is nearly gone");
+    const expired = buildScenePrompt(
+      llmRequest({
+        pursuit: pursuitFixture({
+          clock: { label: "The candle burns", value: 12, max: 12, directive: "climax_now" },
+        }),
+      }),
+    );
+    expect(expired).toContain("has run out");
+    expect(expired).toContain("Move DIRECTLY into the climax");
+    // `none` prints no escalation line.
+    const early = buildScenePrompt(
+      llmRequest({
+        pursuit: pursuitFixture({
+          clock: { label: "The candle burns", value: 1, max: 12, directive: "none" },
+        }),
+      }),
+    );
+    expect(early).not.toContain("is at 1/12");
+  });
+
+  it("renders the CHECK OUTCOME block above the memory window and forbids overruling", () => {
+    const prompt = buildScenePrompt(
+      llmRequest({
+        checkOutcome: { outcome: "fail", statId: "Nerve", margin: -1, note: "the lock held" },
+      }),
+    );
+    const checkIdx = prompt.indexOf("== CHECK OUTCOME");
+    const memoryIdx = prompt.indexOf("Recent story memory");
+    expect(checkIdx).toBeGreaterThan(-1);
+    expect(checkIdx).toBeLessThan(memoryIdx);
+    expect(prompt).toContain("FAILED (Nerve, barely)");
+    expect(prompt).toContain("do NOT overrule it");
+    expect(prompt).toContain('Flavor to weave in: "the lock held"');
+  });
+
+  it("omits the CHECK OUTCOME block when no check fired", () => {
+    expect(buildScenePrompt(llmRequest())).not.toContain("== CHECK OUTCOME");
+  });
+
+  it("emits the W2 rules only on arc saves", () => {
+    const withArc = buildScenePrompt(llmRequest({ pursuit: pursuitFixture() }));
+    expect(withArc).toContain("RELATIONSHIPS (R8.5)");
+    expect(withArc).toContain("SKILL CHECKS (R7.1)");
+    expect(withArc).toContain("SCARCITY (R10)");
+    expect(withArc).toContain("CODEX (R11.3)");
+    const withoutArc = buildScenePrompt(llmRequest());
+    expect(withoutArc).not.toContain("RELATIONSHIPS (R8.5)");
+    expect(withoutArc).not.toContain("SKILL CHECKS (R7.1)");
+  });
+});
+
+describe("pursuit spoiler discipline (BC10, W1-S3)", () => {
+  it("shows candidate-ending labels ONLY in the ENDINGS rule", () => {
+    const prompt = buildScenePrompt(llmRequest({ pursuit: pursuitFixture() }));
+    // Candidate label appears exactly once — inside the endings rule, never
+    // echoed into the pursuit section or elsewhere.
+    const occurrences = prompt.split("The Drowned Crown").length - 1;
+    expect(occurrences).toBe(1);
+    const endingsRuleIdx = prompt.indexOf("ENDINGS — when this scene is the ending");
+    const labelIdx = prompt.indexOf("The Drowned Crown");
+    expect(labelIdx).toBeGreaterThan(endingsRuleIdx);
+    // Not present in the pursuit section itself.
+    const pursuitSection = prompt.slice(
+      prompt.indexOf("== YOUR PURSUIT"),
+      prompt.indexOf("Recent story memory"),
+    );
+    expect(pursuitSection).not.toContain("The Drowned Crown");
+  });
+
+  it("shows the pending target-beat label ONLY in the steer line", () => {
+    const prompt = buildScenePrompt(llmRequest({ pursuit: pursuitFixture() }));
+    // The pending beat label appears once (steer line). A fired beat label may
+    // appear in "Beats already landed" — that's not a spoiler (reader lived it).
+    const occurrences = prompt.split("The flood gate breaks").length - 1;
+    expect(occurrences).toBe(1);
+  });
+});
+
+describe("pursuit token budget (W2-S3, ≤ baseline + 1400 cumulative tokens)", () => {
+  it("stays within the W1+W2 cumulative budget on a worst-case arc prompt", () => {
+    const baseline = buildScenePrompt(llmRequest());
+    // Worst case: full pursuit + directive + fired thread + clock escalation +
+    // arc production + all W2 rules (relationships / checks / scarcity / codex).
+    const worst = buildScenePrompt(
+      llmRequest({
+        produceArc: true,
+        pursuit: pursuitFixture({
+          firedBeatLabels: ["A", "B", "C", "D"],
+          directive: "surface_beat",
+          surfaceBeatLabel: "The flood gate breaks",
+          threadFires: ["a long foreshadow line that pays off a much earlier promise"],
+          clock: {
+            label: "The candle burns",
+            value: 9,
+            max: 12,
+            directive: "escalate_75",
+          },
+          candidateEndings: [
+            { id: "a", label: "The Drowned Crown" },
+            { id: "b", label: "The Risen City" },
+            { id: "c", label: "The Salt Throne" },
+            { id: "d", label: "The Last Bell" },
+          ],
+        }),
+      }),
+    );
+    // 4-chars/token heuristic (design §3): +1400 tokens ≈ +5600 chars. R16.5
+    // caps cumulative growth at +1600 across all waves — W2 stays under 1400.
+    const addedTokens = (worst.length - baseline.length) / 4;
+    expect(addedTokens).toBeLessThanOrEqual(1400);
+  });
+});

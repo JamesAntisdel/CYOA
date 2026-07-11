@@ -3,6 +3,7 @@ import { Image, View } from "react-native";
 import type { NpcState } from "@cyoa/engine";
 
 import { useNpcPortraitUrl } from "../../hooks/useNpcPortrait";
+import { trendArrow } from "../../lib/storyEngagement";
 import { Chip, Portrait, Surface, Text } from "../primitives";
 import { useAppTheme } from "../../theme";
 import {
@@ -55,6 +56,13 @@ export type NpcRosterProps = {
    */
   accountId?: string;
   saveId?: string;
+  /**
+   * Story-engagement Wave 2 (W2-C3): per-NPC disposition trend for THIS turn,
+   * keyed by npc id (`"up"` warmed toward you, `"down"` cooled). Derived from
+   * the turn's `npc` diffs via `npcTrendsFromDiffs`. A matching entry renders a
+   * ▴/▾ trend arrow on the card. Absent → no arrows (legacy / no movement).
+   */
+  trends?: Record<string, "up" | "down">;
 };
 
 export function NpcRoster({
@@ -62,6 +70,7 @@ export function NpcRoster({
   portraitUriForAsset,
   accountId,
   saveId,
+  trends,
 }: NpcRosterProps) {
   const { tokens } = useAppTheme();
 
@@ -82,6 +91,7 @@ export function NpcRoster({
         //     by npc.id).
         //   - static path: caller passed `portraitUriForAsset` or nothing
         //     → resolve synchronously and render the static card.
+        const trend = trends?.[npc.id];
         if (accountId && saveId && npc.portraitAssetId) {
           return (
             <NpcRosterCardLive
@@ -89,6 +99,7 @@ export function NpcRoster({
               accountId={accountId}
               saveId={saveId}
               npc={npc}
+              {...(trend ? { trend } : {})}
             />
           );
         }
@@ -101,6 +112,7 @@ export function NpcRoster({
                 ? (portraitUriForAsset ?? defaultPortraitUriForAsset)(npc.portraitAssetId)
                 : undefined
             }
+            {...(trend ? { trend } : {})}
           />
         );
       })}
@@ -118,21 +130,24 @@ function NpcRosterCardLive({
   accountId,
   saveId,
   npc,
+  trend,
 }: {
   accountId: string;
   saveId: string;
   npc: NpcState;
+  trend?: "up" | "down";
 }) {
   const url = useNpcPortraitUrl({ accountId, saveId, npcId: npc.id });
-  return <NpcRosterCard npc={npc} portraitUri={url ?? undefined} />;
+  return <NpcRosterCard npc={npc} portraitUri={url ?? undefined} {...(trend ? { trend } : {})} />;
 }
 
 type NpcRosterCardProps = {
   npc: NpcState;
   portraitUri: string | undefined;
+  trend?: "up" | "down";
 };
 
-function NpcRosterCard({ npc, portraitUri }: NpcRosterCardProps) {
+function NpcRosterCard({ npc, portraitUri, trend }: NpcRosterCardProps) {
   const { tokens } = useAppTheme();
   const portraitSize = 48;
   const vibe = dispositionVibe(npc.disposition);
@@ -188,6 +203,15 @@ function NpcRosterCard({ npc, portraitUri }: NpcRosterCardProps) {
             </Chip>
             <Chip>
               <Text variant="caption">
+                {trend ? (
+                  <Text
+                    aria-hidden
+                    style={{ color: trend === "up" ? tokens.colors.accent : tokens.colors.danger }}
+                    variant="caption"
+                  >
+                    {`${trendArrow(trend)} `}
+                  </Text>
+                ) : null}
                 {`${capitalize(vibe)} `}
                 <Text muted variant="caption">{`(${npc.disposition})`}</Text>
               </Text>

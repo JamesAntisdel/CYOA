@@ -172,7 +172,7 @@ export function CinematicMoment({
       }}
     >
       {state === "skeleton" ? (
-        <CinematicSkeleton />
+        <CinematicSkeleton label={cinematicKindLabel(cinematic?.cinematicTrigger)} />
       ) : state === "failed" ? (
         <CinematicUnavailable />
       ) : (state === "playing" || state === "buffering") && videoUri ? (
@@ -210,9 +210,11 @@ export function CinematicMoment({
       {/* Buffering pip while the video loads after a play request. */}
       {state === "buffering" ? <StatusPip label="Loading cinematic…" /> : null}
 
-      {/* Generating badge while the endpoint still holds the frame. */}
+      {/* Generating badge while the endpoint still holds the frame — flashing
+          so it's unmistakable a cinematic is on the way, labeled by where it
+          belongs (opening / chapter / ending). */}
       {state === "poster" && !canPlay && isGenerating(cinematic?.status) ? (
-        <StatusPip label="Cinematic generating…" />
+        <StatusPip label={`${cinematicKindLabel(cinematic?.cinematicTrigger)} · rendering…`} pulse />
       ) : null}
 
       {/* Reduced-motion note on a ready-but-held poster. */}
@@ -244,6 +246,22 @@ function isGenerating(status: RemoteCinematicView["status"] | undefined): boolea
 }
 function isReady(status: RemoteCinematicView["status"] | undefined): boolean {
   return status === "ready";
+}
+
+/** Human label for WHERE a cinematic belongs, shown on the loading surface. */
+function cinematicKindLabel(
+  trigger: RemoteCinematicView["cinematicTrigger"] | undefined,
+): string {
+  switch (trigger) {
+    case "opening":
+      return "Opening cinematic";
+    case "chapter":
+      return "Chapter cinematic";
+    case "ending":
+      return "Ending cinematic";
+    default:
+      return "Cinematic";
+  }
 }
 
 type PosterProps = { uri: string | undefined; alt: string; reducedMotion: boolean };
@@ -385,22 +403,22 @@ function CinematicUnavailable() {
   );
 }
 
-function CinematicSkeleton() {
+function CinematicSkeleton({ label = "Cinematic" }: { label?: string }) {
   const { tokens } = useAppTheme();
-  const pulse = useRef(new Animated.Value(0.4)).current;
+  const pulse = useRef(new Animated.Value(0.35)).current;
 
   useEffect(() => {
     const loop = Animated.loop(
       Animated.sequence([
         Animated.timing(pulse, {
           toValue: 1,
-          duration: 700,
+          duration: 650,
           easing: Easing.inOut(Easing.quad),
           useNativeDriver: Platform.OS !== "web",
         }),
         Animated.timing(pulse, {
-          toValue: 0.4,
-          duration: 700,
+          toValue: 0.35,
+          duration: 650,
           easing: Easing.inOut(Easing.quad),
           useNativeDriver: Platform.OS !== "web",
         }),
@@ -412,19 +430,25 @@ function CinematicSkeleton() {
 
   return (
     <View
-      accessibilityLabel="Cinematic loading"
+      accessibilityLabel={`${label} rendering`}
       accessibilityRole="progressbar"
       style={{
         alignItems: "center",
         backgroundColor: tokens.colors.surfaceMuted,
+        gap: tokens.spacing.xs,
         height: "100%",
         justifyContent: "center",
         width: "100%",
       }}
     >
+      {/* Flashing film glyph — the unmistakable "a cinematic is coming" cue. */}
+      <Animated.Text style={{ fontSize: 30, opacity: pulse }}>🎞️</Animated.Text>
+      <Text style={{ fontWeight: "800" }} variant="bodySmall">
+        {label}
+      </Text>
       <Animated.View style={{ opacity: pulse }}>
-        <Text muted variant="bodySmall">
-          Cinematic loading…
+        <Text muted variant="caption">
+          rendering…
         </Text>
       </Animated.View>
     </View>
@@ -468,31 +492,67 @@ function PlayControl({ onPress }: { onPress: () => void }) {
   );
 }
 
-function StatusPip({ label }: { label: string }) {
+function StatusPip({ label, pulse = false }: { label: string; pulse?: boolean }) {
   const { tokens } = useAppTheme();
+  const flash = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    if (!pulse) {
+      flash.setValue(1);
+      return;
+    }
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(flash, {
+          toValue: 0.35,
+          duration: 600,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: Platform.OS !== "web",
+        }),
+        Animated.timing(flash, {
+          toValue: 1,
+          duration: 600,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: Platform.OS !== "web",
+        }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [flash, pulse]);
+
   return (
-    <View
+    <Animated.View
       style={{
         left: tokens.spacing.sm,
+        opacity: pulse ? flash : 1,
         position: "absolute",
         top: tokens.spacing.sm,
       }}
     >
       <View
         style={{
-          backgroundColor: tokens.colors.surface,
+          alignItems: "center",
+          backgroundColor: pulse ? tokens.colors.accent : tokens.colors.surface,
           borderColor: tokens.colors.border,
           borderRadius: tokens.radii.pill,
           borderWidth: tokens.borderWidths.hairline,
+          flexDirection: "row",
+          gap: tokens.spacing.xs,
           paddingHorizontal: tokens.spacing.sm,
           paddingVertical: tokens.spacing.xs,
         }}
       >
-        <Text muted variant="caption">
+        <Text
+          muted={!pulse}
+          variant="caption"
+          style={pulse ? { color: tokens.colors.background, fontWeight: "800" } : undefined}
+        >
+          {pulse ? "● " : ""}
           {label}
         </Text>
       </View>
-    </View>
+    </Animated.View>
   );
 }
 

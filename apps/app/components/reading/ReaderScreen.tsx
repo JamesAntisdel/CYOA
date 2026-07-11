@@ -23,9 +23,12 @@ import { PATRON_TIERS_BY_ID, resolvePatronTier } from "../../lib/billingConfig";
 import { useBreakpoint } from "../../lib/responsive";
 import { useAppTheme } from "../../theme";
 import { ChapterEnd } from "./ChapterEnd";
+import { QuestLine } from "./QuestLine";
+import { ThreadsPill } from "./ThreadsPill";
 import { READER_LAYOUTS } from "./layouts";
 import { liveMediaMatchesScene, mergeLiveMediaIntoProjection } from "./mergeLiveMedia";
 import { ReaderSettingsDrawer } from "./ReaderSettingsDrawer";
+import { actStampFromDiffs } from "../../lib/storyEngagement";
 
 /**
  * Storage key the user explicitly chose a non-default layout. Set as a side
@@ -91,6 +94,18 @@ export function markLayoutAsExplicitlyChosen(): void {
 type ReaderScreenProps = {
   saveId: string;
 };
+
+/**
+ * Conditional-spread the ChapterEnd act stamp (BC4 — exactOptionalPropertyTypes).
+ * Returns `{}` when the boundary turn didn't advance an act so the optional
+ * `actNumber`/`actLabel` props are omitted rather than passed as `undefined`.
+ */
+function actStampProps(
+  stamp: ReturnType<typeof actStampFromDiffs>,
+): { actNumber?: number; actLabel?: string } {
+  if (!stamp) return {};
+  return { actNumber: stamp.actNumber, ...(stamp.actLabel ? { actLabel: stamp.actLabel } : {}) };
+}
 
 /**
  * Poll the save's endpoint cinematics for the ending trigger
@@ -182,13 +197,21 @@ function pickInlineMoment(
   if (!views) return null;
   // Opening title only — the chapter stinger shows at the chapter-end recap
   // (where the reader expects it), not inline.
+  //
+  // Surface the opening while it's STILL GENERATING (not just when ready) so
+  // page 1 shows the flashing "rendering…" loader from the first moment and
+  // then upgrades in place to the video when it lands. `useSaveCinematics`
+  // polls every 4s while in-flight, so the same view flips generating → ready
+  // under the mounted CinematicMoment (its four-state resolver handles both).
+  // failed/blocked openings are excluded so the loader never hangs forever.
   return (
     views.find(
       (v) =>
         v.cinematicTrigger === "opening" &&
-        v.status === "ready" &&
-        Boolean(v.url) &&
-        !seen.has(v.assetId),
+        !seen.has(v.assetId) &&
+        (v.status === "queued" ||
+          v.status === "generating" ||
+          (v.status === "ready" && Boolean(v.url))),
     ) ?? null
   );
 }
@@ -351,6 +374,21 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
         <View style={{ alignSelf: "stretch" }}>
           <AppNav />
         </View>
+
+        {/* Story-engagement Wave 1 — the pursuit strip + threads pill live
+            here in ReaderScreen (not per-layout) so all five layouts inherit
+            them for free. Both self-hide on legacy / arc-less saves. */}
+        <View style={{ alignSelf: "stretch", gap: tokens.spacing.xs }}>
+          <QuestLine arc={projection.arc} reducedMotion={reduceMotion || settings.reduceMotion} />
+          {projection.arc ? (
+            <ThreadsPill
+              threadsPending={projection.arc.threadsPending}
+              sceneId={projection.scene.id}
+              {...(projection.recentDiffs ? { recentDiffs: projection.recentDiffs } : {})}
+            />
+          ) : null}
+        </View>
+
         <ReaderSaveActions saveId={saveId} />
 
         {/* Opening title + chapter-stinger cinematic (Omni) — the newest ready
@@ -381,6 +419,10 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
             muted={settings.muted}
             audioEnabled={settings.audioEnabled}
             {...(chapterCinematic ? { cinematic: chapterCinematic } : {})}
+            // Story-engagement Wave 1 — when the boundary turn advanced an act
+            // (an `act_advanced` diff), stamp the chapter recap with the new
+            // act ("Act II — <label>"). Absent on non-arc boundaries (R1.5).
+            {...actStampProps(actStampFromDiffs(projection.recentDiffs, projection.arc))}
           />
         ) : (
           <Layout

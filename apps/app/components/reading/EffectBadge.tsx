@@ -3,6 +3,7 @@ import { Animated, Easing, View } from "react-native";
 
 import { useAppTheme } from "../../theme";
 import { Text } from "../primitives";
+import { CheckBanner } from "../choices/CheckBanner";
 import type { ChoiceHistoryEntry } from "../../hooks/useTurn";
 
 /**
@@ -67,7 +68,25 @@ export function EffectBadge({ entry, reducedMotion = false }: EffectBadgeProps) 
     return () => animation.stop();
   }, [animationKey, opacity, reducedMotion]);
 
-  if (!shouldRender(entry)) return null;
+  // A resolved skill check (W2-C1) raises a CheckBanner above the echo pill.
+  // It renders even when the echo itself is neutral/hidden-only, because the
+  // check outcome is a real, reader-visible consequence worth stamping.
+  const check = entry?.check ?? null;
+  if (!shouldRender(entry)) {
+    if (check) {
+      return (
+        <View style={{ alignSelf: "flex-start" }}>
+          <CheckBanner
+            outcome={check.outcome}
+            statId={check.statId}
+            margin={check.margin}
+            reducedMotion={reducedMotion}
+          />
+        </View>
+      );
+    }
+    return null;
+  }
 
   const toneColor =
     entry.tone === "negative"
@@ -88,44 +107,54 @@ export function EffectBadge({ entry, reducedMotion = false }: EffectBadgeProps) 
   const accessibilityLabel = `Consequence of "${entry.choiceLabel}": ${entry.echo}. Result ${toneLabel}.`;
 
   return (
-    <Animated.View
-      accessibilityLabel={accessibilityLabel}
-      accessibilityLiveRegion="polite"
-      accessibilityRole="text"
-      style={{
-        alignSelf: "flex-start",
-        backgroundColor: toneBackground,
-        borderColor: toneColor,
-        borderRadius: tokens.radii.pill,
-        borderWidth: tokens.borderWidths.regular,
-        flexDirection: "row",
-        flexWrap: "wrap",
-        gap: tokens.spacing.xs,
-        opacity,
-        paddingHorizontal: tokens.spacing.md,
-        paddingVertical: tokens.spacing.xs,
-      }}
-    >
-      <Text
+    <View style={{ alignSelf: "flex-start", gap: tokens.spacing.xs }}>
+      {check ? (
+        <CheckBanner
+          outcome={check.outcome}
+          statId={check.statId}
+          margin={check.margin}
+          reducedMotion={reducedMotion}
+        />
+      ) : null}
+      <Animated.View
+        accessibilityLabel={accessibilityLabel}
+        accessibilityLiveRegion="polite"
+        accessibilityRole="text"
         style={{
-          color: toneColor,
-          fontFamily: tokens.typography.families.mono,
-          letterSpacing: 1,
-          textTransform: "uppercase",
+          alignSelf: "flex-start",
+          backgroundColor: toneBackground,
+          borderColor: toneColor,
+          borderRadius: tokens.radii.pill,
+          borderWidth: tokens.borderWidths.regular,
+          flexDirection: "row",
+          flexWrap: "wrap",
+          gap: tokens.spacing.xs,
+          opacity,
+          paddingHorizontal: tokens.spacing.md,
+          paddingVertical: tokens.spacing.xs,
         }}
-        variant="caption"
       >
-        {entry.echo}
-      </Text>
-      <View
-        accessibilityElementsHidden
-        importantForAccessibility="no-hide-descendants"
-        style={{ flexDirection: "row" }}
-      >
-        <Text muted variant="caption">
-          from "{entry.choiceLabel}"
+        <Text
+          style={{
+            color: toneColor,
+            fontFamily: tokens.typography.families.mono,
+            letterSpacing: 1,
+            textTransform: "uppercase",
+          }}
+          variant="caption"
+        >
+          {entry.echo}
         </Text>
-      </View>
-    </Animated.View>
+        <View
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
+          style={{ flexDirection: "row" }}
+        >
+          <Text muted variant="caption">
+            from "{entry.choiceLabel}"
+          </Text>
+        </View>
+      </Animated.View>
+    </View>
   );
 }
