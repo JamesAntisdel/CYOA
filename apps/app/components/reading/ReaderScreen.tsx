@@ -197,13 +197,21 @@ function pickInlineMoment(
   if (!views) return null;
   // Opening title only — the chapter stinger shows at the chapter-end recap
   // (where the reader expects it), not inline.
+  //
+  // Surface the opening while it's STILL GENERATING (not just when ready) so
+  // page 1 shows the flashing "rendering…" loader from the first moment and
+  // then upgrades in place to the video when it lands. `useSaveCinematics`
+  // polls every 4s while in-flight, so the same view flips generating → ready
+  // under the mounted CinematicMoment (its four-state resolver handles both).
+  // failed/blocked openings are excluded so the loader never hangs forever.
   return (
     views.find(
       (v) =>
         v.cinematicTrigger === "opening" &&
-        v.status === "ready" &&
-        Boolean(v.url) &&
-        !seen.has(v.assetId),
+        !seen.has(v.assetId) &&
+        (v.status === "queued" ||
+          v.status === "generating" ||
+          (v.status === "ready" && Boolean(v.url))),
     ) ?? null
   );
 }
