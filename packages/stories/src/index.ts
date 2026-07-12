@@ -4,7 +4,18 @@ import { ashfall, boneCathedral, ironCourt } from "./stubs";
 import { trainingRoom } from "./training-room";
 
 export { type StarterStory, type StoryMode, type StorySummary } from "./metadata";
-export { assertValidStory, validateStory, type StoryValidationResult } from "./validate";
+export {
+  lintStoryGates,
+  type StoryLintCode,
+  type StoryLintIssue,
+  type StoryLintSeverity,
+} from "./lint";
+export {
+  assertValidStory,
+  validateStory,
+  type StoryValidationIssue,
+  type StoryValidationResult,
+} from "./validate";
 export { trainingRoom } from "./training-room";
 export { openCanvas, OPEN_STARTER_ID } from "./open";
 

@@ -1,8 +1,17 @@
 import type { Choice, Story } from "@cyoa/engine";
 
+import { lintStoryGates, type StoryLintSeverity } from "./lint";
+
 export type StoryValidationIssue = {
   path: string;
   message: string;
+  /**
+   * Present on graph-lint issues (dead keys / unreachable gates from
+   * lint.ts); absent on structural issues, which are always blocking. Only
+   * lint "error"s make a story invalid — warnings and info ride along in
+   * `issues` for surfacing without failing `valid`.
+   */
+  severity?: StoryLintSeverity;
 };
 
 export type StoryValidationResult = {
@@ -66,7 +75,23 @@ export function validateStory(story: Story): StoryValidationResult {
     }
   }
 
-  return { valid: issues.length === 0, issues };
+  // Req 22.2: a structurally-sound graph can still be unwinnable — a
+  // `has_item` gate whose key no path grants soft-locks the story at play
+  // time (the authored runtime matches item ids strictly). The gate lint is
+  // safe to run alongside structural issues: it only walks edges whose
+  // targets exist, so a broken graph under-reports rather than double-fires.
+  for (const lintIssue of lintStoryGates(story)) {
+    issues.push({
+      path: lintIssue.path,
+      message: lintIssue.message,
+      severity: lintIssue.severity,
+    });
+  }
+
+  const valid = issues.every(
+    (issue) => issue.severity === "warning" || issue.severity === "info",
+  );
+  return { valid, issues };
 }
 
 export function assertValidStory(story: Story): void {

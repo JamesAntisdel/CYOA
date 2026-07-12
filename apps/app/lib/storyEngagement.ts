@@ -16,6 +16,7 @@ import type {
   RemoteCheck,
   RemoteChoice,
   RemoteCodexEntry,
+  RemoteDoorsJournalEntry,
   RemoteRecentDiff,
 } from "./gameApi";
 
@@ -469,4 +470,45 @@ export function hasNewCodexTruth(
 ): boolean {
   if (currentTurn == null) return false;
   return codexNewestFirst(codex).some((e) => e.turnNumber === currentTurn);
+}
+
+// ---------------------------------------------------------------------------
+// DOORS-JOURNAL — teased-door list model + key-arrival nudge (the reader-
+// facing half of the story-bible fetch-quest loop). Pure so the tome voice
+// and the transition detection are vitest-covered without the RN runtime.
+// ---------------------------------------------------------------------------
+
+/**
+ * The tome-voice line for a journal entry. One full sentence per state so the
+ * row reads as the tome speaking, never as a mechanics readout:
+ *   teased      → "The crypt gate remembers you."
+ *   key-in-hand → "The crypt gate — a key has turned up."
+ *   opened      → "The crypt gate stands open."
+ */
+export function doorJournalLine(entry: RemoteDoorsJournalEntry): string {
+  const trimmed = entry.label.trim();
+  const label =
+    trimmed.length > 0 ? trimmed[0]!.toUpperCase() + trimmed.slice(1) : "The door";
+  if (entry.state === "opened") return `${label} stands open.`;
+  if (entry.state === "key-in-hand") return `${label} — a key has turned up.`;
+  return `${label} remembers you.`;
+}
+
+/**
+ * Labels of doors whose key ARRIVED between two journal snapshots (state
+ * moved teased → key-in-hand) — drives the one-shot "A key has turned up."
+ * nudge. No previous snapshot (first load / resume) never nudges: the reader
+ * may be rejoining mid-state and a stale toast would be noise.
+ */
+export function doorsNewlyKeyed(
+  prev: RemoteDoorsJournalEntry[] | undefined,
+  next: RemoteDoorsJournalEntry[] | null | undefined,
+): string[] {
+  if (!prev || !next) return [];
+  const teasedBefore = new Set(
+    prev.filter((e) => e.state === "teased").map((e) => e.label),
+  );
+  return next
+    .filter((e) => e.state === "key-in-hand" && teasedBefore.has(e.label))
+    .map((e) => e.label);
 }

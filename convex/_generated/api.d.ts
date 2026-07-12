@@ -29,6 +29,7 @@ import type * as contentPolicy from "../contentPolicy.js";
 import type * as coop from "../coop.js";
 import type * as coopFunctions from "../coopFunctions.js";
 import type * as creator from "../creator.js";
+import type * as creatorDashboard from "../creatorDashboard.js";
 import type * as creatorFunctions from "../creatorFunctions.js";
 import type * as crons from "../crons.js";
 import type * as daily from "../daily.js";
@@ -117,6 +118,7 @@ declare const fullApi: ApiFromModules<{
   coop: typeof coop;
   coopFunctions: typeof coopFunctions;
   creator: typeof creator;
+  creatorDashboard: typeof creatorDashboard;
   creatorFunctions: typeof creatorFunctions;
   crons: typeof crons;
   daily: typeof daily;

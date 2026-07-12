@@ -35,7 +35,7 @@
 // write (SB4/R2.1), and `readStoryBible`, the tolerant row→engine-type reader.
 
 import { v } from "convex/values";
-import { actionGeneric, internalMutationGeneric } from "convex/server";
+import { actionGeneric, internalMutationGeneric, queryGeneric } from "convex/server";
 
 import {
   BIBLE_REGISTRY_CAP,
@@ -52,6 +52,8 @@ import type { ContentPolicyContext } from "@cyoa/shared";
 
 import { buildAnalyticsEvent, type AnalyticsMetricName } from "../analytics";
 import { evaluateTextPolicy } from "../contentPolicy";
+import { loadAndAuthorizeAccount } from "../lib/authz";
+import { AppError } from "../lib/errors";
 import {
   appendPath,
   postJson,
@@ -346,6 +348,97 @@ export function foldRegistryEvents(bible: StoryBible, events: RegistryEvent[]): 
   }
   return { ...bible, keyRegistry, lockPlan };
 }
+
+// =============================================================================
+// Doors journal (DOORS-JOURNAL — the reader-facing half of the fetch-quest
+// loop; core-read-loop Req 22 companion surface). The bible itself NEVER
+// reaches the client (R2.2); this projection is the single deliberate
+// exception, and it surfaces ONLY what the reader has already seen on screen
+// (BC10):
+//
+//   - a key becomes journal-visible exactly when its gate RENDERED locked —
+//     that is the moment the fold stamped `promisedAtTurn` (promise/adopt
+//     events, see `foldRegistryEvents`). Planned-but-never-promised registry
+//     entries are invisible.
+//   - `state` tracks what the reader has lived: "teased" (the locked door is
+//     on screen, key still out there), "key-in-hand" (the granted/seeded key
+//     has since landed in inventory — the `granted` fold), "opened" (the
+//     door-open event fired).
+//
+// NEVER projected: registry keys not yet gated on-screen, surfaceBands /
+// gateBands, lockPlan doors not yet rendered, hints for unseen keys, twists,
+// ending hints, motifs, ids, or any turn/consumption bookkeeping.
+// =============================================================================
+
+export type DoorsJournalEntry = {
+  /** The door as the reader met it (lock label, or the key's label for an ad-hoc gate). */
+  label: string;
+  /** The tease the reader saw (the seen key's opensHint); may be empty. */
+  hint: string;
+  state: "teased" | "key-in-hand" | "opened";
+};
+
+/**
+ * Pure bible → journal projection. Exported for the spoiler tests — the test
+ * asserts the forbidden fields above can never appear in the output shape.
+ * Tolerant: a null bible (bible-less save, BC9) projects an empty journal.
+ */
+export function projectDoorsJournal(bible: StoryBible | null): DoorsJournalEntry[] {
+  if (!bible) return [];
+  const entries: DoorsJournalEntry[] = [];
+  const coveredDoorIds = new Set<string>();
+  for (const key of bible.keyRegistry) {
+    // BC10 "seen" gate: only keys whose gate rendered locked on-screen carry
+    // `promisedAtTurn` (stamped by the promise/adopt fold). Everything else
+    // is an unfired plan — invisible.
+    if (typeof key.promisedAtTurn !== "number" || key.status === "retired") continue;
+    const doors = bible.lockPlan.filter(
+      (door) => door.keyId === key.id && door.status !== "retired",
+    );
+    for (const door of doors) coveredDoorIds.add(door.id);
+    const opened = doors.some((door) => door.status === "opened");
+    const state: DoorsJournalEntry["state"] = opened
+      ? "opened"
+      : key.status === "granted"
+        ? "key-in-hand"
+        : "teased";
+    entries.push({ label: doors[0]?.label ?? key.label, hint: key.opensHint, state });
+  }
+  // A door that OPENED without its key ever being promised (the reader already
+  // held the key when the gate first rendered): the walk-through happened on
+  // screen so the door's label is reader-seen — but its key was never teased,
+  // so no hint rides along (BC10: no opensHints for unseen keys).
+  for (const door of bible.lockPlan) {
+    if (door.status !== "opened" || coveredDoorIds.has(door.id)) continue;
+    entries.push({ label: door.label, hint: "", state: "opened" });
+  }
+  return entries;
+}
+
+/**
+ * Reader-facing doors journal for a save (DOORS-JOURNAL). Auth mirrors
+ * `game:getCurrentScene` (own the save + valid session). Bible-less /
+ * not-ready saves project an empty journal — the client renders nothing
+ * (zero-state invisible, BC9).
+ */
+export const getDoorsJournal = queryGeneric({
+  args: {
+    accountId: accountIdValidator,
+    saveId: saveIdValidator,
+    guestTokenHash: v.optional(v.string()),
+  },
+  handler: async (ctx, args): Promise<DoorsJournalEntry[]> => {
+    const saveDoc = await ctx.db.get(args.saveId);
+    if (!saveDoc) throw new AppError("save_not_found");
+    if (String((saveDoc as { accountId?: unknown }).accountId) !== String(args.accountId)) {
+      throw new AppError("save_forbidden");
+    }
+    await loadAndAuthorizeAccount(ctx, args.accountId, args.guestTokenHash);
+    const row = await loadBibleRow(ctx, args.saveId);
+    if (!row || row.status !== "ready") return [];
+    return projectDoorsJournal(readStoryBible(row.bible));
+  },
+});
 
 // =============================================================================
 // Provider fan-out (mirrors summarizer.ts callSummarizer — cheap-model order).

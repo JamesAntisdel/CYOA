@@ -161,6 +161,128 @@ describe("creator seeds", () => {
     ).toThrow(/content_blocked: title/);
   });
 
+  it("blocks creator seeds whose gates can never open (dead-key lint, Req 22.2)", () => {
+    const gated: Story = {
+      ...story,
+      nodes: {
+        ...story.nodes,
+        start: {
+          id: "start",
+          seed: "A clean opening.",
+          choices: [
+            {
+              id: "go",
+              label: "Go",
+              targetNodeId: "end",
+              conditions: [{ kind: "has_item", itemId: "ghost_key" }],
+            },
+          ],
+        },
+      },
+    };
+
+    const validation = validateCreatorSeedStory(gated);
+    expect(validation.valid).toBe(false);
+    expect(validation.issues[0]?.path).toBe("nodes.start.choices.go.conditions.0");
+    expect(validation.issues[0]?.message).toContain('"ghost_key"');
+
+    // The same lint error flows through the field-error contract the drafts
+    // shelf renders ({ path, message, kind }) and blocks create/publish.
+    const submission = validateCreatorSeedSubmission({ story: gated, owner });
+    expect(submission.valid).toBe(false);
+    expect(submission.issues).toContainEqual(
+      expect.objectContaining({
+        path: "nodes.start.choices.go.conditions.0",
+        kind: "structure",
+      }),
+    );
+    expect(() => createAuthoredSeedDraft({ owner, title: "Gated", story: gated, now: 2 })).toThrow(
+      /ghost_key/u,
+    );
+  });
+
+  it("flags grant-vs-gate spelling drift, citing both spellings", () => {
+    const drifted: Story = {
+      ...story,
+      nodes: {
+        start: {
+          id: "start",
+          seed: "A clean opening.",
+          choices: [
+            {
+              id: "grab",
+              label: "Grab the key",
+              targetNodeId: "hall",
+              effects: [
+                { kind: "inventory_add", item: { id: "bone_key", label: "Bone Key" } },
+              ],
+            },
+          ],
+        },
+        hall: {
+          id: "hall",
+          seed: "A locked door.",
+          choices: [
+            {
+              id: "open",
+              label: "Open the door",
+              targetNodeId: "end",
+              conditions: [{ kind: "has_item", itemId: "Bone-Key" }],
+            },
+          ],
+        },
+        end: { id: "end", endingId: "end", choices: [] },
+      },
+    };
+
+    const validation = validateCreatorSeedStory(drifted);
+    expect(validation.valid).toBe(false);
+    expect(validation.issues[0]?.path).toBe("nodes.hall.choices.open.conditions.0");
+    // Both spellings are cited so the creator knows what to reconcile —
+    // authored seeds play under STRICT id matching, not the LLM path's fuzz.
+    expect(validation.issues[0]?.message).toContain('"Bone-Key"');
+    expect(validation.issues[0]?.message).toContain('"bone_key"');
+  });
+
+  it("keeps advisory lint warnings non-blocking for creators", () => {
+    const warned: Story = {
+      ...story,
+      initialState: {
+        vitality: 3,
+        currency: 0,
+        attributes: {
+          resolve: { id: "resolve", label: "Resolve", value: 1, visibility: "visible" },
+        },
+      },
+      nodes: {
+        ...story.nodes,
+        start: {
+          id: "start",
+          seed: "A clean opening.",
+          choices: [
+            {
+              id: "go",
+              label: "Go",
+              targetNodeId: "end",
+              conditions: [{ kind: "stat_at_least", statId: "resolve", value: 99 }],
+            },
+          ],
+        },
+      },
+    };
+
+    // Unreachable stat thresholds are a lint WARNING (severity below error):
+    // they must not block drafts or publishing through this contract.
+    expect(validateCreatorSeedStory(warned).valid).toBe(true);
+    expect(validateCreatorSeedSubmission({ story: warned, owner })).toEqual({
+      valid: true,
+      issues: [],
+    });
+    expect(createAuthoredSeedDraft({ owner, title: "Warned", story: warned, now: 2 }).status).toBe(
+      "draft",
+    );
+  });
+
   it("records play-time attribution without raw prose", () => {
     const seed = { ...createAuthoredSeedDraft({ owner, title: "Seed", story, now: 2 }), _id: "seed-id" };
     const event = buildPlayTimeAttributionEvent({

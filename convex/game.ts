@@ -47,8 +47,9 @@ import { v } from "convex/values";
 
 import type { ContentPolicyContext, ContentPolicySummary } from "@cyoa/shared";
 
-import type { AccountRecord } from "./account";
+import { canEnableMatureContent, type AccountRecord } from "./account";
 import { dailyAllowance } from "./billing/entitlements";
+import { loadEntitlementLite } from "./lib/entitlement";
 import {
   evaluateTextPolicy,
   matureContextForAccount,
@@ -78,6 +79,7 @@ import { foldRegistryEvents, readStoryBible } from "./llm/storyBible";
 import { guardPromptText } from "./llm/promptGuards";
 import type { CheckOutcomePromptContext, NpcSheetSnapshot } from "./llm/types";
 import { buildMemoryWindow, type MemoryBeat } from "./memory";
+import { insertCreatorPlayTimeAttribution } from "./creatorDashboard";
 import {
   authoredSeedStoryId,
   buildCreateSavePlan,
@@ -86,7 +88,9 @@ import {
   buildInitialSceneRecord,
   buildLibraryItems,
   buildTurnPersistencePlan,
+  canLaunchAuthoredSeed,
   parseAuthoredSeedStoryId,
+  seedIsMature,
 } from "./liveCore";
 import type { DailyTurnCounter } from "./ratelimit";
 import { consumeTurn } from "./ratelimit";
@@ -165,6 +169,20 @@ export const listLibrary = queryGeneric({
       .collect();
     for (const seed of authoredSeeds) {
       if (seed.status === "published") storyTitles.set(authoredSeedStoryId(String(seed._id)), seed.title);
+    }
+    // Cross-account launches (creator-arc, Req 22.3): saves created from
+    // ANOTHER creator's published seed aren't in the owner-scoped map above —
+    // resolve their titles by direct seed lookup so the library row shows the
+    // seed's title instead of the opaque "authored_seed:<id>" storyId.
+    for (const save of saves) {
+      const storyId = String(save.storyId ?? "");
+      if (storyTitles.has(storyId)) continue;
+      const foreignSeedId = parseAuthoredSeedStoryId(storyId);
+      if (!foreignSeedId) continue;
+      const foreignSeed = await ctx.db.get(foreignSeedId as any);
+      if (foreignSeed && typeof foreignSeed.title === "string") {
+        storyTitles.set(storyId, foreignSeed.title);
+      }
     }
     return buildLibraryItems({ saves: saves.map(saveFromDoc), storyTitles });
   },
@@ -1157,6 +1175,15 @@ export const submitChoice = mutationGeneric({
         createdAt: now,
       });
     }
+    // Creator play-time attribution (Req 22.4/22.5): authored-seed saves
+    // credit this turn's wall-clock slice (previous completion → now, via the
+    // PRE-patch save.updatedAt) to the seed's creator. No-op for every other
+    // storyId; fire-and-forget like insertStoryAnalytics.
+    await insertCreatorPlayTimeAttribution(ctx, {
+      save,
+      readerAccountId: args.accountId,
+      now,
+    });
     // Authored terminal (death / success via node endingId) → record the
     // ending unlock (Req 8.1 / 19.1). Engine state already carries the
     // UnlockedEnding via applyChoiceAndEnterNode's unlockCurrentEnding.
@@ -1370,6 +1397,17 @@ export const beginStreamingChoice = mutationGeneric({
     }));
     const sceneId = await ctx.db.insert("scenes", cleanDoc(scene));
     await ctx.db.patch(args.saveId, { currentSceneId: sceneId });
+
+    // Creator play-time attribution (Req 22.4/22.5): the deterministic engine
+    // step is where an authored-seed streamed turn's choice lands, so credit
+    // the read-and-decide slice (previous completion → now via the PRE-patch
+    // save.updatedAt). completeSceneStream then credits the separate
+    // watch-the-prose slice. No-op for non-authored storyIds; fire-and-forget.
+    await insertCreatorPlayTimeAttribution(ctx, {
+      save,
+      readerAccountId: args.accountId,
+      now,
+    });
 
     // Terminal scenes never enter the SSE stream path, so completeSceneStream
     // won't queue media for them. Queue it here instead. Non-terminal scenes
@@ -2347,6 +2385,17 @@ export const completeSceneStream = mutationGeneric({
         createdAt: now,
       });
     }
+
+    // Creator play-time attribution (Req 22.4/22.5): for an authored-seed
+    // streamed turn this credits the choice-made → prose-landed slice (the
+    // PRE-patch save.updatedAt was stamped by beginStreamingChoice), which
+    // together with the begin-side event covers the full turn without
+    // overlap. No-op for llm-driven storyIds; fire-and-forget.
+    await insertCreatorPlayTimeAttribution(ctx, {
+      save,
+      readerAccountId: args.accountId,
+      now,
+    });
 
     // Running "story so far" summary. Schedule non-blocking — the action
     // calls the cheapest configured LLM with a tight prompt, sanitises the
@@ -3689,7 +3738,7 @@ export async function loadAndMigrateSave(
 }
 
 async function loadStory(
-  ctx: { db: { get: (id: any) => Promise<any> } },
+  ctx: { db: { get: (id: any) => Promise<any>; query?: (table: string) => any } },
   storyId: string,
   accountIdValue: string,
 ): Promise<Story> {
@@ -3698,8 +3747,30 @@ async function loadStory(
 
   const seed = await ctx.db.get(seedIdValue);
   if (!seed) throw new AppError("creator_seed_not_found");
-  if (seed.ownerAccountId !== accountIdValue || seed.status !== "published") {
+  // Cross-account launch (creator-arc, core-read-loop Req 22.3 / product
+  // feature 13): a PUBLISHED seed launches a fresh run for any account —
+  // public (community shelf) or unlisted (link possession: the storyId
+  // carries the seed id, mirroring unlisted-tale semantics). The owner keeps
+  // the original published-only rule; drafts/archived never launch for
+  // anyone. This is what makes the creator dashboard's external-play
+  // attribution real (insertCreatorPlayTimeAttribution already flags
+  // owner-vs-reader, it just never saw a non-owner save before).
+  const seedRecord = { ...seed, ownerAccountId: String(seed.ownerAccountId) };
+  if (!canLaunchAuthoredSeed({ seed: seedRecord, viewerAccountId: accountIdValue })) {
     throw new AppError("creator_seed_forbidden");
+  }
+  // Mature exclusion mirror (Req 12.9). Defensive: the publishing-surface
+  // policy blocks mature seed text before publish today, so this only bites
+  // if that gate ever loosens. Owners always play their own work.
+  if (seedRecord.ownerAccountId !== accountIdValue && seedIsMature(seedRecord)) {
+    const accountDoc = await ctx.db.get(accountIdValue);
+    const viewer = accountDoc ? accountFromDoc(accountDoc) : null;
+    const entitlement = ctx.db.query
+      ? await loadEntitlementLite(ctx as { db: any }, accountIdValue)
+      : null;
+    const matureAllowed =
+      !!viewer && viewer.matureContentEnabled && canEnableMatureContent(viewer, entitlement);
+    if (!matureAllowed) throw new AppError("creator_seed_mature_forbidden");
   }
   return { ...(seed.story as Story), id: storyId };
 }

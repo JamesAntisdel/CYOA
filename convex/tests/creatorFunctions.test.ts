@@ -235,7 +235,9 @@ describe("creatorFunctions — validateSeed", () => {
       guestTokenHash: "owner_token",
       story: storyDoc(),
     });
-    expect(result).toEqual({ valid: true, issues: [] });
+    // `advisories` (creator-arc): non-blocking lint notes ride along; a clean
+    // story has none.
+    expect(result).toEqual({ valid: true, issues: [], advisories: [] });
   });
 });
 
