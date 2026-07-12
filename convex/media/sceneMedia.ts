@@ -100,6 +100,169 @@ async function getAccountMediaPrefs(
   return resolveMediaPrefs(doc);
 }
 
+// =============================================================================
+// Character-consistency identity injection (design 2026-07-12 §3.1/§3.2).
+//
+// The single load-bearing fix against frame-to-frame character drift: the SAME
+// identity words on EVERY render. Read defensively off the opaque
+// `story_bibles.bible` JSON (structural, not the engine type — MEDIA does not
+// depend on engine's parser, and a legacy bible with no `protagonist` simply
+// yields an empty prefix → byte-identical to today's prompt, BC5).
+// =============================================================================
+
+// Structural view of `bible.protagonist` — every field is unknown because the
+// bible is stored opaquely; we clamp/guard defensively at read time.
+type BibleProtagonistLike = {
+  name?: unknown;
+  gender?: unknown;
+  pronouns?: unknown;
+  appearance?: unknown;
+  voice?: unknown;
+};
+
+// Structural view of a `bible.cast` entry. `id`/`label` drive the tolerant
+// match against a scene's rostered NPC ids; `appearance` is the descriptor
+// baked into the image prompt so the same NPC keeps one look across scenes.
+type BibleCastLike = {
+  id?: unknown;
+  label?: unknown;
+  name?: unknown;
+  appearance?: unknown;
+};
+
+const IDENTITY_APPEARANCE_MAX = 6;
+// Up to this many NPC portraits ride along as scene-render references
+// (protagonist + setting already consume two of geminiImageClient's four
+// reference slots).
+const SCENE_NPC_REFERENCE_MAX = 2;
+
+function normalizeRef(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+// Resolve the bible cast entries named by this scene's rostered NPC mentions.
+// Tolerant match on id OR label (the mention list is npc ids from
+// save.state.npcs, which may or may not equal the bible cast id). Pure +
+// exported for unit testing.
+export function resolvePresentCast(
+  cast: ReadonlyArray<BibleCastLike>,
+  npcMentions: ReadonlyArray<string>,
+): BibleCastLike[] {
+  if (npcMentions.length === 0) return [];
+  const wanted = new Set(
+    npcMentions.map((m) => normalizeRef(m)).filter((m) => m.length > 0),
+  );
+  if (wanted.size === 0) return [];
+  const out: BibleCastLike[] = [];
+  for (const member of cast) {
+    const id = typeof member.id === "string" ? normalizeRef(member.id) : "";
+    const label = typeof member.label === "string" ? normalizeRef(member.label) : "";
+    const name = typeof member.name === "string" ? normalizeRef(member.name) : "";
+    if ((id && wanted.has(id)) || (label && wanted.has(label)) || (name && wanted.has(name))) {
+      out.push(member);
+    }
+  }
+  return out;
+}
+
+// Build the identity prefix prepended to EVERY scene image/veo prompt. Because
+// it rides in the prompt TEXT (not the reference bytes), it survives every
+// fallback path — the reference-less Imagen-only render and the text-only Veo
+// call both carry the descriptor. Returns "" when there is no protagonist and
+// no matched cast (→ prompt is byte-identical to today, legacy-tolerant). Pure
+// + exported so a unit test can pin that the SAME protagonist yields the SAME
+// string across turns.
+export function buildImageIdentityPrefix(
+  protagonist: BibleProtagonistLike | null | undefined,
+  presentCast: ReadonlyArray<BibleCastLike>,
+): string {
+  const segments: string[] = [];
+
+  if (
+    protagonist &&
+    typeof protagonist.name === "string" &&
+    protagonist.name.trim().length > 0
+  ) {
+    const name = protagonist.name.trim();
+    const gender = typeof protagonist.gender === "string" ? protagonist.gender.trim() : "";
+    const pronouns =
+      typeof protagonist.pronouns === "string" ? protagonist.pronouns.trim() : "";
+    const appearance = Array.isArray(protagonist.appearance)
+      ? protagonist.appearance
+          .filter((d): d is string => typeof d === "string" && d.trim().length > 0)
+          .map((d) => d.trim())
+          .slice(0, IDENTITY_APPEARANCE_MAX)
+      : [];
+    const genderPart = gender ? `, ${gender}` : "";
+    const pronounPart = pronouns ? ` (${pronouns})` : "";
+    const looksPart = appearance.length > 0 ? `, ${appearance.join(", ")}` : "";
+    segments.push(`Protagonist — ${name}${genderPart}${pronounPart}${looksPart}`);
+  }
+
+  for (const member of presentCast) {
+    const label =
+      typeof member.label === "string" && member.label.trim().length > 0
+        ? member.label.trim()
+        : typeof member.name === "string"
+          ? member.name.trim()
+          : "";
+    const appearance =
+      typeof member.appearance === "string" ? member.appearance.trim() : "";
+    if (!label || !appearance) continue;
+    segments.push(`${label} — ${appearance}`);
+  }
+
+  if (segments.length === 0) return "";
+  return `CHARACTERS (render exactly, do not restyle): ${segments.join("; ")}.`;
+}
+
+// Descriptor prompt for a lazily-backfilled protagonist anchor (design §3.3):
+// when a run's turn-1 anchor died, a later turn re-queues one off the bible's
+// protagonist identity so scenes stop rendering reference-less. Returns null
+// when there is no usable name.
+function buildProtagonistAnchorPrompt(protagonist: BibleProtagonistLike): string | null {
+  const name = typeof protagonist.name === "string" ? protagonist.name.trim() : "";
+  if (!name) return null;
+  const gender = typeof protagonist.gender === "string" ? protagonist.gender.trim() : "";
+  const appearance = Array.isArray(protagonist.appearance)
+    ? protagonist.appearance
+        .filter((d): d is string => typeof d === "string" && d.trim().length > 0)
+        .map((d) => d.trim())
+        .slice(0, IDENTITY_APPEARANCE_MAX)
+    : [];
+  const looks = appearance.length > 0 ? ` ${appearance.join(", ")}.` : "";
+  return `Character reference portrait, 1:1, head-and-shoulders close-up. ${name}${
+    gender ? `, ${gender}` : ""
+  }.${looks} Neutral background, consistent art style.`;
+}
+
+// Read the save's bible (protagonist + cast) off the opaque story_bibles row.
+// Best-effort: a missing table / not-ready row / absent bible object → null,
+// which yields an empty identity prefix and no NPC-appearance descriptors.
+async function readSaveBibleIdentity(
+  ctx: { db: any },
+  saveIdValue: string,
+): Promise<{ protagonist?: BibleProtagonistLike; cast: BibleCastLike[] } | null> {
+  try {
+    const row = await ctx.db
+      .query("story_bibles")
+      .withIndex("by_saveId", (q: any) => q.eq("saveId", saveIdValue))
+      .first();
+    if (!row || (row as { status?: string }).status !== "ready") return null;
+    const bible = (row as { bible?: unknown }).bible;
+    if (!bible || typeof bible !== "object") return null;
+    const b = bible as { protagonist?: unknown; cast?: unknown };
+    const cast = Array.isArray(b.cast) ? (b.cast as BibleCastLike[]) : [];
+    const protagonist =
+      b.protagonist && typeof b.protagonist === "object"
+        ? (b.protagonist as BibleProtagonistLike)
+        : undefined;
+    return { ...(protagonist ? { protagonist } : {}), cast };
+  } catch {
+    return null;
+  }
+}
+
 export const queueSceneImage = internalMutationGeneric({
   args: {
     accountId,
@@ -108,6 +271,12 @@ export const queueSceneImage = internalMutationGeneric({
     prompt: v.string(),
     nodeId: v.optional(v.string()),
     alt: v.optional(v.string()),
+    // Rostered NPC ids named in this scene (from the streamed proposal's
+    // `npcMentions`). Drives (a) which bible cast appearance descriptors are
+    // baked into the image prompt and (b) which NPC portraits ride along as
+    // scene-render references. Optional so older/unwired callers behave
+    // exactly as today (empty → no identity NPCs). SERVER wires it in game.ts.
+    npcMentions: v.optional(v.array(v.string())),
   },
   handler: async (ctx, args) => {
     const account = await ctx.db.get(args.accountId);
@@ -227,10 +396,78 @@ export const queueSceneImage = internalMutationGeneric({
     const saveDoc = await ctx.db.get(args.saveId);
     const protoId = (saveDoc as { anchorProtagonistAssetId?: string } | null)?.anchorProtagonistAssetId;
     const settingId = (saveDoc as { anchorSettingAssetId?: string } | null)?.anchorSettingAssetId;
-    const referenceAssetIds: { protagonist?: string; setting?: string } = {
+
+    // §3.2: portraits of NPCs named in THIS scene ride along as additional
+    // scene-render references so a rostered NPC keeps ONE face across scenes.
+    // Resolve save.state.npcs[id].portraitAssetId for each mention; cap to
+    // SCENE_NPC_REFERENCE_MAX (protagonist + setting already take two of
+    // geminiImageClient's four reference slots). Not-ready portraits are
+    // silently dropped downstream by loadReferenceBytes (tolerant).
+    const npcMentions = args.npcMentions ?? [];
+    const npcRoster =
+      (saveDoc as { state?: { npcs?: Record<string, { portraitAssetId?: string }> } } | null)
+        ?.state?.npcs ?? {};
+    const npcPortraitIds: string[] = [];
+    for (const npcId of npcMentions) {
+      const portraitId = npcRoster[npcId]?.portraitAssetId;
+      if (
+        typeof portraitId === "string" &&
+        portraitId.length > 0 &&
+        !npcPortraitIds.includes(portraitId)
+      ) {
+        npcPortraitIds.push(portraitId);
+      }
+      if (npcPortraitIds.length >= SCENE_NPC_REFERENCE_MAX) break;
+    }
+
+    const referenceAssetIds: { protagonist?: string; setting?: string; npcs?: string[] } = {
       ...(protoId ? { protagonist: protoId } : {}),
       ...(settingId ? { setting: settingId } : {}),
+      ...(npcPortraitIds.length > 0 ? { npcs: npcPortraitIds } : {}),
     };
+
+    // §3.1: read the save's bible and build the fixed identity prefix. This
+    // prepends the SAME protagonist + named-NPC descriptors to the prompt on
+    // EVERY render, so identity survives even the reference-less fallbacks.
+    // Absent bible/protagonist → empty prefix → byte-identical to today (BC5).
+    const bibleIdentity = await readSaveBibleIdentity(ctx, args.saveId);
+    const presentCast = bibleIdentity
+      ? resolvePresentCast(bibleIdentity.cast, npcMentions)
+      : [];
+    const identityPrefix = bibleIdentity
+      ? buildImageIdentityPrefix(bibleIdentity.protagonist, presentCast)
+      : "";
+    const effectivePrompt = identityPrefix
+      ? `${identityPrefix}\n${args.prompt}`
+      : args.prompt;
+
+    // §3.3 lazy anchor backfill: a run whose turn-1 protagonist anchor died (or
+    // was never queued) is still un-anchored on turn 2+, so every later scene
+    // renders reference-less = full drift. When we're past turn 1, the
+    // protagonist anchor is still unset, and the bible carries a protagonist,
+    // queue an anchor from the bible descriptor (queueAnchorImage is idempotent
+    // on the save pointer). Best-effort — never blocks the still (BC5).
+    const saveTurn = (saveDoc as { turnNumber?: number } | null)?.turnNumber ?? 0;
+    if (saveTurn > 0 && !protoId && bibleIdentity?.protagonist) {
+      const anchorPrompt = buildProtagonistAnchorPrompt(bibleIdentity.protagonist);
+      if (anchorPrompt) {
+        try {
+          await ctx.scheduler.runAfter(
+            0,
+            ("media/sceneMedia:queueAnchorImage" as unknown) as any,
+            {
+              accountId: args.accountId,
+              saveId: args.saveId,
+              kind: "protagonist" as const,
+              prompt: anchorPrompt,
+            },
+          );
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "anchor_backfill_failed";
+          console.warn(`[sceneMedia] lazy protagonist anchor backfill failed: ${message}`);
+        }
+      }
+    }
 
     // Per-scene Veo is the LEGACY behavior only (omni-cinematics Req 1.2). Under
     // endpoint_cinematic / stills_only / off, the per-turn clip is retired — the
@@ -247,13 +484,16 @@ export const queueSceneImage = internalMutationGeneric({
     // bytes are stored — that's the whole point of doing image first.
     await ctx.scheduler.runAfter(0, ("media/sceneMedia:runImagenJob" as unknown) as any, {
       assetId,
-      prompt: args.prompt,
+      // Identity-prefixed prompt so the fixed protagonist + named-NPC
+      // descriptors ride through every downstream path (Gemini reference
+      // render, Imagen-only fallback, text-only Veo).
+      prompt: effectivePrompt,
       accountId: args.accountId,
       saveId: args.saveId,
       sceneId: args.sceneId,
       ...(args.nodeId ? { nodeId: args.nodeId } : {}),
       ...(args.alt ? { alt: args.alt } : {}),
-      ...(referenceAssetIds.protagonist || referenceAssetIds.setting
+      ...(referenceAssetIds.protagonist || referenceAssetIds.setting || referenceAssetIds.npcs
         ? { referenceAssetIds }
         : {}),
       videoAllowed,
@@ -287,6 +527,9 @@ export const runImagenJob = actionGeneric({
       v.object({
         protagonist: v.optional(v.id("assets")),
         setting: v.optional(v.id("assets")),
+        // §3.2: portraits of NPCs named in the scene, loaded as additional
+        // references so a rostered NPC keeps one face across scenes.
+        npcs: v.optional(v.array(v.id("assets"))),
       }),
     ),
     // Omni-cinematics Req 1.2: whether the post-Imagen Veo chain may run.
@@ -1278,15 +1521,18 @@ function placeholderImageForPrompt(prompt: string): string {
 // All three cases are non-fatal: the caller sees fewer references than
 // requested and renders without those anchors. The fallback chain in
 // runImagenJob's handler then drops to no-reference render.
-async function loadReferenceBytes(
+export async function loadReferenceBytes(
   ctx: any,
-  ids: { protagonist?: string; setting?: string },
+  ids: { protagonist?: string; setting?: string; npcs?: string[] },
 ): Promise<GeminiImageReference[]> {
   const out: GeminiImageReference[] = [];
   // Order matters: protagonist first so the model conditions the face
-  // ahead of the setting. Multi-image conditioning in Gemini Flash Image
-  // weights earlier parts more strongly per the AI Studio docs.
-  for (const assetIdValue of [ids.protagonist, ids.setting]) {
+  // ahead of the setting, then any named-NPC portraits (§3.2) so a rostered
+  // NPC keeps one face across scenes. Multi-image conditioning in Gemini
+  // Flash Image weights earlier parts more strongly per the AI Studio docs.
+  // A not-ready / missing portrait is silently skipped (tolerant); the
+  // geminiImageClient reference ceiling caps the total regardless.
+  for (const assetIdValue of [ids.protagonist, ids.setting, ...(ids.npcs ?? [])]) {
     if (!assetIdValue) continue;
     try {
       const assetDoc = (await ctx.runQuery(
@@ -1428,9 +1674,17 @@ export const runAnchorImageJob = actionGeneric({
     prompt: v.string(),
     saveId,
     kind: v.union(v.literal("protagonist"), v.literal("setting")),
+    // §3.3 bounded retry: which attempt this is (0-indexed). A turn-1 anchor
+    // failure used to un-anchor the ENTIRE run with no retry — every later
+    // scene then rendered reference-less = full drift. On a provider miss we
+    // reschedule with attempt+1 (mirroring the Veo poll reschedule pattern),
+    // marking the asset failed only after ANCHOR_MAX_ATTEMPTS. Absent (older
+    // in-flight schedules / first run) → 0.
+    attempt: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     const startedAt = Date.now();
+    const attempt = args.attempt ?? 0;
     await ctx.runMutation(
       ("media/sceneMedia:markGenerating" as unknown) as any,
       { assetId: args.assetId, jobId: `anchor_${args.kind}_${startedAt}`, at: startedAt },
@@ -1450,8 +1704,12 @@ export const runAnchorImageJob = actionGeneric({
       // Anchors generate WITHOUT references — they ARE the references.
       const live = await runGeminiImage({ prompt: args.prompt, apiKey });
       if (!live) {
-        // Anchor failed at the provider — mark failed so the next scene
-        // image just renders without this reference. Don't crash the save.
+        // Anchor failed at the provider. Retry (bounded) rather than
+        // permanently un-anchoring the whole run; only mark failed after the
+        // last attempt (§3.3). The save pointer stays unset until an attempt
+        // succeeds, so scenes fall back to reference-less renders meanwhile.
+        const rescheduled = await maybeRescheduleAnchor(ctx, args, attempt, "gemini_image_empty");
+        if (rescheduled) return { ready: false, retrying: true, attempt: attempt + 1 } as const;
         await ctx.runMutation(
           ("media/sceneMedia:markFailed" as unknown) as any,
           { assetId: args.assetId, error: "gemini_image_empty", at: Date.now() },
@@ -1497,6 +1755,10 @@ export const runAnchorImageJob = actionGeneric({
     } catch (err) {
       const message = err instanceof Error ? err.message : "anchor_failed";
       console.warn(`[sceneMedia] anchor ${args.kind} failed asset=${args.assetId} error=${message}`);
+      // Bounded retry (§3.3) — a transient store/provider throw shouldn't
+      // permanently un-anchor the run.
+      const rescheduled = await maybeRescheduleAnchor(ctx, args, attempt, message);
+      if (rescheduled) return { ready: false, retrying: true, attempt: attempt + 1 } as const;
       await ctx.runMutation(
         ("media/sceneMedia:markFailed" as unknown) as any,
         { assetId: args.assetId, error: message, at: Date.now() },
@@ -1505,6 +1767,42 @@ export const runAnchorImageJob = actionGeneric({
     }
   },
 });
+
+// §3.3 anchor retry helper. Reschedules runAnchorImageJob with attempt+1 while
+// under the cap, mirroring the bounded Veo poll reschedule. Returns true when a
+// retry was scheduled (caller should NOT markFailed), false when the cap is hit
+// (caller marks failed). Never throws — a scheduler hiccup falls through to
+// markFailed, so a turn is never blocked (BC5).
+export async function maybeRescheduleAnchor(
+  ctx: any,
+  args: { assetId: string; prompt: string; saveId: string; kind: "protagonist" | "setting" },
+  attempt: number,
+  reason: string,
+): Promise<boolean> {
+  const nextAttempt = attempt + 1;
+  if (nextAttempt >= ANCHOR_MAX_ATTEMPTS) return false;
+  try {
+    console.warn(
+      `[sceneMedia] anchor ${args.kind} attempt ${attempt} failed (${reason}); rescheduling attempt=${nextAttempt}`,
+    );
+    await ctx.scheduler.runAfter(
+      ANCHOR_RETRY_DELAY_MS,
+      ("media/sceneMedia:runAnchorImageJob" as unknown) as any,
+      {
+        assetId: args.assetId,
+        prompt: args.prompt,
+        saveId: args.saveId,
+        kind: args.kind,
+        attempt: nextAttempt,
+      },
+    );
+    return true;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "anchor_reschedule_failed";
+    console.warn(`[sceneMedia] anchor ${args.kind} reschedule failed: ${message}`);
+    return false;
+  }
+}
 
 // Internal mutation: stamp storageId + mime onto an anchor's provenance so
 // `_getAssetForReference` (and therefore `loadReferenceBytes`) can fetch
@@ -1575,6 +1873,13 @@ function encodeUint8ArrayToBase64(bytes: Uint8Array): string {
 // On success returns the generated video URI. On API failure throws so
 // the caller can record a structured error. On polling timeout returns
 // null (caller treats as no output → mark failed).
+// §3.3 anchor retry: how many times runAnchorImageJob attempts a failed
+// anchor before giving up, and the backoff between attempts. Kept small — an
+// anchor that fails 3x in a row is likely a persistent key/quota issue, and
+// the run still renders (reference-less) meanwhile.
+export const ANCHOR_MAX_ATTEMPTS = 3;
+const ANCHOR_RETRY_DELAY_MS = 4_000;
+
 const VEO_POLL_INTERVAL_MS = 5_000;
 // ~90s ceiling. Veo 3.1 lite usually resolves in 30-60s but the
 // preview endpoint can spike past that under load.

@@ -127,6 +127,7 @@ function journalBibleFixture(): StoryBible {
         want: "passage north",
         secret: "deserted the Iron Court",
         bondHint: "pay her fare honestly",
+        appearance: "weathered woman, oilskin coat, grey braid",
       },
     ],
     twists: [

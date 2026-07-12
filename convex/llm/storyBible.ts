@@ -42,6 +42,7 @@ import {
   mergeBibleRefresh,
   validateProposedBible,
   type BibleCast,
+  type BibleProtagonist,
   type BibleDoor,
   type BibleKey,
   type BibleTwist,
@@ -104,9 +105,10 @@ export function buildStoryBiblePrompt(input: StoryBiblePromptInput): string {
     `Story premise: """${premise}"""`,
     "",
     "Output a single JSON object with EXACTLY these fields:",
+    '- "protagonist": { "name": string (≤80), "gender": string (≤40), "pronouns": string (≤40, e.g. "she/her"), "appearance": 2-6 short strings (≤60 each — hair, build, age-look, signature dress), "voice": string (≤120, how they speak and carry themselves) }. This is the ONE person the reader plays. Fix it now; it must NEVER change over the whole story.',
     '- "keyRegistry": 6-12 entries { "id": kebab-slug (≤48), "label": string (≤80, the item as the reader will meet it), "opensHint": string (≤120, what it will unlock or enable), "surfaceBand": "early" | "mid" | "late" (when it should first appear) }. These are the ONLY items the story plans to gate on — concrete, findable objects (a key, a token, a writ, a name), not abstractions.',
     '- "lockPlan": 2-5 entries { "id": kebab-slug (≤48), "label": string (≤80, the door/obstacle), "keyId": MUST be one of the keyRegistry ids, "gateBand": "mid" | "late", "note": string (≤120) }. Every door\'s key must surface in an earlier-or-equal band than its gate.',
-    '- "cast": 2-5 entries { "id": kebab-slug (≤48), "label": string (≤80, name + role), "want": string (≤120), "secret": string (≤120), "bondHint": string (≤120, how the reader might earn or break their trust) }.',
+    '- "cast": 2-5 entries { "id": kebab-slug (≤48), "label": string (≤80, name + role), "want": string (≤120), "secret": string (≤120), "bondHint": string (≤120, how the reader might earn or break their trust), "appearance": string (≤120, what the reader SEES — build, hair, dress, age-look) }.',
     '- "twists": 2-4 entries { "id": kebab-slug (≤48), "label": string (≤80), "precondition": string (≤120, what must be true before this twist can fire) }.',
     '- "endingHints": 2-4 entries { "endingId": kebab-slug (≤48, a likely ending), "requires": string (≤160, sketch of what reaching it takes) }.',
     '- "motifs": 3-6 strings (≤40 each) — imagery and tone anchors.',
@@ -280,6 +282,18 @@ export function readStoryBible(raw: unknown): StoryBible | null {
   if (typeof raw !== "object" || raw === null) return null;
   const obj = raw as Record<string, unknown>;
   if (!Array.isArray(obj.keyRegistry)) return null;
+  // The protagonist identity (character-consistency §1) is the load-bearing
+  // anchor against mid-story gender/appearance drift and MUST survive the
+  // round-trip: this reader runs both when persisting the freshly-generated
+  // bible (`_setStoryBible`) and when reading the stored row back into the
+  // engine each turn. Omitting it here silently strips the field on write AND
+  // on every read, defeating the whole prose+image fix. Carried through as an
+  // opaque object (validateProposedBible already clamped it at generation);
+  // absent/malformed → field omitted (legacy-tolerant, BC9).
+  const protagonist =
+    typeof obj.protagonist === "object" && obj.protagonist !== null
+      ? (obj.protagonist as BibleProtagonist)
+      : undefined;
   return {
     keyRegistry: obj.keyRegistry as BibleKey[],
     lockPlan: Array.isArray(obj.lockPlan) ? (obj.lockPlan as BibleDoor[]) : [],
@@ -289,6 +303,7 @@ export function readStoryBible(raw: unknown): StoryBible | null {
       ? (obj.endingHints as StoryBible["endingHints"])
       : [],
     motifs: Array.isArray(obj.motifs) ? (obj.motifs as string[]) : [],
+    ...(protagonist ? { protagonist } : {}),
     source: "llm",
     version: 1,
   };

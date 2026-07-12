@@ -256,6 +256,23 @@ export function buildStoryBibleSection(digest: BibleDigest): string {
   const lines: string[] = [
     "STORY BIBLE (server plan — canonical, invisible to the reader):",
   ];
+  // PROTAGONIST identity, verbatim and FIRST every turn (character-consistency
+  // §1.7). This is the load-bearing fix for the mid-story gender flip: name +
+  // gender + pronouns + fixed appearance are restated in-prompt on turn 2, 8,
+  // 15 — independent of the drift-prone rolling summary + 6-turn memory window.
+  // Absent on legacy bibles with no protagonist → this block is skipped and the
+  // section stays byte-identical to today (R3.5/BC5).
+  if (digest.protagonist) {
+    const p = digest.protagonist;
+    const looks =
+      Array.isArray(p.appearance) && p.appearance.length > 0
+        ? `; ${p.appearance.map((d) => clipBibleText(d, BIBLE_LINE_HINT_MAX)).join(", ")}`
+        : "";
+    const voice = p.voice ? ` Voice: ${clipBibleText(p.voice, BIBLE_LINE_HINT_MAX)}.` : "";
+    lines.push(
+      `PROTAGONIST (fixed — NEVER change the name, gender, or pronouns): ${clipBibleText(p.name, BIBLE_LINE_LABEL_MAX)}, ${clipBibleText(p.gender, BIBLE_LINE_LABEL_MAX)} (${p.pronouns})${looks}.${voice} Use these pronouns consistently every scene.`,
+    );
+  }
   if (digest.keys.length > 0) {
     lines.push("KEYS (gate ONLY on these ids; grant before or while gating):");
     for (const key of digest.keys) {
@@ -281,6 +298,12 @@ export function buildStoryBibleSection(digest: BibleDigest): string {
     // want + secret only (design §4 example); bondHint stays server-side —
     // the NPC sheets already carry relationship texture (budget, R3.4).
     for (const member of digest.cast) {
+      // NOTE: cast `appearance` is deliberately NOT rendered here. The digest
+      // slice must stay ≤600 tokens (R3.4) and the worst-case cast (5 members)
+      // has no headroom for a per-member looks line. Appearance still flows
+      // through `buildBibleDigest` into the digest and is consumed by the IMAGE
+      // path (character-consistency §3 — a named NPC keeps ONE face across
+      // scenes), which is its primary consumer, not the prose prompt.
       const parts = [
         member.want ? `wants ${clipBibleText(member.want, BIBLE_LINE_CAST_MAX)}` : null,
         member.secret ? `secret: ${clipBibleText(member.secret, BIBLE_LINE_CAST_MAX)}` : null,

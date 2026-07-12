@@ -81,8 +81,9 @@ export function buildGeminiImageRequestBody(input: {
     ? [
         "Generate this scene.",
         "CRITICAL: maintain visual consistency with the reference images above —",
-        "same protagonist face, same wardrobe, same setting style. Do not change the",
-        "character's identity, ethnicity, age, or clothing palette. Match the",
+        "same protagonist face, same SEX/GENDER, same hair, same wardrobe, same",
+        "setting style. Do not change the character's identity, sex, gender,",
+        "ethnicity, age, hair, or clothing palette. Match the",
         "lighting and art style of the references.",
         "",
         input.prompt,
