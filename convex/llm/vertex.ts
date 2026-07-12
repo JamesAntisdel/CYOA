@@ -122,6 +122,7 @@ export function createVertexProvider(available = defaultVertexAvailable(), confi
         prompt,
         text,
         tokenUsage: { input: usage?.promptTokenCount, output: usage?.candidatesTokenCount },
+        modelId: config.model,
       });
     },
   };

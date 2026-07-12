@@ -46,6 +46,7 @@ export function createAnthropicProvider(available = defaultAnthropicAvailable(),
         prompt,
         text,
         tokenUsage: { input: usage?.input_tokens, output: usage?.output_tokens },
+        modelId: config.model,
       });
     },
   };

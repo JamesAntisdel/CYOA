@@ -28,11 +28,11 @@ import { actionGeneric, internalMutationGeneric } from "convex/server";
 
 import {
   appendPath,
-  isLocalProviderUrl,
   postJson,
   readEnv,
   readTimeoutMs,
 } from "./httpClient";
+import { fireworksModelId, readFireworksConfig } from "./fireworks";
 
 const accountIdValidator = v.id("accounts");
 const saveIdValidator = v.id("saves");
@@ -147,7 +147,7 @@ export function sanitizeStorySummary(raw: string): string {
   return truncated.trim();
 }
 
-type SummarizerProviderName = "deepseek" | "anthropic" | "vertex" | "deterministic";
+type SummarizerProviderName = "fireworks" | "anthropic" | "vertex" | "deterministic";
 
 type SummarizerProviderResult = {
   provider: SummarizerProviderName;
@@ -157,8 +157,10 @@ type SummarizerProviderResult = {
 /**
  * Call the cheapest configured LLM with the summarizer prompt. Tries
  * providers in this order:
- *   1. DeepSeek (cost-optimised; preferred per spec)
- *   2. Anthropic
+ *   1. Fireworks cheap model (cost-optimised; the background cheap path per
+ *      provider-and-credit design §1.4)
+ *   2. Anthropic (a real Haiku id via ANTHROPIC_SUMMARIZER_MODEL — NOT the
+ *      shared ANTHROPIC_MODEL, which silently upgrades to Sonnet)
  *   3. Gemini (Vertex)
  *   4. Deterministic stub (used when nothing else is configured AND in
  *      tests). The stub composes a best-effort summary from the prior +
@@ -170,28 +172,20 @@ type SummarizerProviderResult = {
 async function callSummarizer(input: SummarizerInput): Promise<SummarizerProviderResult | null> {
   const prompt = buildSummarizerPrompt(input);
 
-  // 1. DeepSeek — cheapest reasonable model. Configured iff DEEPSEEK_API_KEY.
-  // CRITICAL: we used to also accept `isLocalProviderUrl(deepseekBase)` as
-  // a "use mocks" signal, but that caused the mock provider's echo text
-  // ("[deepseek:mock] ... The scene continues deterministically without a
-  // paid provider call.") to be persisted as the canonical story summary
-  // on EVERY turn — meaning the scene LLM was being fed mock placeholder
-  // text as "story so far" and forgetting everything. Now we ONLY hit
-  // deepseek when a real key is configured; otherwise fall through to
-  // Anthropic / Gemini below. The deterministic stub at step 4 still
+  // 1. Fireworks cheap model — the background cheap path (design §1.4).
+  // Configured iff FIREWORKS_API_KEY. Replaces the old direct-DeepSeek leg
+  // (whose hardcoded `deepseek-chat` alias is deprecated); Fireworks serves
+  // DeepSeek-V3 as its cheap model. The deterministic stub at step 4 still
   // covers true offline-dev runs where no provider is configured at all.
-  const deepseekKey = readEnv("DEEPSEEK_API_KEY");
-  const deepseekBase = readEnv("DEEPSEEK_BASE_URL") ?? "https://api.deepseek.com";
-  if (deepseekKey) {
+  const fireworks = readFireworksConfig();
+  if (fireworks.apiKey) {
     try {
       const response = await postJson({
-        url: appendPath(deepseekBase, "/chat/completions"),
-        timeoutMs: readTimeoutMs(),
-        headers: {
-          ...(deepseekKey ? { authorization: `Bearer ${deepseekKey}` } : {}),
-        },
+        url: appendPath(fireworks.baseUrl, "/chat/completions"),
+        timeoutMs: fireworks.timeoutMs,
+        headers: { authorization: `Bearer ${fireworks.apiKey}` },
         body: {
-          model: readEnv("DEEPSEEK_MODEL") ?? "deepseek-chat",
+          model: fireworksModelId("cheap"),
           temperature: 0.3,
           max_tokens: SUMMARIZER_MAX_OUTPUT_TOKENS,
           messages: [
@@ -204,17 +198,21 @@ async function callSummarizer(input: SummarizerInput): Promise<SummarizerProvide
           ],
         },
       });
-      const text = extractDeepSeekText(response);
+      const text = extractOpenAiChatText(response);
       if (text.trim().length > 0) {
-        return { provider: "deepseek", text };
+        return { provider: "fireworks", text };
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.warn(`[summarizer] deepseek failed: ${message.slice(0, 240)}`);
+      console.warn(`[summarizer] fireworks failed: ${message.slice(0, 240)}`);
     }
   }
 
-  // 2. Anthropic.
+  // 2. Anthropic — a REAL Haiku id via ANTHROPIC_SUMMARIZER_MODEL. Read a
+  // dedicated env, NOT the shared ANTHROPIC_MODEL (which silently upgrades the
+  // cheap background call to Sonnet when the scene model is set). Default to
+  // the real `claude-haiku-4-5` (the old `claude-haiku-4-6` default did not
+  // exist and silently upgraded to Sonnet).
   const anthropicKey = readEnv("ANTHROPIC_API_KEY");
   if (anthropicKey) {
     try {
@@ -227,7 +225,7 @@ async function callSummarizer(input: SummarizerInput): Promise<SummarizerProvide
           "x-api-key": anthropicKey,
         },
         body: {
-          model: readEnv("ANTHROPIC_MODEL") ?? "claude-haiku-4-6",
+          model: readEnv("ANTHROPIC_SUMMARIZER_MODEL") ?? "claude-haiku-4-5",
           max_tokens: SUMMARIZER_MAX_OUTPUT_TOKENS,
           temperature: 0.3,
           messages: [{ role: "user", content: prompt }],
@@ -291,7 +289,9 @@ async function callSummarizer(input: SummarizerInput): Promise<SummarizerProvide
   }
 }
 
-function extractDeepSeekText(response: unknown): string {
+// OpenAI-compatible chat completion shape (Fireworks uses it, same as the old
+// DeepSeek leg).
+function extractOpenAiChatText(response: unknown): string {
   const choice = (response as { choices?: Array<{ message?: { content?: string } }> }).choices?.[0];
   return choice?.message?.content ?? "";
 }

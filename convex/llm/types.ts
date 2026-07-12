@@ -3,7 +3,7 @@ import { contentPolicyContextSchema } from "@cyoa/shared";
 import type { BibleDigest, LlmSceneProposal } from "@cyoa/engine";
 import { z } from "zod";
 
-export type ProviderName = "anthropic" | "vertex" | "deepseek" | "deterministic";
+export type ProviderName = "anthropic" | "vertex" | "deepseek" | "fireworks" | "deterministic";
 
 export type ProviderRole = "quality" | "fallback" | "cost" | "deterministic";
 
@@ -149,6 +149,26 @@ export type SceneGenerationRequest = {
   contentContext: ContentPolicyContext;
   risk: "low" | "normal" | "sensitive";
   entitlementTier: "free" | "unlimited" | "pro";
+  /**
+   * Entitlement tier used by the TIER-AWARE provider router (provider-and-credit
+   * design §1.2). This is the PRIMARY routing key — `risk` is only a secondary
+   * escalation hint. `guest`/`free` route to the cheap Fireworks workhorse and
+   * NEVER to Anthropic/Vertex (cost); `unlimited` and `pro` climb to the mid /
+   * premium Fireworks models and the quality providers. server-core populates it
+   * at the game.ts call sites from the reader's resolved entitlement. Absent on
+   * legacy saves / pre-tier requests — the policy defaults to `free` (the
+   * cheapest, safest lane) so an old caller never accidentally lands on an
+   * expensive provider (BC9).
+   */
+  tier?: "guest" | "free" | "unlimited" | "pro";
+  /**
+   * Internal routing hint set transiently by `providerPolicy.orderedProviders`
+   * so the single Fireworks provider knows WHICH model tier to serve on this
+   * candidate step (the order can try Fireworks twice — cheap then mid — as an
+   * in-turn escalation ladder). Never set by server-core; the Fireworks provider
+   * falls back to mapping `tier` when this is absent.
+   */
+  fireworksModelTier?: "cheap" | "mid" | "premium";
   retryCount: number;
   mode?: SceneGenerationMode;
   playerState?: PlayerStateSnapshot;
@@ -215,6 +235,8 @@ export const sceneGenerationRequestSchema = z.object({
   contentContext: contentPolicyContextSchema,
   risk: z.enum(["low", "normal", "sensitive"]),
   entitlementTier: z.enum(["free", "unlimited", "pro"]),
+  tier: z.enum(["guest", "free", "unlimited", "pro"]).optional(),
+  fireworksModelTier: z.enum(["cheap", "mid", "premium"]).optional(),
   retryCount: z.number().int().min(0),
   mode: z.enum(["authored", "llm-driven"]).optional(),
   playerState: z
@@ -337,6 +359,16 @@ export type ProviderGeneration = {
     input: number;
     output: number;
   };
+  /**
+   * The concrete model id the provider actually resolved and called (e.g.
+   * `accounts/fireworks/models/deepseek-v3`, `claude-sonnet-4-6`). Surfaced so
+   * the turn path can price the generation via
+   * `costCentsForUsage(modelId, tokenUsage)` (provider-and-credit design §1.3)
+   * and write `estimatedCostCents` into the analytics turn payload. Absent on
+   * generations from providers that predate cost telemetry — treat absent as
+   * "unpriceable" (cost 0).
+   */
+  modelId?: string;
   /**
    * Out-of-band sentinel that the deterministic provider sets to `true` when
    * it serves a scene because every real provider failed (or none was

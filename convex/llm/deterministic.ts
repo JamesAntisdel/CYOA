@@ -26,6 +26,7 @@ export function createDeterministicProvider(): LlmProvider {
         provider: "deterministic",
         text,
         tokenUsage: estimateTokenUsage(request.seed, text),
+        modelId: "deterministic",
         isFallback: true,
       };
     },

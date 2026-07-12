@@ -93,7 +93,15 @@ import {
   seedIsMature,
 } from "./liveCore";
 import type { DailyTurnCounter } from "./ratelimit";
-import { consumeTurn } from "./ratelimit";
+import {
+  consumeTurn,
+  consumeActionRateLimit,
+  SAVE_CREATIONS_PER_HOUR,
+  GUEST_MINTS_PER_HOUR,
+  RATE_WINDOW_HOUR_MS,
+} from "./ratelimit";
+import { unlimitedTurnCapExceeded } from "./billing/fairUse";
+import { costCentsForUsage } from "./llm/modelCosts";
 import { queueSceneMediaForSave } from "./media/sceneMedia";
 import { schedulePortraitsForNewNpcs } from "./media/npcMedia";
 import { resolveMediaStrategy } from "./media/mediaStrategy";
@@ -117,7 +125,7 @@ const accountId = v.id("accounts");
 const saveId = v.id("saves");
 const mode = v.union(v.literal("story"), v.literal("hardcore"));
 const guestTokenHash = v.optional(v.string());
-const provider = v.union(v.literal("anthropic"), v.literal("vertex"), v.literal("deepseek"), v.literal("deterministic"));
+const provider = v.union(v.literal("anthropic"), v.literal("vertex"), v.literal("deepseek"), v.literal("fireworks"), v.literal("deterministic"));
 
 export const createGuestAccount = mutationGeneric({
   args: {
@@ -139,10 +147,25 @@ export const createGuestAccount = mutationGeneric({
     });
 
     if (existingDoc) {
+      // A returning token resolves to its existing account and is NOT rate-
+      // limited — only genuine identity MINTS below count against the budget,
+      // so an app that re-calls this on every load never locks a real user out.
       await ctx.db.patch(existingDoc._id, { lastActiveAt: now });
       return { account: { ...session.projection, accountId: existingDoc._id }, created: false };
     }
 
+    // H2 abuse fix: cap identity minting per source token (each mint spawns an
+    // account + entitlement row). Keyed by the guest token hash — the only
+    // source signal a mutation sees. Dev deploys bypass via
+    // CYOA_DEV_DISABLE_RATE_LIMITS. NOTE: a many-DISTINCT-token flood is not
+    // fully stoppable here (no IP/request signal in a Convex mutation); the
+    // edge/CDN is the right layer for that — see blockers.
+    await consumeActionRateLimit(ctx, {
+      key: `guest:${args.guestTokenHash}`,
+      now,
+      windowMs: RATE_WINDOW_HOUR_MS,
+      limit: GUEST_MINTS_PER_HOUR,
+    });
     const accountIdValue = await ctx.db.insert("accounts", cleanDoc(session.account));
     await ctx.db.insert("entitlements", cleanDoc(buildDefaultEntitlement(accountIdValue, now)));
     return { account: { ...session.projection, accountId: accountIdValue }, created: true };
@@ -237,6 +260,18 @@ export const createSave = mutationGeneric({
   handler: async (ctx, args) => {
     const account = await loadAndAuthorizeAccount(ctx, args.accountId, args.guestTokenHash);
 
+    // H1 abuse fix: cap save creation per account BEFORE the turn-0 bible
+    // schedule (each llm-driven save schedules a background bible LLM call, so
+    // an unbounded createSave loop is a direct cost-amplification vector). Runs
+    // right after authorization so an unauthorized caller is rejected first;
+    // dev deploys bypass via CYOA_DEV_DISABLE_RATE_LIMITS.
+    await consumeActionRateLimit(ctx, {
+      key: `save:${args.accountId}`,
+      now: Date.now(),
+      windowMs: RATE_WINDOW_HOUR_MS,
+      limit: SAVE_CREATIONS_PER_HOUR,
+    });
+
     // Reader-authored seed inputs. Trim and length-check upfront so the
     // safety classifier never sees pathological payloads, and so empty
     // strings collapse to undefined (the persistence path treats absent
@@ -268,6 +303,18 @@ export const createSave = mutationGeneric({
       const trimmed = args.seedTitle.trim();
       if (trimmed.length > 0) {
         if (trimmed.length > 120) throw new AppError("seed_title_too_long");
+        // M1: reader-typed title is narrative content — route it through the
+        // same publishing-surface policy gate as seedPremise so it can't smuggle
+        // unsafe text past the length check into the prompt / library UI.
+        const { context: titleContext } = await resolveContentContext(
+          ctx,
+          args.accountId,
+          "publishing",
+        );
+        const policy = evaluateTextPolicy({ text: trimmed, context: titleContext });
+        if (policy.action === "block" || policy.action === "rewrite") {
+          throw new AppError("seed_title_blocked");
+        }
         seedTitle = trimmed;
       }
     }
@@ -275,6 +322,16 @@ export const createSave = mutationGeneric({
       const trimmed = args.seedTone.trim();
       if (trimmed.length > 0) {
         if (trimmed.length > 40) throw new AppError("seed_tone_too_long");
+        // M1: mirror the seedPremise/seedTitle policy gate for the tone field.
+        const { context: toneContext } = await resolveContentContext(
+          ctx,
+          args.accountId,
+          "publishing",
+        );
+        const policy = evaluateTextPolicy({ text: trimmed, context: toneContext });
+        if (policy.action === "block" || policy.action === "rewrite") {
+          throw new AppError("seed_tone_blocked");
+        }
         seedTone = trimmed;
       }
     }
@@ -330,7 +387,7 @@ export const createSave = mutationGeneric({
     }
 
     const now = Date.now();
-    let story = await loadStory(ctx, args.storyId, args.accountId);
+    let story = await loadStory(ctx, args.storyId, args.accountId, { forLaunch: true });
     // Splice the validated seed NPCs onto the story's initialNpcs map so
     // the engine's createInitialState (called inside buildCreateSavePlan
     // via createSaveRecord) merges them into state.npcs at save creation.
@@ -1064,11 +1121,22 @@ export const submitChoice = mutationGeneric({
     const story = await loadStory(ctx, save.storyId, args.accountId);
     const storyMode = resolveStoryMode(save.storyId);
 
+    const submitAccount = accountFromDoc(account);
     const contentContext = matureContextForAccount({
-      account: accountFromDoc(account),
+      account: submitAccount,
       entitlement,
       surface: "generation",
     });
+    // Provider-routing tier (design §1.2) + Unlimited soft cap (§2.4) for the
+    // non-streaming submit path. Shared by both the llm-driven and authored
+    // (submitTurn) branches below.
+    const routingTier = await resolveRoutingTier(
+      ctx,
+      args.accountId,
+      submitAccount.kind,
+      contentContext.entitlementTier,
+      now,
+    );
 
     if (storyMode === "llm-driven") {
       const llmResult = await runLlmDrivenSubmitChoice(ctx, {
@@ -1084,6 +1152,7 @@ export const submitChoice = mutationGeneric({
         dayKey,
         contentContext,
         entitlementTier: contentContext.entitlementTier,
+        routingTier,
       });
       // Req 14.4: record for idempotent replay (the cache read above covers
       // llm-driven too; without this record only authored turns were guarded).
@@ -1118,6 +1187,7 @@ export const submitChoice = mutationGeneric({
       contentContext,
       memory,
       entitlementTier: contentContext.entitlementTier,
+      tier: routingTier,
     });
     const plan = buildTurnPersistencePlan({ result, saveId: args.saveId, now });
 
@@ -1168,6 +1238,7 @@ export const submitChoice = mutationGeneric({
         provider: normalizeProviderName(result.provider),
         inputTokens: tokenUsage.input,
         outputTokens: tokenUsage.output,
+        estimatedCostCents: result.modelId ? costCentsForUsage(result.modelId, tokenUsage) : 0,
         engineMs: result.history.latency.engineMs,
         llmMs: result.history.latency.llmMs,
         totalMs: result.history.latency.engineMs + result.history.latency.llmMs,
@@ -1624,10 +1695,17 @@ export const getAuthorizedSceneStreamRequest = mutationGeneric({
     });
     const story = await loadStory(ctx, save.storyId, args.accountId);
     const storyMode = resolveStoryMode(save.storyId);
-    const { context: contentContext, entitlementTier } = await resolveContentContext(
+    const { context: contentContext, account: contextAccount, entitlementTier } =
+      await resolveContentContext(ctx, args.accountId, "generation");
+    // Provider-routing tier (design §1.2) + Unlimited fair-use soft cap (§2.4).
+    // The turn was already consumed by beginStreamingChoice, so the daily
+    // counter this reads reflects the turn about to render.
+    const routingTier = await resolveRoutingTier(
       ctx,
       args.accountId,
-      "generation",
+      contextAccount.kind,
+      entitlementTier,
+      now,
     );
 
     if (storyMode === "llm-driven") {
@@ -1685,6 +1763,7 @@ export const getAuthorizedSceneStreamRequest = mutationGeneric({
         contentContext,
         risk: "normal",
         entitlementTier,
+        tier: routingTier,
         retryCount: 0,
         mode: "llm-driven",
         playerState: snapshotPlayerState(save.state),
@@ -1719,6 +1798,7 @@ export const getAuthorizedSceneStreamRequest = mutationGeneric({
       contentContext,
       risk: "normal",
       entitlementTier,
+      tier: routingTier,
       retryCount: 0,
     };
   },
@@ -1740,6 +1820,13 @@ export const completeSceneStream = mutationGeneric({
      * estimate (input still unknown → 0) only when the provider didn't report.
      */
     tokenUsage: v.optional(v.object({ input: v.number(), output: v.number() })),
+    /**
+     * The concrete model id the streaming provider resolved (forwarded from the
+     * SSE handler's `result.generation.modelId`). Used only to price the turn's
+     * `estimatedCostCents` telemetry via `costCentsForUsage` (design §1.3).
+     * Absent on providers that predate cost telemetry → cost 0.
+     */
+    modelId: v.optional(v.string()),
     /**
      * Out-of-band sentinel forwarded from the SSE handler when the router
      * fell through to the deterministic provider (every real provider failed
@@ -2380,6 +2467,7 @@ export const completeSceneStream = mutationGeneric({
         provider: args.provider,
         inputTokens: tokenUsage.input,
         outputTokens: tokenUsage.output,
+        estimatedCostCents: args.modelId ? costCentsForUsage(args.modelId, tokenUsage) : 0,
         ...(llmMs === undefined ? {} : { llmMs, totalMs: llmMs }),
         fallback: args.isFallback === true,
         createdAt: now,
@@ -2501,6 +2589,34 @@ async function resolveContentContext(
       .first()) ?? null;
   const context = matureContextForAccount({ account, entitlement, surface });
   return { context, account, entitlementTier: context.entitlementTier };
+}
+
+/**
+ * Resolve the PROVIDER-ROUTING tier (provider-and-credit design §1.2) for a
+ * reader's turn. This is the primary key the tier-aware `providerPolicy` uses:
+ * `guest`/`free` route to the cheap Fireworks workhorse and never to
+ * Anthropic/Vertex; `unlimited`/`pro` climb to the mid/premium models + quality
+ * providers. Derives `guest` (vs `free`) from `account.kind` since the mature-
+ * aware `entitlementTier` collapses both to `free`.
+ *
+ * Also applies the Unlimited fair-use soft cap (design §2.4): once an Unlimited
+ * account passes its daily ceiling, this degrades routing to the cheapest lane
+ * (`free`) — "the ink runs thin tonight" — rather than BLOCKING the turn, so a
+ * turn always resolves (BC5). Non-Unlimited tiers are unaffected.
+ */
+async function resolveRoutingTier(
+  ctx: { db: any },
+  accountIdValue: string,
+  accountKind: "guest" | "user",
+  entitlementTier: "free" | "unlimited" | "pro",
+  now: number,
+): Promise<"guest" | "free" | "unlimited" | "pro"> {
+  if (entitlementTier === "unlimited") {
+    if (await unlimitedTurnCapExceeded(ctx, accountIdValue, now)) return "free";
+    return "unlimited";
+  }
+  if (entitlementTier === "pro") return "pro";
+  return accountKind === "guest" ? "guest" : "free";
 }
 
 /**
@@ -3741,12 +3857,25 @@ async function loadStory(
   ctx: { db: { get: (id: any) => Promise<any>; query?: (table: string) => any } },
   storyId: string,
   accountIdValue: string,
+  // M3: the launch gate (status + mature exclusion) is re-checked ONLY at
+  // create/launch time. For an EXISTING save (every load after createSave) we
+  // tolerate an archived-but-referenced seed — mirroring
+  // `talesFunctions:loadTaleStory`'s "the grant persists" posture — so a
+  // creator archiving/unpublishing a seed doesn't brick live reader runs
+  // mid-story. A hard-DELETED seed still can't resolve (graph is gone) and
+  // throws `creator_seed_not_found` on both paths.
+  opts: { forLaunch?: boolean } = {},
 ): Promise<Story> {
   const seedIdValue = parseAuthoredSeedStoryId(storyId);
   if (!seedIdValue) return getStory(storyId);
 
   const seed = await ctx.db.get(seedIdValue);
   if (!seed) throw new AppError("creator_seed_not_found");
+  // Existing-save load: the original launch already established access; do not
+  // re-check status/ownership/mature so archiving the seed can't strand the run.
+  if (!opts.forLaunch) {
+    return { ...(seed.story as Story), id: storyId };
+  }
   // Cross-account launch (creator-arc, core-read-loop Req 22.3 / product
   // feature 13): a PUBLISHED seed launches a fresh run for any account —
   // public (community shelf) or unlisted (link possession: the storyId
@@ -4172,6 +4301,8 @@ type RunLlmDrivenSubmitChoiceInput = {
   dayKey: string;
   contentContext: ContentPolicyContext;
   entitlementTier: "free" | "unlimited" | "pro";
+  /** Provider-routing tier (design §1.2), Unlimited soft cap already applied. */
+  routingTier: "guest" | "free" | "unlimited" | "pro";
 };
 
 async function runLlmDrivenSubmitChoice(
@@ -4186,6 +4317,15 @@ async function runLlmDrivenSubmitChoice(
   // and applies the result deterministically. We reproduce the same idea for
   // llm-driven: advance the cursor, ask the router for a full structured
   // scene, validate it, record terminal, persist scene + history.
+  //
+  // L1 (concurrency parity): reject a submit that races an in-flight turn,
+  // mirroring beginStreamingChoice's guard. Without this, a non-streaming
+  // submit could step on a turn a concurrent streaming request already opened
+  // (activeTurnRequestId set to a different requestId). Same-request retries
+  // pass (idempotent replay handled upstream in submitChoice).
+  if (input.save.activeTurnRequestId && input.save.activeTurnRequestId !== input.requestId) {
+    throw new AppError("turn_in_progress");
+  }
   const prior = await readPriorProposalFromCurrentScene(ctx, input.save);
   if (!prior) throw new AppError("llm_prior_proposal_missing");
   const choice = prior.choices.find((candidate) => candidate.id === input.choiceId);
@@ -4282,6 +4422,7 @@ async function runLlmDrivenSubmitChoice(
     contentContext: input.contentContext,
     risk: "normal",
     entitlementTier: input.entitlementTier,
+    tier: input.routingTier,
     retryCount: 0,
     mode: "llm-driven",
     playerState: snapshotPlayerState(advanced.state),
@@ -4647,6 +4788,9 @@ async function runLlmDrivenSubmitChoice(
       provider: normalizeProviderName(generated.generation.provider),
       inputTokens: tokenUsage.input,
       outputTokens: tokenUsage.output,
+      estimatedCostCents: generated.generation.modelId
+        ? costCentsForUsage(generated.generation.modelId, tokenUsage)
+        : 0,
       llmMs,
       totalMs: llmMs,
       fallback: false,
@@ -4737,8 +4881,8 @@ async function runLlmDrivenSubmitChoice(
   };
 }
 
-function normalizeProviderName(name: string): "anthropic" | "vertex" | "deepseek" | "deterministic" {
-  if (name === "anthropic" || name === "vertex" || name === "deepseek") return name;
+function normalizeProviderName(name: string): "anthropic" | "vertex" | "deepseek" | "fireworks" | "deterministic" {
+  if (name === "anthropic" || name === "vertex" || name === "deepseek" || name === "fireworks") return name;
   return "deterministic";
 }
 
@@ -5067,7 +5211,7 @@ async function insertSafetyAnalytics(
     saveId: string;
     storyId?: string;
     turnNumber?: number;
-    provider?: "anthropic" | "vertex" | "deepseek" | "deterministic";
+    provider?: "anthropic" | "vertex" | "deepseek" | "fireworks" | "deterministic";
     latencyMs?: number;
     now: number;
   },

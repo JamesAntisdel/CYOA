@@ -35,6 +35,15 @@ export type TurnCompletedAnalyticsInput = {
   /** Provider-reported (or estimated) prompt/completion token counts. */
   inputTokens: number;
   outputTokens: number;
+  /**
+   * Estimated USD cost of this turn's generation, in fractional CENTS, priced
+   * by `costCentsForUsage(resolvedModelId, tokenUsage)` (provider-and-credit
+   * design §1.3). The operator cost dashboard (`buildCostMetrics`) already sums
+   * `payload.estimatedCostCents` — it was previously always absent (→ 0). 0 for
+   * deterministic/fallback turns and for generations whose model isn't in the
+   * cost table. Omitted from the payload when 0 to keep legacy rows byte-stable.
+   */
+  estimatedCostCents?: number;
   /** Latency at each stage, in milliseconds. Absent stages are omitted. */
   engineMs?: number;
   llmMs?: number;
@@ -69,6 +78,9 @@ export function buildTurnCompletedEvent(
       provider: input.provider,
       inputTokens: input.inputTokens,
       outputTokens: input.outputTokens,
+      ...(input.estimatedCostCents === undefined || input.estimatedCostCents === 0
+        ? {}
+        : { estimatedCostCents: input.estimatedCostCents }),
       ...(input.engineMs === undefined ? {} : { engineMs: input.engineMs }),
       ...(input.llmMs === undefined ? {} : { llmMs: input.llmMs }),
       ...(input.firstTokenMs === undefined ? {} : { firstTokenMs: input.firstTokenMs }),

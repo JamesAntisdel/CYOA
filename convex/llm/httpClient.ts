@@ -82,6 +82,12 @@ export function generationFromText(input: {
   prompt: string;
   text: string;
   tokenUsage?: { input?: number | undefined; output?: number | undefined } | undefined;
+  /**
+   * The resolved model id the provider called. Threaded onto the generation so
+   * the turn path can price it via `costCentsForUsage` (design §1.3). Omitted by
+   * providers that don't yet report their model id.
+   */
+  modelId?: string | undefined;
 }): ProviderGeneration {
   const fallback = estimateTokenUsage(input.prompt, input.text);
   return {
@@ -91,6 +97,7 @@ export function generationFromText(input: {
       input: input.tokenUsage?.input ?? fallback.input,
       output: input.tokenUsage?.output ?? fallback.output,
     },
+    ...(input.modelId ? { modelId: input.modelId } : {}),
   };
 }
 

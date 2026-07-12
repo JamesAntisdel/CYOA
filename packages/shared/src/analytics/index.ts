@@ -32,6 +32,7 @@ export const providerNameSchema = z.enum([
   "anthropic",
   "vertex",
   "deepseek",
+  "fireworks",
   "deterministic",
 ]);
 export type ProviderName = z.infer<typeof providerNameSchema>;

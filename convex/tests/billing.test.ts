@@ -604,6 +604,8 @@ describe("billing", () => {
     expect(() =>
       applyUsageDelta(meter, { ...optedIn, monthlySpendCapCents: undefined }, { premiumTextTokens: 2000 }, 4),
     ).toThrow("overage_spend_cap_reached");
+    // Spark price card (design §2.1): still = 15 sparks (=15¢), Veo clip = 60.
+    // 2 stills + 1 clip over allowance = 2*15 + 1*60 = 90.
     expect(
       calculateOverageCents(
         {
@@ -617,13 +619,14 @@ describe("billing", () => {
           includedVideos: 0,
         },
       ),
-    ).toBe(70);
+    ).toBe(90);
+    // 1k premium tokens (1¢) + 1 still (15) + 1 clip (60) = 76.
     expect(calculateOverageCents({ ...meter, premiumTextTokens: 1000, imageGenerations: 1, videoGenerations: 1 }, {
       ...entitlement,
       includedPremiumTokens: undefined,
       includedImages: undefined,
       includedVideos: undefined,
-    })).toBe(46);
+    })).toBe(76);
   });
 
   it("previews plan changes with credits", () => {

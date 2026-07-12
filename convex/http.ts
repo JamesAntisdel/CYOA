@@ -128,7 +128,7 @@ http.route({
     return sceneStreamResponse(
       sceneRequest,
       new LlmRouter(),
-      async ({ prose, provider, proposal, terminal, isFallback, tokenUsage }) => {
+      async ({ prose, provider, proposal, terminal, isFallback, tokenUsage, modelId }) => {
         await ctx.runMutation(makeFunctionReference<"mutation">("game:completeSceneStream"), {
           accountId: streamRequest.accountId,
           saveId: streamRequest.saveId,
@@ -139,6 +139,7 @@ http.route({
           ...(terminal ? { terminal } : {}),
           ...(isFallback ? { isFallback: true } : {}),
           ...(tokenUsage ? { tokenUsage } : {}),
+          ...(modelId ? { modelId } : {}),
         });
       },
       async () => {
@@ -196,6 +197,13 @@ export type SceneStreamCompleteResult = {
    * tokens and zeroed the operator cost dashboard's spend column).
    */
   tokenUsage?: { input: number; output: number };
+  /**
+   * The concrete model id the provider resolved for this generation. Forwarded
+   * to `completeSceneStream` so the streaming turn's `estimatedCostCents`
+   * telemetry can be priced via `costCentsForUsage` (design §1.3). Absent on
+   * providers that predate cost telemetry.
+   */
+  modelId?: string;
   /**
    * True when the router served this scene from the deterministic fallback
    * provider (every real provider failed or was ineligible). Forwarded to
@@ -285,8 +293,17 @@ export function sceneStreamResponse(
         // FallbackTurnPanel instead of the placeholder prose + choices.
         const isFallback = result.generation.isFallback === true;
         const tokenUsage = result.generation.tokenUsage;
+        const modelId = result.generation.modelId;
         if (onComplete)
-          await onComplete({ prose, provider, proposal, terminal, isFallback, tokenUsage });
+          await onComplete({
+            prose,
+            provider,
+            proposal,
+            terminal,
+            isFallback,
+            tokenUsage,
+            ...(modelId ? { modelId } : {}),
+          });
         controller.enqueue(encoder.encode("event: done\ndata: {}\n\n"));
         controller.close();
       } catch (error) {

@@ -150,6 +150,97 @@ export function applyStripeWebhook(
   });
 }
 
+// --- Credit packs (provider-and-credit-model design §2.4) ------------------
+// One-time spark packs bought via a `mode:'payment'` Stripe Checkout (the
+// existing `createCheckoutSession` is subscription-only). The webhook's
+// `checkout.session.completed` branch reads `metadata.packId` to grant the
+// sparks (see `packSparksFromSessionMetadata`) and writes a `pack_purchase`
+// ledger row keyed by the session id.
+
+export type CreditPackId = "sparks_500" | "sparks_1200" | "sparks_4000";
+
+export type CreditPack = { id: CreditPackId; sparks: number; priceCents: number; label: string };
+
+export const CREDIT_PACKS: Record<CreditPackId, CreditPack> = {
+  sparks_500: { id: "sparks_500", sparks: 500, priceCents: 499, label: "500 sparks" },
+  sparks_1200: { id: "sparks_1200", sparks: 1200, priceCents: 999, label: "1,200 sparks" },
+  sparks_4000: { id: "sparks_4000", sparks: 4000, priceCents: 2499, label: "4,000 sparks" },
+};
+
+export type CreditPackCheckoutPlan = {
+  accountId: string;
+  packId: CreditPackId;
+  successUrl: string;
+  cancelUrl: string;
+};
+
+export type StripePackCheckoutCreateParams = {
+  mode: "payment";
+  success_url: string;
+  cancel_url: string;
+  client_reference_id: string;
+  line_items: Array<{
+    price_data: {
+      currency: "usd";
+      unit_amount: number;
+      product_data: { name: string };
+    };
+    quantity: number;
+  }>;
+  metadata: Record<string, string>;
+  payment_intent_data: { metadata: Record<string, string> };
+};
+
+/**
+ * Build the `stripe.checkout.sessions.create` params for a one-time credit-pack
+ * purchase. `mode:'payment'` (not subscription). The pack's price is priced
+ * inline via `price_data` so no Stripe Price object needs provisioning per pack.
+ * `metadata.packId` + `metadata.accountId` ride on both the session and the
+ * payment intent so the webhook can resolve the grant regardless of which object
+ * it reads.
+ */
+export function buildCreditPackCheckoutParams(
+  plan: CreditPackCheckoutPlan,
+): StripePackCheckoutCreateParams {
+  if (!plan.successUrl.startsWith("https://") || !plan.cancelUrl.startsWith("https://")) {
+    throw new AppError("checkout_urls_must_be_https");
+  }
+  const pack = CREDIT_PACKS[plan.packId];
+  if (!pack) throw new AppError("unknown_credit_pack");
+  const metadata = { accountId: plan.accountId, packId: pack.id, sparks: String(pack.sparks) };
+  return {
+    mode: "payment",
+    success_url: plan.successUrl,
+    cancel_url: plan.cancelUrl,
+    client_reference_id: plan.accountId,
+    line_items: [
+      {
+        price_data: {
+          currency: "usd",
+          unit_amount: pack.priceCents,
+          product_data: { name: pack.label },
+        },
+        quantity: 1,
+      },
+    ],
+    metadata,
+    payment_intent_data: { metadata },
+  };
+}
+
+/**
+ * Resolve the spark grant for a completed pack checkout from its Stripe session
+ * metadata (`packId`). Returns null for non-pack sessions (subscription
+ * checkouts have no `packId`) so the webhook can tell the two branches apart.
+ */
+export function packSparksFromSessionMetadata(
+  metadata: Record<string, string> | null | undefined,
+): { packId: CreditPackId; sparks: number } | null {
+  const packId = metadata?.packId as CreditPackId | undefined;
+  if (!packId || !(packId in CREDIT_PACKS)) return null;
+  return { packId, sparks: CREDIT_PACKS[packId].sparks };
+}
+
 export function previewPlanChange(input: {
   currentTier: "free" | "unlimited" | "pro";
   targetTier: "free" | "unlimited" | "pro";

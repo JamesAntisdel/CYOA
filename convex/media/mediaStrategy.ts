@@ -122,12 +122,15 @@ export async function resolveMediaStrategy(
   // collapses to the real `hasPaidEntitlement` gate. UNSET in prod.
   const devUnlocked = devForceProMedia();
   const isPro = (entitlement ? hasPaidEntitlement(entitlement) : false) || devUnlocked;
-  // When force-unlocked and the reader hasn't picked a mode, default to the
-  // endpoint-cinematic experience (this is the direction the product is moving:
-  // cinematics at the endpoints, not a clip on every page). Prod default stays
-  // `per_scene_legacy` (absent cinematicMode) to preserve current behavior.
+  // Pro media default flip (provider-and-credit-model design §2.4): when a Pro
+  // (or dev-force-unlocked) reader hasn't explicitly picked a mode, default to
+  // the endpoint-cinematic experience — cinematics at the endpoints (opening +
+  // ending + ≤2 chapter stingers, already capped), NOT a Veo clip on every scene
+  // (which is where Pro video COGS blew past price). `computeMediaStrategy`
+  // degrades this to `per_scene_legacy` when Omni isn't configured, and non-Pro
+  // readers keep the `per_scene_legacy` default (they can't reach cinematics).
   const cinematicMode: CinematicMode | undefined =
-    prefs.cinematicMode ?? (devUnlocked ? "endpoint_cinematic" : undefined);
+    prefs.cinematicMode ?? (isPro ? "endpoint_cinematic" : undefined);
 
   return computeMediaStrategy({
     ...(cinematicMode ? { cinematicMode } : {}),

@@ -29,6 +29,7 @@ import {
 
 import { accountFromDoc } from "../lib/docs";
 import { hashPrompt } from "../assets";
+import { chargeMediaSpend, refundSpark } from "../billing/mediaCredits";
 import { devForceProMedia } from "./proMediaGate";
 import {
   buildAnalyticsEvent,
@@ -755,6 +756,26 @@ export const queueEndpointCinematic = internalMutationGeneric({
       updatedAt: now,
     });
 
+    // Spend metering (design §2.3): an Omni endpoint cinematic is 240 sparks
+    // (no image/video allowance applies — cinematics draw the spark grant
+    // directly). Dev force-unlock bypasses billing. On an exhausted balance we
+    // delete the queued row and degrade silently (the read loop / endings still
+    // render — cinematics are strictly additive). `refundSpark` on
+    // `_markCinematicFailed` reverses the debit.
+    if (!devForceProMedia()) {
+      const charge = await chargeMediaSpend(ctx, {
+        accountId: args.accountId,
+        chargeKind: "cinematic",
+        sparkKind: "omni_cinematic",
+        assetId,
+        idempotencyKey: `spend:${assetId}`,
+      });
+      if (!charge.charged) {
+        await ctx.db.delete(assetId);
+        return { queued: false, reason: charge.reason } as const;
+      }
+    }
+
     // Double-fire guard: write the save doc so two concurrent queues for this
     // save serialize on it (both already read it via ctx.db.get above). Convex
     // OCC conflicts the loser on this WRITE — it retries, re-runs the dedupe
@@ -1109,6 +1130,9 @@ export const _markCinematicFailed = internalMutationGeneric({
       provenance: { ...asset.provenance, errorCode: args.error },
       updatedAt: args.at,
     });
+    // Refund the 240 sparks a failed cinematic was charged (design §2.3).
+    // Idempotent; a no-op when the spend was bypassed (dev force-unlock).
+    await refundSpark(ctx, args.assetId);
   },
 });
 
