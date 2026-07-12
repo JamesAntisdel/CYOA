@@ -4,7 +4,7 @@
 // sequence of provider steps (with the right Fireworks model tier per step) —
 // and the mature-content eligibility gate.
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import {
   orderedProviders,
@@ -167,5 +167,42 @@ describe("orderedProviders — resolves steps to instances and threads the Firew
       request({ tier: "free" }),
     );
     expect(resolved.map((p) => p.name)).toEqual(["deterministic"]);
+  });
+});
+
+describe("providerOrder — LLM_PROVIDER_OVERRIDE (operational escape hatch)", () => {
+  const KEY = "LLM_PROVIDER_OVERRIDE";
+  const prior = process.env[KEY];
+  afterEach(() => {
+    if (prior === undefined) delete process.env[KEY];
+    else process.env[KEY] = prior;
+  });
+
+  it("pins EVERY tier to the named provider, then deterministic", () => {
+    process.env[KEY] = "vertex";
+    for (const tier of ["guest", "free", "unlimited", "pro"] as const) {
+      expect(asPairs(providerOrder(request({ tier })))).toEqual([
+        ["vertex", undefined],
+        ["deterministic", undefined],
+      ]);
+    }
+  });
+
+  it("routes the whole app to Gemini even with no Fireworks key (guest lane)", () => {
+    process.env[KEY] = "vertex";
+    const resolved = orderedProviders(
+      [createFireworksProvider(false), createVertexProvider(true), createDeterministicProvider()],
+      request({ tier: "guest" }),
+    );
+    expect(resolved.map((p) => p.name)).toEqual(["vertex", "deterministic"]);
+  });
+
+  it("ignores an unrecognized value and falls through to tier routing", () => {
+    process.env[KEY] = "not-a-provider";
+    expect(asPairs(providerOrder(request({ tier: "free" })))).toEqual(
+      asPairs(providerOrder(request({ tier: "free" }))),
+    );
+    // free tier stays Fireworks-led, not stranded on deterministic
+    expect(providerOrder(request({ tier: "free" }))[0]?.name).toBe("fireworks");
   });
 });

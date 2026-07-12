@@ -46,6 +46,11 @@ export const COST_TABLE: Record<string, ModelCost> = {
   // Gemini (vertex.ts) — both the canonical name and the runtime preview id.
   "gemini-3-flash": { inPerMTok: 0.3, outPerMTok: 2.5, allowsMature: true },
   "gemini-3-flash-preview": { inPerMTok: 0.3, outPerMTok: 2.5, allowsMature: true },
+  // Gemini Flash-Lite — the low-cost lane we run on while Fireworks is not yet
+  // configured (set GEMINI_TEXT_MODEL + LLM_PROVIDER_OVERRIDE=vertex). Prices
+  // per Google list, 2026-07.
+  "gemini-2.5-flash-lite": { inPerMTok: 0.1, outPerMTok: 0.4, allowsMature: true },
+  "gemini-3.1-flash-lite": { inPerMTok: 0.25, outPerMTok: 1.5, allowsMature: true },
   // Anthropic (anthropic.ts scene default + background haiku legs).
   "claude-sonnet-4-6": { inPerMTok: 3.0, outPerMTok: 15.0, allowsMature: true },
   "claude-haiku-4-5": { inPerMTok: 1.0, outPerMTok: 5.0, allowsMature: true },

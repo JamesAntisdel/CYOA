@@ -42,7 +42,32 @@ function isEscalated(request: SceneGenerationRequest): boolean {
  *
  * Absent `tier` defaults to `free` — the cheapest, safest lane.
  */
+/**
+ * Operational escape hatch (not part of the tier design): when
+ * `LLM_PROVIDER_OVERRIDE` names a provider, EVERY tier routes to just that
+ * provider, then deterministic. Set `LLM_PROVIDER_OVERRIDE=vertex` (with
+ * `GEMINI_TEXT_MODEL` pointing at a Flash-Lite id) to run the whole app on
+ * Gemini while Fireworks is not yet configured. Unset it to restore
+ * tier-aware routing. An unrecognized value is ignored (falls through to
+ * tier routing) so a typo can never strand every turn on deterministic.
+ */
+function overrideOrder(): ProviderStep[] | null {
+  const raw = readEnv("LLM_PROVIDER_OVERRIDE");
+  if (raw === undefined) return null;
+  const name = raw.trim().toLowerCase();
+  const known: ProviderName[] = ["fireworks", "anthropic", "vertex", "deepseek", "deterministic"];
+  if (!(known as string[]).includes(name)) return null;
+  if (name === "deterministic") return [step("deterministic")];
+  // Fireworks under an override serves its cheap model unless MID/PREMIUM is
+  // pinned separately; other providers ignore the tier field.
+  const first: ProviderStep = name === "fireworks" ? fw("cheap") : step(name as ProviderName);
+  return [first, step("deterministic")];
+}
+
 export function providerOrder(request: SceneGenerationRequest): ProviderStep[] {
+  const override = overrideOrder();
+  if (override) return override;
+
   const tier = request.tier ?? "free";
   const escalated = isEscalated(request);
   switch (tier) {

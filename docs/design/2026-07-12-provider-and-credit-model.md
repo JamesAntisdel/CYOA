@@ -73,6 +73,26 @@ and the existing `matureContentEnabled`.
 drop any model whose `allowsMature` is false. Deterministic is always the final
 fallback so a turn never hard-fails (BC5).
 
+### 1.2a Operational override — running on Gemini Flash Lite for now
+
+Tier routing deliberately keeps Vertex/Gemini OUT of the guest/free lanes, so
+with no Fireworks key those turns fall to the deterministic stub, not Gemini.
+Until Fireworks is provisioned we run the whole app on Gemini Flash Lite via an
+env escape hatch (`convex/llm/providerPolicy.ts` `overrideOrder`):
+
+```
+LLM_PROVIDER_OVERRIDE=vertex          # pin EVERY tier to Gemini, then deterministic
+GEMINI_TEXT_MODEL=gemini-2.5-flash-lite   # or gemini-3.1-flash-lite
+GEMINI_API_KEY=...                    # (or VERTEX_ACCESS_TOKEN) — vertex must be healthy
+```
+
+With the override set, `providerOrder` returns `[vertex, deterministic]` for
+all tiers; an unrecognized value is ignored (falls through to tier routing) so
+a typo can't strand every turn on the stub. Both Flash-Lite ids are in
+`COST_TABLE` so telemetry + the mature gate resolve. To move to Fireworks
+later: set `FIREWORKS_API_KEY` (+ optional model ids) and **unset**
+`LLM_PROVIDER_OVERRIDE` — tier-aware routing resumes with no code change.
+
 The scene-request assembly sites in `game.ts` (grep `risk:`) must pass the
 reader's resolved entitlement tier into the request; the server-core agent
 threads `tier` through `SceneGenerationRequest` (conditional-spread) — the
