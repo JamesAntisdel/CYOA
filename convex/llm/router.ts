@@ -1,6 +1,7 @@
 import { evaluateTextPolicy } from "../contentPolicy";
 import { createAnthropicProvider } from "./anthropic";
 import { createDeepSeekProvider } from "./deepseek";
+import { createFireworksProvider } from "./fireworks";
 import { createDeterministicProvider } from "./deterministic";
 import { parseSceneOutput } from "./parse";
 import { chooseProvider, orderedProviders, providerEligible } from "./providerPolicy";
@@ -184,8 +185,14 @@ function tokenizeProse(result: RouterResult): TokenChunk[] {
 
 export function defaultProviders(): LlmProvider[] {
   return [
+    // Fireworks is the primary inference provider (design §1.1); the
+    // tier-aware policy routes every non-deterministic tier through it first.
+    createFireworksProvider(),
     createAnthropicProvider(),
     createVertexProvider(),
+    // DeepSeek stays registered for health/back-compat but is no longer in any
+    // tier order — Fireworks (which serves DeepSeek-V3 as its cheap model)
+    // superseded the direct DeepSeek route.
     createDeepSeekProvider(),
     createDeterministicProvider(),
   ];

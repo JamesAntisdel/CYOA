@@ -181,6 +181,10 @@ export const publish = mutationGeneric({
     if (!owner) throw new AppError("account_not_found");
     const ownerRecord = accountFromDoc(owner) as AccountRecord & { _id: string };
     await assertAccountSessionAccess(ctx, ownerRecord, args.guestTokenHash);
+    // L2: publishing to the public shelf is a claimed-account action. Drafts
+    // stay guest-open (createDraft), but a guest can't push to the shelf —
+    // there'd be no durable owner behind the byline.
+    if (ownerRecord.kind !== "user") throw new AppError("account_required_to_publish");
     const seed = await ctx.db.get(args.seedId);
     if (!seed) throw new AppError("creator_seed_not_found");
     const metadata = normalizeSeedPublishMetadata({
@@ -204,6 +208,22 @@ export const publish = mutationGeneric({
         },
       });
       if (policy.action !== "allow") throw new AppError("seed_synopsis_blocked");
+    }
+    // Tone is reader-facing free text on the same public surface as the
+    // synopsis (M1 — it was ungated). Same publishing-surface gate; block,
+    // don't rewrite.
+    if (metadata.tone) {
+      const policy = evaluateTextPolicy({
+        text: metadata.tone,
+        context: {
+          accountId: ownerRecord._id,
+          ageBand: ownerRecord.ageBand,
+          entitlementTier: "free",
+          matureContentEnabled: false,
+          surface: "publishing",
+        },
+      });
+      if (policy.action !== "allow") throw new AppError("seed_tone_blocked");
     }
     const published = buildPublishAuthoredSeedPlan({
       seed: seedFromDoc(seed),
@@ -331,6 +351,9 @@ export const remix = mutationGeneric({
     if (!accountDoc) throw new AppError("account_not_found");
     const account = accountFromDoc(accountDoc) as AccountRecord & { _id: string };
     await assertAccountSessionAccess(ctx, account, args.guestTokenHash);
+    // L2: remixing copies a published seed onto the public creator surface, so
+    // it's a claimed-account action too (parity with publish).
+    if (account.kind !== "user") throw new AppError("account_required_to_publish");
 
     const seedDoc = await ctx.db.get(args.seedId);
     if (!seedDoc) throw new AppError("creator_seed_not_found");

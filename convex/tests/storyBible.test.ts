@@ -215,6 +215,9 @@ describe("foldRegistryEvents (SB4)", () => {
 // ---------------------------------------------------------------------------
 
 const ENV_KEYS = [
+  "FIREWORKS_API_KEY",
+  "FIREWORKS_BASE_URL",
+  "FIREWORKS_MODEL_CHEAP",
   "DEEPSEEK_API_KEY",
   "DEEPSEEK_BASE_URL",
   "DEEPSEEK_MODEL",
@@ -327,6 +330,7 @@ describe("generateStoryBible action", () => {
 
   beforeEach(() => {
     envSnap = envSnapshot();
+    delete process.env.FIREWORKS_API_KEY;
     delete process.env.DEEPSEEK_API_KEY;
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.GEMINI_API_KEY;
@@ -346,7 +350,7 @@ describe("generateStoryBible action", () => {
   };
 
   it("persists a validated + sanitized bible via _setStoryBible and fires bible.generated", async () => {
-    process.env.DEEPSEEK_API_KEY = "test-key";
+    process.env.FIREWORKS_API_KEY = "test-key";
     const restoreFetch = stubFetchWithBible(GOOD_PAYLOAD);
     try {
       const { ctx, row, inserted } = makeMockCtx();
@@ -392,7 +396,7 @@ describe("generateStoryBible action", () => {
   });
 
   it("treats an unsalvageable payload (under 4 keys) as a failure, not a crash", async () => {
-    process.env.DEEPSEEK_API_KEY = "test-key";
+    process.env.FIREWORKS_API_KEY = "test-key";
     const restoreFetch = stubFetchWithBible({
       keyRegistry: [{ id: "only-key", label: "Only Key", opensHint: "", surfaceBand: "early" }],
     });
@@ -419,7 +423,7 @@ describe("generateStoryBible action", () => {
   });
 
   it("does not clobber an already-ready row (duplicate action run)", async () => {
-    process.env.DEEPSEEK_API_KEY = "test-key";
+    process.env.FIREWORKS_API_KEY = "test-key";
     const restoreFetch = stubFetchWithBible(GOOD_PAYLOAD);
     try {
       const { ctx, row } = makeMockCtx();
@@ -438,6 +442,7 @@ describe("refreshStoryBible action + _applyBibleRefresh (R6)", () => {
 
   beforeEach(() => {
     envSnap = envSnapshot();
+    delete process.env.FIREWORKS_API_KEY;
     delete process.env.DEEPSEEK_API_KEY;
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.GEMINI_API_KEY;
@@ -449,7 +454,7 @@ describe("refreshStoryBible action + _applyBibleRefresh (R6)", () => {
   });
 
   it("merges against the row's CURRENT bible and fires bible.refreshed", async () => {
-    process.env.DEEPSEEK_API_KEY = "test-key";
+    process.env.FIREWORKS_API_KEY = "test-key";
     // Refresh proposal: keeps every current key (same ids), adds one new key.
     const restoreFetch = stubFetchWithBible({
       ...GOOD_PAYLOAD,

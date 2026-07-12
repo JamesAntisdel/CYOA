@@ -4,7 +4,7 @@ import { librarianRank } from "@cyoa/engine";
 
 import { accountFromDoc, cleanDoc } from "./lib/docs";
 import { dedupeKeepsakes, type Keepsake } from "./keepsakes";
-import type { GenericMutationCtx, GenericQueryCtx } from "convex/server";
+import type { GenericQueryCtx } from "convex/server";
 import type { GenericId } from "convex/values";
 import { v } from "convex/values";
 
@@ -17,6 +17,7 @@ import {
 } from "./account";
 import type { EntitlementRecord } from "./billing/entitlements";
 import { assertAccountSessionAccess } from "./lib/authz";
+import { cascadeAccountData } from "./lib/accountCascade";
 import { AppError } from "./lib/errors";
 import {
   buildAccountProfile,
@@ -29,7 +30,6 @@ const accountId = v.id("accounts");
 const guestTokenHash = v.optional(v.string());
 
 type QueryCtx = GenericQueryCtx<any>;
-type MutationCtx = GenericMutationCtx<any>;
 
 export const getProfile = queryGeneric({
   args: { accountId, guestTokenHash },
@@ -165,25 +165,21 @@ export const deleteAccount = mutationGeneric({
     const now = Date.now();
     const summary = createAccountDeletionSummary(args.accountId);
 
-    const saves = await ctx.db
-      .query("saves")
-      .withIndex("by_accountId", (q) => q.eq("accountId", args.accountId))
-      .collect();
-    for (const save of saves) {
-      summary.scenesDeleted += await deleteByIndex(ctx, "scenes", "by_save_turn", "saveId", save._id);
-      summary.turnHistoryDeleted += await deleteByIndex(ctx, "turn_history", "by_save_turn", "saveId", save._id);
-      await ctx.db.delete(save._id);
-      summary.savesDeleted += 1;
-    }
-
-    summary.endingsDeleted += await deleteByIndex(ctx, "endings_unlocked", "by_account_story", "accountId", args.accountId);
-    summary.entitlementsDeleted += await deleteByIndex(ctx, "entitlements", "by_accountId", "accountId", args.accountId);
-    summary.usageMetersDeleted += await deleteByIndex(ctx, "usage_meters", "by_account_period", "accountId", args.accountId);
-    summary.dailyCountersDeleted += await deleteByIndex(ctx, "daily_turn_counter", "by_account_day", "accountId", args.accountId);
-    summary.analyticsDeleted += await deleteByIndex(ctx, "analytics_events", "by_accountId", "accountId", args.accountId);
-    summary.assetsDeleted += await deleteByIndex(ctx, "assets", "by_accountId", "accountId", args.accountId);
-    summary.taleReadsDeleted += await deleteByIndex(ctx, "tale_reads", "by_accountId", "accountId", args.accountId);
-    summary.taleForksDeleted += await deleteByIndex(ctx, "tale_forks", "by_accountId", "accountId", args.accountId);
+    // Shared hard-delete cascade (saves + scenes/turn_history/story_bibles,
+    // endings, metering, analytics, assets, tale reads/forks, leaderboard,
+    // daily_results). Kept in lockstep with purgeExpiredGuests via one helper.
+    const cascade = await cascadeAccountData(ctx, args.accountId);
+    summary.savesDeleted += cascade.savesDeleted;
+    summary.scenesDeleted += cascade.scenesDeleted;
+    summary.turnHistoryDeleted += cascade.turnHistoryDeleted;
+    summary.endingsDeleted += cascade.endingsDeleted;
+    summary.entitlementsDeleted += cascade.entitlementsDeleted;
+    summary.usageMetersDeleted += cascade.usageMetersDeleted;
+    summary.dailyCountersDeleted += cascade.dailyCountersDeleted;
+    summary.analyticsDeleted += cascade.analyticsDeleted;
+    summary.assetsDeleted += cascade.assetsDeleted;
+    summary.taleReadsDeleted += cascade.taleReadsDeleted;
+    summary.taleForksDeleted += cascade.taleForksDeleted;
 
     const authoredSeeds = await ctx.db
       .query("authored_seeds")
@@ -318,12 +314,36 @@ async function buildAccountExportBundle(ctx: QueryCtx, id: GenericId<"accounts">
     ctx.db.query("daily_turn_counter").withIndex("by_account_day", (q) => q.eq("accountId", id)).collect(),
   ]);
 
+  // story_bibles is save-scoped (only by_saveId), so gather it by iterating the
+  // account's saves — mirrors the deletion cascade. BC10: the `bible` payload is
+  // server-only planning (spoilers) and must never reach the client, so the
+  // export carries only the non-spoiler bookkeeping fields, not `bible`.
+  const storyBibles: Array<Record<string, unknown>> = [];
+  for (const save of saves) {
+    const bibles = await ctx.db
+      .query("story_bibles")
+      .withIndex("by_saveId", (q) => q.eq("saveId", save._id))
+      .collect();
+    for (const bible of bibles) {
+      storyBibles.push({
+        saveId: String(bible.saveId),
+        status: bible.status,
+        attachedAtTurn: bible.attachedAtTurn,
+        lastRefreshAct: bible.lastRefreshAct,
+        retryCount: bible.retryCount,
+        createdAt: bible.createdAt,
+        updatedAt: bible.updatedAt,
+      });
+    }
+  }
+
   return {
     exportedAt: Date.now(),
     account: buildAccountExport(account),
     entitlements: entitlements.map(exportEntitlement),
     usageMeters: usageMeters.map(stripSystemFields),
     saves: saves.map(stripSystemFields),
+    storyBibles,
     turnHistory: turnHistory.map(stripSystemFields),
     endings: endings.map(stripSystemFields),
     authoredSeeds: authoredSeeds.map(stripSystemFields),
@@ -357,23 +377,6 @@ async function buildAccountExportBundle(ctx: QueryCtx, id: GenericId<"accounts">
     })),
     dailyCounters: dailyCounters.map(stripSystemFields),
   };
-}
-
-async function deleteByIndex(
-  ctx: MutationCtx,
-  table: string,
-  index: string,
-  field: string,
-  value: string,
-): Promise<number> {
-  const docs = await ctx.db
-    .query(table as any)
-    .withIndex(index as any, (q: any) => q.eq(field, value))
-    .collect();
-  for (const doc of docs) {
-    await ctx.db.delete(doc._id);
-  }
-  return docs.length;
 }
 
 function exportEntitlement(entitlement: EntitlementRecord & { _id?: unknown; _creationTime?: unknown }) {

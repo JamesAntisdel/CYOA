@@ -6,7 +6,6 @@ import {
   ClientDisconnectedError,
   collectSceneStream,
   createAnthropicProvider,
-  createDeepSeekProvider,
   createDeterministicProvider,
   createVertexProvider,
   LlmRouter,
@@ -14,6 +13,7 @@ import {
   providerEligible,
   sceneGenerationRequestSchema,
 } from "../index";
+import { createFireworksProvider } from "../llm/fireworks";
 import { sceneStreamResponse } from "../http";
 import { postJson } from "../llm/httpClient";
 import type { SceneGenerationRequest } from "../llm/types";
@@ -44,12 +44,12 @@ describe("llm router", () => {
     vi.unstubAllGlobals();
   });
 
-  it("routes low-risk non-mature prose to DeepSeek when available", async () => {
-    const deepseek = {
-      ...createDeepSeekProvider(true),
-      name: "deepseek" as const,
+  it("routes free-tier prose to Fireworks (cheap) when available", async () => {
+    const fireworks = {
+      ...createFireworksProvider(true),
+      name: "fireworks" as const,
       generate: async () => ({
-        provider: "deepseek" as const,
+        provider: "fireworks" as const,
         text: "A quiet room waits in silence.",
         tokenUsage: { input: 1, output: 1 },
       }),
@@ -57,17 +57,17 @@ describe("llm router", () => {
     const router = new LlmRouter([
       createAnthropicProvider(true),
       createVertexProvider(true),
-      deepseek,
+      fireworks,
       createDeterministicProvider(),
     ]);
 
-    const result = await router.generateScene(request());
+    const result = await router.generateScene(request({ tier: "free" }));
 
-    expect(result.generation.provider).toBe("deepseek");
+    expect(result.generation.provider).toBe("fireworks");
     expect(result.parsed.prose).toContain("quiet room");
   });
 
-  it("routes sensitive turns to quality/fallback providers, not DeepSeek", async () => {
+  it("routes pro-tier turns to Vertex when Fireworks and Anthropic are down", async () => {
     const vertex = {
       ...createVertexProvider(true),
       name: "vertex" as const,
@@ -78,13 +78,15 @@ describe("llm router", () => {
       }),
     };
     const router = new LlmRouter([
+      createFireworksProvider(false),
       createAnthropicProvider(false),
       vertex,
-      createDeepSeekProvider(true),
       createDeterministicProvider(),
     ]);
 
-    expect((await router.generateScene(request({ risk: "sensitive" }))).generation.provider).toBe("vertex");
+    expect(
+      (await router.generateScene(request({ tier: "pro", risk: "sensitive" }))).generation.provider,
+    ).toBe("vertex");
   });
 
   it("uses deterministic fallback when policy blocks generated text", async () => {
@@ -97,9 +99,11 @@ describe("llm router", () => {
         tokenUsage: { input: 1, output: 1 },
       }),
     };
+    // Pro tier so Anthropic is actually reached and its blocked output routes
+    // through the deterministic safe-end path.
     const router = new LlmRouter([unsafeProvider, createDeterministicProvider()]);
 
-    const result = await router.generateScene(request({ risk: "normal" }));
+    const result = await router.generateScene(request({ tier: "pro", risk: "normal" }));
 
     expect(result.generation.provider).toBe("deterministic");
     expect(result.safetyAction).toBe("safe_end");
@@ -134,23 +138,23 @@ describe("llm router", () => {
     ).toEqual(["new", "current"]);
   });
 
-  it("limits DeepSeek eligibility to low-risk non-mature context", () => {
-    const deepseek = createDeepSeekProvider(true);
-    expect(providerEligible(deepseek, request())).toBe(true);
-    expect(providerEligible(deepseek, request({ risk: "normal" }))).toBe(false);
-    expect(
-      providerEligible(
-        deepseek,
-        request({
-          contentContext: {
-            surface: "generation",
-            ageBand: "18+",
-            entitlementTier: "pro",
-            matureContentEnabled: true,
-          },
-        }),
-      ),
-    ).toBe(false);
+  it("drops the mature-incapable cheap Fireworks model when mature content is enabled", () => {
+    const fireworks = createFireworksProvider(true);
+    // Non-mature: the cheap Fireworks model is eligible.
+    expect(providerEligible(fireworks, request({ tier: "free" }), "cheap")).toBe(true);
+    // Mature enabled: the cheap model (allowsMature=false) is gated OFF...
+    const matureReq = request({
+      tier: "free",
+      contentContext: {
+        surface: "generation",
+        ageBand: "18+",
+        entitlementTier: "pro",
+        matureContentEnabled: true,
+      },
+    });
+    expect(providerEligible(fireworks, matureReq, "cheap")).toBe(false);
+    // ...but the mid model (allowsMature=true) stays eligible.
+    expect(providerEligible(fireworks, matureReq, "mid")).toBe(true);
   });
 
   it("calls Anthropic-compatible HTTP providers and parses token usage", async () => {
@@ -193,7 +197,7 @@ describe("llm router", () => {
     };
     const router = new LlmRouter([failingProvider, createVertexProvider(false), createDeterministicProvider()]);
 
-    const result = await router.generateScene(request({ risk: "sensitive" }));
+    const result = await router.generateScene(request({ tier: "pro", risk: "sensitive" }));
 
     expect(result.generation.provider).toBe("deterministic");
     expect(result.safetyAction).toBe("fallback");
@@ -212,28 +216,28 @@ describe("llm router", () => {
       },
     };
     const router = new LlmRouter([failingProvider, createDeterministicProvider()]);
-    const result = await router.generateScene(request({ risk: "sensitive" }));
+    const result = await router.generateScene(request({ tier: "pro", risk: "sensitive" }));
     expect(result.generation.provider).toBe("deterministic");
     expect(result.generation.isFallback).toBe(true);
   });
 
   it("does NOT stamp isFallback on a successful real-provider generation", async () => {
     // The sentinel must be reserved for the last-resort path. A healthy
-    // DeepSeek (or any real provider) generation must leave the flag
+    // Fireworks (or any real provider) generation must leave the flag
     // absent so the reader gets the real scene rendered, not the
     // FallbackTurnPanel.
-    const deepseek = {
-      ...createDeepSeekProvider(true),
-      name: "deepseek" as const,
+    const fireworks = {
+      ...createFireworksProvider(true),
+      name: "fireworks" as const,
       generate: async () => ({
-        provider: "deepseek" as const,
+        provider: "fireworks" as const,
         text: "A quiet room waits in silence.",
         tokenUsage: { input: 1, output: 1 },
       }),
     };
-    const router = new LlmRouter([deepseek, createDeterministicProvider()]);
-    const result = await router.generateScene(request());
-    expect(result.generation.provider).toBe("deepseek");
+    const router = new LlmRouter([fireworks, createDeterministicProvider()]);
+    const result = await router.generateScene(request({ tier: "free" }));
+    expect(result.generation.provider).toBe("fireworks");
     expect(result.generation.isFallback).toBeUndefined();
   });
 
@@ -252,7 +256,7 @@ describe("llm router", () => {
       }),
     };
     const router = new LlmRouter([unsafeProvider, createDeterministicProvider()]);
-    const result = await router.generateScene(request({ risk: "normal" }));
+    const result = await router.generateScene(request({ tier: "pro", risk: "normal" }));
     expect(result.generation.provider).toBe("deterministic");
     expect(result.generation.isFallback).toBe(true);
   });
@@ -284,7 +288,7 @@ describe("llm router", () => {
     const router = new LlmRouter([abortingProvider, createVertexProvider(false), deterministic]);
 
     await expect(
-      router.generateScene(request({ risk: "sensitive" }), controller.signal),
+      router.generateScene(request({ tier: "pro", risk: "sensitive" }), controller.signal),
     ).rejects.toBeInstanceOf(ClientDisconnectedError);
     expect(deterministicGenerate).not.toHaveBeenCalled();
   });

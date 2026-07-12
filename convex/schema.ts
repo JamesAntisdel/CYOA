@@ -186,7 +186,7 @@ export default defineSchema({
     choiceViews: v.array(jsonValue),
     engineEvents: v.array(jsonValue),
     safety: jsonValue,
-    provider: v.optional(v.union(v.literal("anthropic"), v.literal("vertex"), v.literal("deepseek"), v.literal("deterministic"))),
+    provider: v.optional(v.union(v.literal("anthropic"), v.literal("vertex"), v.literal("deepseek"), v.literal("fireworks"), v.literal("deterministic"))),
     createdAt: v.number(),
     completedAt: v.optional(v.number()),
     // The LLM-driven contract: the structured proposal returned by the
@@ -243,7 +243,7 @@ export default defineSchema({
     // from `engineDiffs` (raw) so the projection never has to re-redact.
     visibleDiffs: v.optional(v.array(jsonValue)),
     engineEvents: v.array(jsonValue),
-    provider: v.union(v.literal("anthropic"), v.literal("vertex"), v.literal("deepseek"), v.literal("deterministic")),
+    provider: v.union(v.literal("anthropic"), v.literal("vertex"), v.literal("deepseek"), v.literal("fireworks"), v.literal("deterministic")),
     tokenUsage: v.optional(jsonValue),
     latency: jsonValue,
     createdAt: v.number(),
@@ -446,7 +446,7 @@ export default defineSchema({
     eventName: v.string(),
     storyId: v.optional(v.string()),
     turnNumber: v.optional(v.number()),
-    provider: v.optional(v.union(v.literal("anthropic"), v.literal("vertex"), v.literal("deepseek"), v.literal("deterministic"))),
+    provider: v.optional(v.union(v.literal("anthropic"), v.literal("vertex"), v.literal("deepseek"), v.literal("fireworks"), v.literal("deterministic"))),
     payload: jsonValue,
     redacted: v.boolean(),
     createdAt: v.number(),
@@ -619,4 +619,42 @@ export default defineSchema({
   })
     .index("by_eventId", ["eventId"])
     .index("by_processedAt", ["processedAt"]),
+
+  // provider-and-credit-model design §2.2. Append-only spark ledger backing the
+  // media credit economy. Balance = indexed sum over `by_account`, mirrored into
+  // `entitlements.creditBalanceCents` for cheap reads. `idempotencyKey` (unique
+  // via `by_idem`) dedupes grants / spends / Stripe webhooks the same way
+  // `stripe_webhook_events` dedupes events. `delta` is +grant/purchase/refund,
+  // -spend. `assetId` links a spend/refund to the media asset it paid for;
+  // `stripeSessionId` links a `pack_purchase` to its one-time checkout session.
+  // provider-and-credit-model design §3 (H1/H2). Fixed-window action rate
+  // counters keyed by `<action>:<scope>` (e.g. `save:<accountId>`,
+  // `guest:<guestTokenHash>`). `windowStart` + `count` implement a per-key
+  // hourly budget enforced by `ratelimit.consumeActionRateLimit`. Distinct from
+  // `daily_turn_counter` (per-account/day turn budget) — this bounds identity
+  // minting + save creation to blunt the turn-0 bible-schedule cost amplifier.
+  action_rate_counters: defineTable({
+    key: v.string(),
+    windowStart: v.number(),
+    count: v.number(),
+    updatedAt: v.number(),
+  }).index("by_key", ["key"]),
+
+  media_credits_ledger: defineTable({
+    accountId: v.id("accounts"),
+    delta: v.number(),
+    reason: v.union(
+      v.literal("pro_allowance"),
+      v.literal("pack_purchase"),
+      v.literal("reader_spend"),
+      v.literal("creator_spend"),
+      v.literal("refund"),
+    ),
+    idempotencyKey: v.string(),
+    assetId: v.optional(v.id("assets")),
+    stripeSessionId: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index("by_account", ["accountId"])
+    .index("by_idem", ["idempotencyKey"]),
 });

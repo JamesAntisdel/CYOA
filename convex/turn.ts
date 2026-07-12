@@ -34,6 +34,14 @@ export type TurnRequest = {
   memory?: string[];
   /** Mature-aware entitlement tier carried through to the router/provider policy. */
   entitlementTier?: "free" | "unlimited" | "pro";
+  /**
+   * Provider-routing tier (provider-and-credit design §1.2) — the PRIMARY key
+   * the tier-aware `providerPolicy` uses to pick a model lane. Distinct from
+   * `entitlementTier` (which collapses guest→free and drives mature gating).
+   * Set by server-core (submitChoice) with the Unlimited soft cap already
+   * applied. Absent → the policy defaults to the cheapest `free` lane.
+   */
+  tier?: "guest" | "free" | "unlimited" | "pro";
 };
 
 export type TurnHistoryRecord = {
@@ -58,6 +66,13 @@ export type TurnResult = {
   scene: ReturnType<typeof projectCurrentScene>;
   prose: string;
   provider: string;
+  /**
+   * Concrete model id the provider resolved for this turn's generation, surfaced
+   * so the caller can price the turn via `costCentsForUsage(modelId, tokenUsage)`
+   * for `estimatedCostCents` telemetry (design §1.3). Absent on deterministic
+   * turns and providers that predate cost telemetry.
+   */
+  modelId?: string;
 };
 
 export function assertTurnRequestId(requestId: string): void {
@@ -97,6 +112,7 @@ export async function submitTurn(input: TurnRequest): Promise<TurnResult> {
   let prose = "";
   let provider = "deterministic";
   let tokenUsage: { input: number; output: number } | undefined;
+  let modelId: string | undefined;
   let llmMs = 0;
   const router = input.router ?? new LlmRouter();
 
@@ -120,6 +136,7 @@ export async function submitTurn(input: TurnRequest): Promise<TurnResult> {
       contentContext,
       risk: "normal",
       entitlementTier,
+      ...(input.tier ? { tier: input.tier } : {}),
       retryCount: 0,
     };
     const llmStarted = Date.now();
@@ -128,6 +145,7 @@ export async function submitTurn(input: TurnRequest): Promise<TurnResult> {
     prose = generated.parsed.prose;
     provider = generated.generation.provider;
     tokenUsage = generated.generation.tokenUsage;
+    modelId = generated.generation.modelId;
   }
 
   return {
@@ -136,6 +154,7 @@ export async function submitTurn(input: TurnRequest): Promise<TurnResult> {
     scene: projectCurrentScene(nextSave, input.story),
     prose,
     provider,
+    ...(modelId === undefined ? {} : { modelId }),
     history: {
       ...(input.save._id === undefined ? {} : { saveId: input.save._id }),
       accountId: input.accountId,

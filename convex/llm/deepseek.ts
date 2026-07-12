@@ -50,6 +50,7 @@ export function createDeepSeekProvider(available = defaultDeepSeekAvailable(), c
         prompt,
         text,
         tokenUsage: { input: usage?.prompt_tokens, output: usage?.completion_tokens },
+        modelId: config.model,
       });
     },
   };
@@ -60,7 +61,11 @@ function readDeepSeekConfig(): LlmHttpConfig {
   return {
     apiKey: readEnv("DEEPSEEK_API_KEY"),
     baseUrl,
-    model: readEnv("DEEPSEEK_MODEL") ?? "deepseek-chat",
+    // `deepseek-chat` is deprecated (retires 2026-07-24) and this direct
+    // provider is superseded by Fireworks (which serves DeepSeek-V3 as its
+    // cheap model). Default to the current concrete V3 id so no deprecated
+    // alias survives as a default; overridable via DEEPSEEK_MODEL.
+    model: readEnv("DEEPSEEK_MODEL") ?? "deepseek-v3",
     timeoutMs: readTimeoutMs(),
   };
 }

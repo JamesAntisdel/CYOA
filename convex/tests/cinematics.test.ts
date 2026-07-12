@@ -48,8 +48,15 @@ function legacyAccount(): AnyDoc {
     matureContentEnabled: false,
     createdAt: 1,
     lastActiveAt: 1,
-    // No cinematicMode → resolver defaults to per_scene_legacy.
-    mediaPrefs: { imagesEnabled: true, audioEnabled: true, videoEnabled: true },
+    // Explicit per_scene_legacy: with the Pro default flipped to
+    // endpoint_cinematic (design §2.4), a Pro account must opt into the legacy
+    // per-scene chain to exercise it.
+    mediaPrefs: {
+      imagesEnabled: true,
+      audioEnabled: true,
+      videoEnabled: true,
+      cinematicMode: "per_scene_legacy",
+    },
   };
 }
 
@@ -72,6 +79,7 @@ function makeCtx(seed: {
   entitlement?: AnyDoc | null;
   save?: AnyDoc | null;
   assets?: AnyDoc[];
+  ledger?: AnyDoc[];
 }) {
   const docs = new Map<string, AnyDoc>();
   docs.set(ACCOUNT_ID, seed.account);
@@ -80,6 +88,10 @@ function makeCtx(seed: {
 
   const entitlements = seed.entitlement === null ? [] : [seed.entitlement ?? { accountId: ACCOUNT_ID, tier: "pro", status: "active" }];
   const assets = [...(seed.assets ?? [])];
+  // Spark ledger: seed a large grant so Pro accounts can cover any media spend
+  // (metering itself is unit-tested in mediaCredits.test.ts; here we only need
+  // the charge to succeed so the cinematic/video queueing logic runs).
+  const ledger: AnyDoc[] = [...(seed.ledger ?? [{ accountId: ACCOUNT_ID, delta: 100000, reason: "pro_allowance", idempotencyKey: "seed", createdAt: 1 }])];
   const inserted: Array<{ table: string; doc: AnyDoc; id: string }> = [];
   const scheduled: Array<{ fnRef: unknown; args: AnyDoc }> = [];
   let nextId = 1;
@@ -90,11 +102,15 @@ function makeCtx(seed: {
         return docs.get(String(id)) ?? null;
       },
       query(table: string) {
-        const rows: AnyDoc[] = table === "entitlements" ? entitlements : table === "assets" ? assets : [];
+        const rows: AnyDoc[] =
+          table === "entitlements" ? entitlements : table === "assets" ? assets : table === "media_credits_ledger" ? ledger : [];
         return {
-          withIndex(_name: string, _build: (q: any) => any) {
+          withIndex(name: string, _build: (q: any) => any) {
             return {
               async first() {
+                // by_idem lookups must miss so a fresh spend/refund isn't treated
+                // as a duplicate (the stub can't filter on the key otherwise).
+                if (table === "media_credits_ledger" && name === "by_idem") return null;
                 return rows[0] ?? null;
               },
               async collect() {
@@ -108,11 +124,17 @@ function makeCtx(seed: {
         const id = `${table}_${nextId++}`;
         inserted.push({ table, doc, id });
         if (table === "assets") assets.push({ _id: id, ...doc });
+        if (table === "media_credits_ledger") ledger.push({ _id: id, ...doc });
         docs.set(id, { _id: id, ...doc });
         return id;
       },
       async patch() {
         /* not exercised */
+      },
+      async delete(id: unknown) {
+        docs.delete(String(id));
+        const idx = assets.findIndex((a) => String(a._id) === String(id));
+        if (idx >= 0) assets.splice(idx, 1);
       },
     },
     scheduler: {

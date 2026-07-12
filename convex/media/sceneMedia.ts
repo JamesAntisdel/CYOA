@@ -37,6 +37,7 @@ import { assertAccountSessionAccess } from "../lib/authz";
 import { assertCanAccessSave, type SaveRecord } from "../saves";
 import { resolveMediaPrefs, type AccountRecord, type MediaPrefs } from "../account";
 import { devForceProMedia } from "./proMediaGate";
+import { chargeMediaSpend, refundSpark } from "../billing/mediaCredits";
 import {
   hashPrompt,
   projectSceneMedia,
@@ -195,6 +196,24 @@ export const queueSceneImage = internalMutationGeneric({
       createdAt: now,
       updatedAt: now,
     });
+
+    // Spend metering (design §2.3): Pro monthly image allowance first, then
+    // sparks. Skipped under the dev force-unlock (billing bypassed for local).
+    // On an exhausted balance we drop the media (delete the queued row) rather
+    // than fail the turn. `refundSpark` on markFailed reverses the debit.
+    if (!devForceProMedia()) {
+      const charge = await chargeMediaSpend(ctx, {
+        accountId: args.accountId,
+        chargeKind: "image",
+        sparkKind: "scene_still",
+        assetId,
+        idempotencyKey: `spend:${assetId}`,
+      });
+      if (!charge.charged) {
+        await ctx.db.delete(assetId);
+        return { queued: false, reason: charge.reason } as const;
+      }
+    }
 
     // Resolve anchor asset ids for the reference-image carry-over pipeline.
     // The two anchors are generated on turn 1 (see queueAnchorImage); every
@@ -512,6 +531,22 @@ export const queueSceneVideo = internalMutationGeneric({
       updatedAt: now,
     });
 
+    // Spend metering (design §2.3): Pro monthly video allowance first, then
+    // sparks (a Veo 4s clip is 60 sparks). Dev force-unlock bypasses billing.
+    if (!devForceProMedia()) {
+      const charge = await chargeMediaSpend(ctx, {
+        accountId: args.accountId,
+        chargeKind: "video",
+        sparkKind: "veo_clip",
+        assetId,
+        idempotencyKey: `spend:${assetId}`,
+      });
+      if (!charge.charged) {
+        await ctx.db.delete(assetId);
+        return { queued: false, reason: charge.reason } as const;
+      }
+    }
+
     console.log(
       `[sceneMedia] queueSceneVideo inserted asset=${assetId} model=${cfg.model} i2v=${
         args.imageStorageId ? "yes" : "no"
@@ -824,6 +859,22 @@ export const queueSceneNarration = internalMutationGeneric({
       updatedAt: now,
     });
 
+    // Spend metering (design §2.3): narration is a flat 8-spark product (no
+    // image/video allowance applies). Dev force-unlock bypasses billing.
+    if (!devForceProMedia()) {
+      const charge = await chargeMediaSpend(ctx, {
+        accountId: args.accountId,
+        chargeKind: "audio",
+        sparkKind: "narration",
+        assetId,
+        idempotencyKey: `spend:${assetId}`,
+      });
+      if (!charge.charged) {
+        await ctx.db.delete(assetId);
+        return { queued: false, reason: charge.reason } as const;
+      }
+    }
+
     console.log(
       `[sceneMedia] queueSceneNarration inserted asset=${assetId} voice=${args.voiceId} tts=${voice.name}, scheduling runNarrationJob`,
     );
@@ -972,6 +1023,10 @@ export const markFailed = internalMutationGeneric({
       provenance: { ...asset.provenance, errorCode: args.error },
       updatedAt: args.at,
     });
+    // Refund any sparks this asset was charged (design §2.3). Idempotent and a
+    // no-op for un-metered assets (anchors share this mark-failed path but are
+    // never charged).
+    await refundSpark(ctx, args.assetId);
   },
 });
 

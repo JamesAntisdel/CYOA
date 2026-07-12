@@ -1,4 +1,5 @@
 import { AppError } from "../lib/errors";
+import { MEDIA_SPARK_COSTS } from "./mediaCosts";
 import type { EntitlementRecord } from "./entitlements";
 
 export type UsageMeterRecord = {
@@ -54,7 +55,15 @@ export function calculateOverageCents(
   const premiumOver = Math.max(0, meter.premiumTextTokens - (entitlement.includedPremiumTokens ?? 0));
   const imageOver = Math.max(0, meter.imageGenerations - (entitlement.includedImages ?? 0));
   const videoOver = Math.max(0, meter.videoGenerations - (entitlement.includedVideos ?? 0));
-  return Math.ceil(premiumOver / 1000) + imageOver * 25 + videoOver * 20;
+  // Overage cents are the spark face value of each over-allowance unit (1 spark
+  // = 1¢): a still is 15 sparks, a Veo clip 60. This replaces the old inverted
+  // `image*25 + video*20` math where video was priced below a still and below
+  // its own $0.20 COGS (provider-and-credit-model design §2.1).
+  return (
+    Math.ceil(premiumOver / 1000) +
+    imageOver * MEDIA_SPARK_COSTS.scene_still +
+    videoOver * MEDIA_SPARK_COSTS.veo_clip
+  );
 }
 
 export function enableOverage(input: {

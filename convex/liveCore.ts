@@ -226,7 +226,7 @@ export type SceneRecord = {
   choiceViews: SceneProjection["choices"];
   engineEvents: unknown[];
   safety: { risk: "normal" | "mature" | "blocked"; reasons: string[] };
-  provider: "deterministic" | "anthropic" | "vertex" | "deepseek";
+  provider: "deterministic" | "anthropic" | "vertex" | "deepseek" | "fireworks";
   createdAt: number;
   completedAt?: number | undefined;
   // The structured LLM-driven proposal that produced this scene's prose
@@ -544,6 +544,12 @@ function sceneRecordFromProjection(input: {
 }
 
 function normalizeProvider(provider: string): SceneRecord["provider"] {
-  if (provider === "anthropic" || provider === "vertex" || provider === "deepseek") return provider;
+  if (
+    provider === "anthropic" ||
+    provider === "vertex" ||
+    provider === "deepseek" ||
+    provider === "fireworks"
+  )
+    return provider;
   return "deterministic";
 }

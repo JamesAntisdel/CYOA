@@ -80,10 +80,14 @@ function makeCtx(seed: Record<string, AnyDoc[]>) {
   return { ctx, tables };
 }
 
+// Claimed (kind:"user") accounts: publishing and remixing to the public shelf
+// are claimed-account actions (L2). Session access still accepts the retained
+// guest token (real SSO isn't wired), so these keep the token for auth.
 function ownerAccount(): AnyDoc {
   return {
     _id: "acct_owner",
-    kind: "guest",
+    kind: "user",
+    userId: "owner@example.test",
     guestTokenHash: "owner_token",
     ageBand: "18+",
     matureContentEnabled: false,
@@ -93,7 +97,12 @@ function ownerAccount(): AnyDoc {
 }
 
 function readerAccount(): AnyDoc {
-  return { ...ownerAccount(), _id: "acct_reader", guestTokenHash: "reader_token" };
+  return {
+    ...ownerAccount(),
+    _id: "acct_reader",
+    userId: "reader@example.test",
+    guestTokenHash: "reader_token",
+  };
 }
 
 /** A claimed 18+ account with an active pro entitlement — the only viewer

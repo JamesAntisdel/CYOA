@@ -92,11 +92,29 @@ export type AmbientLoopProjection = {
 
 export function assertProMediaAllowed(input: {
   account: Pick<AccountRecord, "ageBand" | "matureContentEnabled"> & { _id?: string | undefined };
-  entitlement: Pick<EntitlementRecord, "tier" | "status"> | null | undefined;
+  entitlement:
+    | Pick<
+        EntitlementRecord,
+        "tier" | "status" | "includedImages" | "includedVideos" | "creditBalanceCents"
+      >
+    | null
+    | undefined;
   prompt: string;
   surface?: ContentPolicyContext["surface"] | undefined;
 }): ContentPolicySummary {
+  // Close unmetered Pro media (provider-and-credit-model design §2.4): an active
+  // Pro account still needs spendable capacity — either an unused monthly
+  // image/video allowance unit OR a positive spark balance. A Pro account that
+  // has exhausted both cannot mint further media without buying a pack. The
+  // per-job spark ledger in the queue mutations is the precise meter; this is
+  // the coarse gate on the legacy pure media helpers. Read capacity BEFORE the
+  // `hasActivePro` guard narrows the entitlement down to `{ tier, status }`.
+  const hasCapacity =
+    (input.entitlement?.includedImages ?? 0) > 0 ||
+    (input.entitlement?.includedVideos ?? 0) > 0 ||
+    (input.entitlement?.creditBalanceCents ?? 0) > 0;
   if (!hasActivePro(input.entitlement)) throw new AppError("pro_entitlement_required");
+  if (!hasCapacity) throw new AppError("pro_media_allowance_exhausted");
   const context: ContentPolicyContext = {
     accountId: input.account._id,
     ageBand: input.account.ageBand,

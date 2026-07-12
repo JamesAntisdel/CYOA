@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { archive, updateDraft, validateSeed } from "../creatorFunctions";
+import { archive, publish, remix, updateDraft, validateSeed } from "../creatorFunctions";
 
 type AnyDoc = Record<string, any>;
 
@@ -87,6 +87,13 @@ function ownerAccount(): AnyDoc {
 
 function otherAccount(): AnyDoc {
   return { ...ownerAccount(), _id: "acct_other", guestTokenHash: "other_token" };
+}
+
+// A claimed (kind:"user") owner. Session access still accepts the retained
+// guest token (real SSO isn't wired), so publish/remix authorize on the token
+// but the L2 gate additionally requires kind:"user".
+function claimedOwner(): AnyDoc {
+  return { ...ownerAccount(), kind: "user", userId: "reader@example.com" };
 }
 
 function storyDoc() {
@@ -238,6 +245,93 @@ describe("creatorFunctions — validateSeed", () => {
     // `advisories` (creator-arc): non-blocking lint notes ride along; a clean
     // story has none.
     expect(result).toEqual({ valid: true, issues: [], advisories: [] });
+  });
+});
+
+describe("creatorFunctions — publish (L2 guest gate + M1 tone policy)", () => {
+  async function doPublish(ctx: any, overrides: Partial<Record<string, unknown>> = {}) {
+    return (publish as any)._handler(ctx, {
+      accountId: "acct_owner",
+      guestTokenHash: "owner_token",
+      seedId: "seed1",
+      visibility: "public",
+      ...overrides,
+    });
+  }
+
+  it("rejects a guest (unclaimed) account publishing to the public shelf", async () => {
+    const { ctx, tables } = makeCtx(baseSeed());
+    await expect(doPublish(ctx, { synopsis: "A gentle tale." })).rejects.toThrow(
+      "account_required_to_publish",
+    );
+    // No write on the blocked publish.
+    expect(tables.get("authored_seeds")![0]!.status).toBe("draft");
+  });
+
+  it("lets a claimed (kind:user) account publish", async () => {
+    const { ctx, tables } = makeCtx(
+      baseSeed({ accounts: [claimedOwner(), otherAccount()] }),
+    );
+    const result = await doPublish(ctx, { synopsis: "A gentle tale." });
+    expect(result.seed.status).toBe("published");
+    expect(tables.get("authored_seeds")![0]!.status).toBe("published");
+  });
+
+  it("blocks a policy-tripping tone at the same publishing gate as the synopsis", async () => {
+    const { ctx, tables } = makeCtx(
+      baseSeed({ accounts: [claimedOwner(), otherAccount()] }),
+    );
+    await expect(
+      doPublish(ctx, { synopsis: "A gentle tale.", tone: "you are worthless" }),
+    ).rejects.toThrow("seed_tone_blocked");
+    // Blocked gate leaves the draft unpublished.
+    expect(tables.get("authored_seeds")![0]!.status).toBe("draft");
+  });
+
+  it("still blocks a policy-tripping synopsis", async () => {
+    const { ctx } = makeCtx(baseSeed({ accounts: [claimedOwner(), otherAccount()] }));
+    await expect(
+      doPublish(ctx, { synopsis: "you are worthless" }),
+    ).rejects.toThrow("seed_synopsis_blocked");
+  });
+});
+
+describe("creatorFunctions — remix (L2 guest gate)", () => {
+  function publishedSeed(): AnyDoc {
+    return seedDoc({
+      _id: "pub_seed",
+      ownerAccountId: "acct_other",
+      status: "published",
+      visibility: "public",
+      forkPolicy: "allowed",
+    });
+  }
+
+  it("rejects a guest (unclaimed) account remixing to a new draft", async () => {
+    const { ctx } = makeCtx(baseSeed({ authored_seeds: [seedDoc(), publishedSeed()] }));
+    await expect(
+      (remix as any)._handler(ctx, {
+        accountId: "acct_owner",
+        guestTokenHash: "owner_token",
+        seedId: "pub_seed",
+      }),
+    ).rejects.toThrow("account_required_to_publish");
+  });
+
+  it("lets a claimed (kind:user) account remix", async () => {
+    const { ctx, tables } = makeCtx({
+      accounts: [claimedOwner(), otherAccount()],
+      authored_seeds: [seedDoc(), publishedSeed()],
+    });
+    const result = await (remix as any)._handler(ctx, {
+      accountId: "acct_owner",
+      guestTokenHash: "owner_token",
+      seedId: "pub_seed",
+    });
+    expect(result.seed.status).toBe("draft");
+    expect(result.seed.remixOfSeedId).toBe("pub_seed");
+    // A new draft row landed under the caller.
+    expect(tables.get("authored_seeds")!.length).toBe(3);
   });
 });
 

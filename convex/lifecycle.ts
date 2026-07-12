@@ -15,13 +15,11 @@
 //      saves, scenes, turn_history, assets, and unlocked endings.
 
 import { internalMutationGeneric } from "convex/server";
-import type { GenericMutationCtx } from "convex/server";
 import { v } from "convex/values";
 
 import { shouldPurgeGuest, type AccountRecord } from "./account";
+import { cascadeAccountData, deleteByIndex } from "./lib/accountCascade";
 import { accountFromDoc } from "./lib/docs";
-
-type MutationCtx = GenericMutationCtx<any>;
 
 export type PurgeableAccount = AccountRecord & { _id: string };
 
@@ -102,35 +100,30 @@ export const purgeExpiredGuests = internalMutationGeneric({
     for (const account of purgeable) {
       const accountId = account._id as any;
 
-      const saves = await ctx.db
-        .query("saves")
-        .withIndex("by_accountId", (q: any) => q.eq("accountId", accountId))
-        .collect();
-      for (const save of saves) {
-        summary.scenesDeleted += await deleteByIndex(ctx, "scenes", "by_save_turn", "saveId", save._id);
-        summary.turnHistoryDeleted += await deleteByIndex(ctx, "turn_history", "by_save_turn", "saveId", save._id);
-        await ctx.db.delete(save._id);
-        summary.savesDeleted += 1;
-      }
+      // Shared hard-delete cascade (kept in lockstep with deleteAccount): saves
+      // + scenes/turn_history/story_bibles, endings, metering, analytics,
+      // assets, tale reads/forks, leaderboard, daily_results.
+      const cascade = await cascadeAccountData(ctx, accountId);
+      summary.savesDeleted += cascade.savesDeleted;
+      summary.scenesDeleted += cascade.scenesDeleted;
+      summary.turnHistoryDeleted += cascade.turnHistoryDeleted;
+      summary.assetsDeleted += cascade.assetsDeleted;
+      summary.endingsDeleted += cascade.endingsDeleted;
+      summary.otherRowsDeleted +=
+        cascade.storyBiblesDeleted +
+        cascade.entitlementsDeleted +
+        cascade.usageMetersDeleted +
+        cascade.dailyCountersDeleted +
+        cascade.analyticsDeleted +
+        cascade.taleReadsDeleted +
+        cascade.taleForksDeleted +
+        cascade.leaderboardEntriesDeleted +
+        cascade.dailyResultsDeleted;
 
-      // Account-scoped assets (scene stills, cinematics, NPC portraits, TTS)
-      // and unlocked endings. Deleting assets by accountId also sweeps the
-      // save-scoped ones for the saves we just removed.
-      summary.assetsDeleted += await deleteByIndex(ctx, "assets", "by_accountId", "accountId", accountId);
-      summary.endingsDeleted += await deleteByIndex(ctx, "endings_unlocked", "by_account_story", "accountId", accountId);
-
-      // Metering + social rows — mirror the deleteAccount cascade so a purged
-      // guest doesn't orphan counters or leave dangling published-tale / coop
-      // references. (Follow-up: hoist this + deleteAccount into one shared
-      // cascade helper to keep the two in lockstep.)
-      summary.otherRowsDeleted += await deleteByIndex(ctx, "entitlements", "by_accountId", "accountId", accountId);
-      summary.otherRowsDeleted += await deleteByIndex(ctx, "usage_meters", "by_account_period", "accountId", accountId);
-      summary.otherRowsDeleted += await deleteByIndex(ctx, "daily_turn_counter", "by_account_day", "accountId", accountId);
-      summary.otherRowsDeleted += await deleteByIndex(ctx, "analytics_events", "by_accountId", "accountId", accountId);
-      summary.otherRowsDeleted += await deleteByIndex(ctx, "tale_reads", "by_accountId", "accountId", accountId);
-      summary.otherRowsDeleted += await deleteByIndex(ctx, "tale_forks", "by_accountId", "accountId", accountId);
-      // A purged guest's own published tales become unreadable (source save is
-      // gone), so revoke them; forks are independent saves and survive.
+      // Divergent from deleteAccount (which archives/revokes to preserve reader
+      // + audit history): a purged guest's published tales are unreadable once
+      // the source save is gone, so hard-delete them; forks are independent
+      // saves and survive. Same for hosted coop rooms.
       summary.otherRowsDeleted += await deleteByIndex(ctx, "published_tales", "by_ownerAccountId", "ownerAccountId", accountId);
       summary.otherRowsDeleted += await deleteByIndex(ctx, "coop_rooms", "by_hostAccountId", "hostAccountId", accountId);
 
@@ -167,20 +160,3 @@ export const purgeExpiredIdempotencyRecords = internalMutationGeneric({
     return { deleted: stale.length };
   },
 });
-
-async function deleteByIndex(
-  ctx: MutationCtx,
-  table: string,
-  index: string,
-  field: string,
-  value: unknown,
-): Promise<number> {
-  const docs = await ctx.db
-    .query(table as any)
-    .withIndex(index as any, (q: any) => q.eq(field, value))
-    .collect();
-  for (const doc of docs) {
-    await ctx.db.delete(doc._id);
-  }
-  return docs.length;
-}

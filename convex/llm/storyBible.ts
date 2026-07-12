@@ -60,6 +60,7 @@ import {
   readEnv,
   readTimeoutMs,
 } from "./httpClient";
+import { fireworksModelId, readFireworksConfig } from "./fireworks";
 import { STORY_BIBLE_RESPONSE_SCHEMA } from "./responseSchema";
 
 const accountIdValidator = v.id("accounts");
@@ -444,7 +445,7 @@ export const getDoorsJournal = queryGeneric({
 // Provider fan-out (mirrors summarizer.ts callSummarizer — cheap-model order).
 // =============================================================================
 
-type BibleProviderName = "deepseek" | "anthropic" | "vertex";
+type BibleProviderName = "fireworks" | "anthropic" | "vertex";
 
 type BibleProviderResult = {
   provider: BibleProviderName;
@@ -453,24 +454,27 @@ type BibleProviderResult = {
 
 /**
  * Call the cheapest configured LLM with a bible prompt. Order matches the
- * summarizer: DeepSeek → Anthropic → Gemini. The Gemini path passes
- * `STORY_BIBLE_RESPONSE_SCHEMA` so output is grammar-constrained JSON.
+ * summarizer: Fireworks (cheap model) → Anthropic → Gemini. The Gemini path
+ * passes `STORY_BIBLE_RESPONSE_SCHEMA` so output is grammar-constrained JSON.
  * Returns null when every configured path failed or none is configured —
  * NO deterministic fallback (R1.4: the save plays bible-less instead).
+ *
+ * Exported so the unit test can pin the model selection (which env → which
+ * model id) without standing up the whole action.
  */
-async function callStoryBibleModel(prompt: string): Promise<BibleProviderResult | null> {
-  // 1. DeepSeek — only with a real key (see summarizer.ts for why the local
-  //    mock URL must not count as "configured").
-  const deepseekKey = readEnv("DEEPSEEK_API_KEY");
-  const deepseekBase = readEnv("DEEPSEEK_BASE_URL") ?? "https://api.deepseek.com";
-  if (deepseekKey) {
+export async function callStoryBibleModel(prompt: string): Promise<BibleProviderResult | null> {
+  // 1. Fireworks cheap model — the background cheap path (design §1.4).
+  //    Replaces the old direct-DeepSeek leg (whose hardcoded `deepseek-chat`
+  //    alias is deprecated); Fireworks serves DeepSeek-V3 as its cheap model.
+  const fireworks = readFireworksConfig();
+  if (fireworks.apiKey) {
     try {
       const response = await postJson({
-        url: appendPath(deepseekBase, "/chat/completions"),
-        timeoutMs: readTimeoutMs(),
-        headers: { authorization: `Bearer ${deepseekKey}` },
+        url: appendPath(fireworks.baseUrl, "/chat/completions"),
+        timeoutMs: fireworks.timeoutMs,
+        headers: { authorization: `Bearer ${fireworks.apiKey}` },
         body: {
-          model: readEnv("DEEPSEEK_MODEL") ?? "deepseek-chat",
+          model: fireworksModelId("cheap"),
           temperature: 0.6,
           max_tokens: BIBLE_MAX_OUTPUT_TOKENS,
           response_format: { type: "json_object" },
@@ -485,14 +489,17 @@ async function callStoryBibleModel(prompt: string): Promise<BibleProviderResult 
         },
       });
       const text = extractDeepSeekText(response);
-      if (text.trim().length > 0) return { provider: "deepseek", text };
+      if (text.trim().length > 0) return { provider: "fireworks", text };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.warn(`[storyBible] deepseek failed: ${message.slice(0, 240)}`);
+      console.warn(`[storyBible] fireworks failed: ${message.slice(0, 240)}`);
     }
   }
 
-  // 2. Anthropic.
+  // 2. Anthropic — a REAL Haiku id via ANTHROPIC_BIBLE_MODEL (NOT the shared
+  //    ANTHROPIC_MODEL, which silently upgrades this cheap background call to
+  //    Sonnet). Default `claude-haiku-4-5` (the old `claude-haiku-4-6` default
+  //    did not exist and silently upgraded to Sonnet).
   const anthropicKey = readEnv("ANTHROPIC_API_KEY");
   if (anthropicKey) {
     try {
@@ -505,7 +512,7 @@ async function callStoryBibleModel(prompt: string): Promise<BibleProviderResult 
           "x-api-key": anthropicKey,
         },
         body: {
-          model: readEnv("ANTHROPIC_MODEL") ?? "claude-haiku-4-6",
+          model: readEnv("ANTHROPIC_BIBLE_MODEL") ?? "claude-haiku-4-5",
           max_tokens: BIBLE_MAX_OUTPUT_TOKENS,
           temperature: 0.6,
           messages: [{ role: "user", content: prompt }],
