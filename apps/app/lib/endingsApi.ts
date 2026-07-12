@@ -7,6 +7,18 @@ export type RemoteUnlockedEnding = {
   mode: "story" | "hardcore";
   path: string[];
   safetyEnding: boolean;
+  /**
+   * Human ending title persisted server-side at unlock time. Optional
+   * with a graceful client fallback — see `lib/endingLabels.ts` — so legacy
+   * rows without it never render raw machine ids.
+   */
+  label?: string;
+  /**
+   * Last few reader choice labels leading into the ending (oldest→newest),
+   * persisted server-side at unlock time. Optional; legacy rows fall back to
+   * a prettified node-id `path` (see `preferredPathHint`).
+   */
+  pathLabels?: string[];
 };
 
 /**

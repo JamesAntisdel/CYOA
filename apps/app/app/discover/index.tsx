@@ -5,12 +5,16 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { DiscoverList } from "../../components/discovery/DiscoverList";
 import type { DiscoverTale } from "../../components/discovery/DiscoverCard";
+import { PublishableShelf } from "../../components/discovery/PublishableShelf";
 import {
   ShareModal,
   type ShareEligibility,
 } from "../../components/discovery/ShareModal";
 import { AppNav } from "../../components/navigation";
+import { EmptyState } from "../../components/states/EmptyState";
 import { useAccountProfile } from "../../hooks/useAccountProfile";
+import { useGuestSession } from "../../hooks/useGuestSession";
+import { useLibrary } from "../../hooks/useLibrary";
 import { useToast } from "../../hooks/useToast";
 import { useBreakpoint } from "../../lib/responsive";
 import { useAppTheme } from "../../theme";
@@ -20,14 +24,19 @@ import { Button, Stamp, Text } from "../../components/primitives";
  * Discover route. Renders the archive of published tales for browse. The Convex
  * read-query for the public archive does not exist yet (see convex/tales.ts,
  * which exports pure model helpers, not Convex queries). Until a `publicTales`
- * query ships, the route renders an empty state — DiscoverList handles that
- * gracefully — and a single share modal hooked up for the day a tale arrives.
+ * query ships, the route renders an interim surface instead of a permanently
+ * bare shelf: a "library grows as readers publish" empty state plus the
+ * reader's own publishable saves with a CTA into the existing publish flow
+ * (/publish/[saveId]). Guests without a session simply see the empty state.
  */
 export default function DiscoverRoute() {
   const router = useRouter();
   const { tokens } = useAppTheme();
   const { profile } = useAccountProfile();
   const { push } = useToast();
+  const guest = useGuestSession();
+  // Same save source the endings crypt uses; returns [] when signed out.
+  const library = useLibrary(guest.session);
   // Phone reduces the page padding so the synopsis text gets a wider line
   // length on a 375px viewport. Desktop keeps the original spacing.xl gutter.
   const { isPhone } = useBreakpoint();
@@ -75,17 +84,30 @@ export default function DiscoverRoute() {
             </Text>
           </View>
 
-          <DiscoverList
-            onOpen={(taleId) => router.push(`/tale/${taleId}`)}
-            onShare={(taleId) => {
-              const tale = tales.find((t) => t.taleId === taleId);
-              if (tale) {
-                setActiveShareTale(tale);
-                return;
-              }
-              push({ message: "That tale slipped off the shelf. Refresh the page.", tone: "warning" });
-            }}
-            tales={tales}
+          {tales.length > 0 ? (
+            <DiscoverList
+              onOpen={(taleId) => router.push(`/tale/${taleId}`)}
+              onShare={(taleId) => {
+                const tale = tales.find((t) => t.taleId === taleId);
+                if (tale) {
+                  setActiveShareTale(tale);
+                  return;
+                }
+                push({ message: "That tale slipped off the shelf. Refresh the page.", tone: "warning" });
+              }}
+              tales={tales}
+            />
+          ) : (
+            <EmptyState
+              body="No tale rests on the open shelf yet. The library grows as readers publish — every finished story bound and placed here takes up permanent residence, including yours."
+              kicker="the open shelf"
+              title="The library grows as readers publish."
+            />
+          )}
+
+          <PublishableShelf
+            onPublish={(saveId) => router.push(`/publish/${saveId}`)}
+            saves={library.saves}
           />
 
           <View style={{ marginTop: tokens.spacing.lg }}>

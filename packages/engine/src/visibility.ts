@@ -74,15 +74,37 @@ function conditionPasses(state: PlayerState, condition: Condition): boolean {
 function defaultHint(condition: Condition): string | undefined {
   switch (condition.kind) {
     case "has_item":
-      return `Needs ${condition.itemId}`;
+      return `Needs ${humanizeItemId(condition.itemId)}`;
     case "missing_item":
-      return `Requires missing ${condition.itemId}`;
+      return `You must part with ${humanizeItemId(condition.itemId)}`;
     case "stat_at_least":
     case "stat_at_most":
-      return "You do not have the resolve";
+      // Deliberately generic: the old copy ("You do not have the resolve")
+      // named a specific stat for EVERY stat gate, which was a lie whenever
+      // the gate was on nerve/insight/anything else. Naming the real stat
+      // here would leak a hidden attribute, so the fallback stays vague —
+      // authored `hint` copy is the place for specifics.
+      return "You are not yet ready for this";
     case "flag_equals":
     case "mode_is":
     case "always":
       return undefined;
   }
+}
+
+/**
+ * Title-case a raw item id into reader-facing copy: `bone_key` → "the Bone
+ * Key". Authored hints (`condition.hint`) always win over `defaultHint`; this
+ * only shapes the fallback so the reader never sees a raw snake_case id. Ids
+ * that carry their own article ("the_bone_key") don't get a second "the".
+ */
+function humanizeItemId(itemId: string): string {
+  const words = itemId.split(/[\s_-]+/u).filter((word) => word.length > 0);
+  if (words.length === 0) return itemId;
+  const titled = words.map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase());
+  const article = words[0]?.toLowerCase();
+  if (article === "the" || article === "a" || article === "an") {
+    return [article, ...titled.slice(1)].join(" ");
+  }
+  return `the ${titled.join(" ")}`;
 }

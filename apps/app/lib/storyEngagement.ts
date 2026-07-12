@@ -43,6 +43,8 @@ export type ChoiceRenderModel = {
   hint?: string;
   /** W2 skill-check descriptor (odds phrase only — BC10). Absent when none. */
   check?: RemoteCheck;
+  /** Near-miss band on a locked numeric gate (phrase only — BC10). */
+  nearness?: "near" | "far";
 };
 
 /**
@@ -56,6 +58,7 @@ export function adaptRemoteChoice(choice: RemoteChoice): ChoiceRenderModel {
   const locked = gate === "locked";
   const hint = choice.lockedHint ?? undefined;
   const check = choice.check ?? undefined;
+  const nearness = choice.nearness ?? undefined;
   return {
     id: choice.choice.id,
     label: choice.choice.label,
@@ -64,6 +67,8 @@ export function adaptRemoteChoice(choice: RemoteChoice): ChoiceRenderModel {
     // A locked choice never shows its check chip — the door isn't open, so the
     // odds are moot. Keeps the two W2/W1 affordances from stacking on one card.
     ...(check && !locked ? { check } : {}),
+    // The near-miss band is only meaningful on a still-locked door.
+    ...(nearness && locked ? { nearness } : {}),
   };
 }
 

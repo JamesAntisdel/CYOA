@@ -8,6 +8,7 @@ import { SceneMedia } from "../../media/SceneMedia";
 import { Surface, Text } from "../../primitives";
 import { StatsHud } from "../../stats/StatsHud";
 import { useAppTheme } from "../../../theme";
+import { ConsequenceReel } from "../ConsequenceReel";
 import { EffectBadge } from "../EffectBadge";
 import { FallbackTurnPanel } from "../FallbackTurnPanel";
 import { ProseRenderer } from "../ProseRenderer";
@@ -35,6 +36,10 @@ export function MobileLayout({
   onOpenEndings,
   onOpenLibrary,
   onReturnHome,
+  onBeginAgain,
+  onSeeMap,
+  onFork,
+  choiceHistory,
   endingTier,
   cinematicUri,
   endingIsFirstFind,
@@ -157,13 +162,18 @@ export function MobileLayout({
                   ...(cinematicUri !== undefined ? { cinematicUri } : {}),
                   ...(endingIsFirstFind !== undefined ? { isFirstFind: endingIsFirstFind } : {}),
                 })}
-                {...endingPanelHandlers({ onOpenEndings, onOpenLibrary, onReturnHome })}
+                {...endingPanelHandlers({ onOpenEndings, onOpenLibrary, onReturnHome, onBeginAgain, onSeeMap })}
               />
+              {/* "Your choices echoed" — the run's visible-choice recap on the
+                  terminal panel. Skipped when this session recorded none. */}
+              {choiceHistory && choiceHistory.length > 0 ? (
+                <ConsequenceReel entries={choiceHistory} />
+              ) : null}
               {/* Story-engagement Wave 3 (R14) — fogged "what might have been"
                   cards for unreached candidate endings. Self-gates on terminal
                   + candidates; renders nothing on live / legacy saves. */}
               <WhatMightHaveBeen
-                {...whatMightHaveBeenProps({ projection, onOpenEndings, onReturnHome })}
+                {...whatMightHaveBeenProps({ projection, onOpenEndings, onReturnHome, onFork, onBeginAgain })}
               />
             </>
           ) : (

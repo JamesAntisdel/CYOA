@@ -120,9 +120,12 @@ test("useTurn projects whatMightHaveBeen only from a terminal remote scene's end
   );
 });
 
-test("layout ending panels mount WhatMightHaveBeen with the reused fork/begin-again handlers", () => {
-  // The shared prop-bag builder gates on terminal + reuses the existing ending
-  // navigation (no new flows): Begin again → onReturnHome, Fork → onOpenEndings.
+test("layout ending panels mount WhatMightHaveBeen with the dedicated fork/begin-again handlers", () => {
+  // The shared prop-bag builder gates on terminal and wires the panel's copy
+  // to what it promises: Fork → the run-history fork surface (R14.2),
+  // Begin again → a fresh run of the same story (Req 8.3). The legacy
+  // onOpenEndings/onReturnHome wires remain as fallbacks for hosts that don't
+  // supply the dedicated handlers.
   const types = read("components/reading/layouts/types.ts");
   assert.match(types, /export function whatMightHaveBeenProps/, "types.ts must export the prop bag builder");
   assert.match(
@@ -137,13 +140,13 @@ test("layout ending panels mount WhatMightHaveBeen with the reused fork/begin-ag
   );
   assert.match(
     types,
-    /onFork: input\.onOpenEndings \?\? noop/,
-    "Fork must reuse the existing See-map handler (no new navigation)",
+    /onFork: input\.onFork \?\? input\.onOpenEndings \?\? noop/,
+    "Fork must prefer the dedicated fork handler, falling back to the legacy See-map wire",
   );
   assert.match(
     types,
-    /onBeginAgain: input\.onReturnHome \?\? noop/,
-    "Begin again must reuse the existing return-home handler",
+    /onBeginAgain: input\.onBeginAgain \?\? input\.onReturnHome \?\? noop/,
+    "Begin again must prefer the dedicated fresh-run handler, falling back to return-home",
   );
 
   // All five layouts must mount the surface at the ending render site so the
@@ -157,8 +160,8 @@ test("layout ending panels mount WhatMightHaveBeen with the reused fork/begin-ag
     );
     assert.match(
       src,
-      /<WhatMightHaveBeen\s+\{\.\.\.whatMightHaveBeenProps\(\{ projection, onOpenEndings, onReturnHome \}\)\}/,
-      `${layout} must mount WhatMightHaveBeen with the shared prop bag`,
+      /<WhatMightHaveBeen\s+\{\.\.\.whatMightHaveBeenProps\(\{ projection, onOpenEndings, onReturnHome, onFork, onBeginAgain \}\)\}/,
+      `${layout} must mount WhatMightHaveBeen with the shared prop bag (incl. the dedicated handlers)`,
     );
     // It sits inside the same terminal-only branch as EndingPanel — the
     // `projection.ending ? (…) : <ChoiceList/>` conditional — so a pre-terminal

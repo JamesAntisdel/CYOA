@@ -12,12 +12,24 @@ import { Text } from "../primitives";
  * roll, or the threshold (BC10 — spoiler discipline). Quiet and bookish: mono
  * caption, faint surface, no color alarm (the gamble is signalled by the die,
  * not by a red badge).
+ *
+ * When a companion's visible stat backs the check, the server also sends a
+ * companion-support PHRASE ("Mira stands with you") — rendered as a second
+ * serif-italic whisper line. Read structurally so the chip tolerates
+ * projections from a server that predates the field (BC2/BC4); like the odds,
+ * it is words only — the bonus number never reaches the client (BC10).
  */
 export function CheckChip({ check }: { check: RemoteCheck }) {
   const { tokens } = useAppTheme();
+  const rawCompanion = (check as { companion?: unknown }).companion;
+  const companion =
+    typeof rawCompanion === "string" && rawCompanion.length > 0 ? rawCompanion : undefined;
+  const a11y = companion
+    ? `${checkChipAccessibilityLabel(check)} ${companion}.`
+    : checkChipAccessibilityLabel(check);
   return (
     <View
-      accessibilityLabel={checkChipAccessibilityLabel(check)}
+      accessibilityLabel={a11y}
       accessibilityRole="text"
       style={{
         alignSelf: "flex-start",
@@ -39,6 +51,18 @@ export function CheckChip({ check }: { check: RemoteCheck }) {
       >
         {checkChipLabel(check)}
       </Text>
+      {companion ? (
+        <Text
+          style={{
+            color: tokens.colors.textFaint,
+            fontFamily: tokens.typography.families.serif,
+            fontStyle: "italic",
+          }}
+          variant="caption"
+        >
+          {companion}
+        </Text>
+      ) : null}
     </View>
   );
 }

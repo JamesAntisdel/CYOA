@@ -674,6 +674,47 @@ export const forkTale = mutationGeneric({
     };
     const newSaveId = await ctx.db.insert("saves", cleanDoc(forkedSave));
 
+    // Story Bible fork copy (story-bible R1.6/R2.4): a fork inherits the same
+    // planned world — copy the source save's bible row verbatim (consumption
+    // state included) instead of scheduling a new bible call. Only a ready
+    // bible is worth carrying (a queued/failed source row means the fork
+    // simply plays bible-less, exactly like its source would). Best-effort:
+    // a purged source save (hardcore) or missing row is a silent no-op.
+    try {
+      const sourceBible = await ctx.db
+        .query("story_bibles")
+        .withIndex("by_saveId", (q: any) => q.eq("saveId", doc.sourceSaveId))
+        .first();
+      if (sourceBible && (sourceBible as { status?: string }).status === "ready") {
+        const src = sourceBible as {
+          bible?: unknown;
+          attachedAtTurn?: number;
+          lastRefreshAct?: number;
+          retryCount?: number;
+        };
+        await ctx.db.insert(
+          "story_bibles",
+          cleanDoc({
+            saveId: newSaveId,
+            status: "ready" as const,
+            bible: src.bible,
+            ...(src.attachedAtTurn !== undefined
+              ? { attachedAtTurn: src.attachedAtTurn }
+              : {}),
+            ...(src.lastRefreshAct !== undefined
+              ? { lastRefreshAct: src.lastRefreshAct }
+              : {}),
+            retryCount: src.retryCount ?? 0,
+            createdAt: now,
+            updatedAt: now,
+          }),
+        );
+      }
+    } catch {
+      // The fork itself is the contract — a missing bible copy just means
+      // the forked save plays bible-less (BC9).
+    }
+
     // Mirror the source decision-point scene onto the new save so the reader
     // lands on the forked prose + choices; picking a choice continues with
     // fresh LLM generation through the normal read loop. The mirror data comes

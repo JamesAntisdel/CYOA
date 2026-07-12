@@ -41,9 +41,13 @@ export function QuestLine({ arc, reducedMotion = false }: QuestLineProps) {
   const dots = beatDots(arc.beatsFired, arc.beatsTotal);
   const firedBeats = arc.firedBeats ?? [];
   const clock = arc.clock ?? null;
-  // The tiny inline flame lights only when the doom-clock is burning hot
-  // (≥75%) — a quiet urgency cue that doesn't clutter the strip otherwise.
-  const clockHot = clock ? candleSegments(clock.value, clock.max).flame : false;
+  // Inline pressure cue, aligned with the prompt's clock escalation bands: the
+  // scene prose starts tightening at 50% burned (clockDirective escalate_50),
+  // so the strip shows a dim candle from ≥50% and switches to the hot flame at
+  // ≥75% (candleSegments.flame) — the reader feels what the model is writing.
+  const clockModel = clock ? candleSegments(clock.value, clock.max) : null;
+  const clockHot = clockModel?.flame ?? false;
+  const clockDim = clockModel !== null && !clockHot && clockModel.pct >= 0.5;
   const summary = `Your pursuit: ${arc.dramaticQuestion}. Act ${act}. ${arc.beatsFired} of ${arc.beatsTotal} beats landed.`;
 
   return (
@@ -86,6 +90,23 @@ export function QuestLine({ arc, reducedMotion = false }: QuestLineProps) {
         </Text>
         {clock && clockHot ? (
           <CandleClock label={clock.label} value={clock.value} max={clock.max} inline reducedMotion={reducedMotion} />
+        ) : clock && clockDim && clockModel ? (
+          // Dim band (≥50%, not yet hot): a faint candle + count, no flame and
+          // no danger color — the pressure is present but not yet urgent.
+          <View
+            accessibilityLabel={`${clock.label}: ${clockModel.filled} of ${clockModel.total}, burning`}
+            style={{ alignItems: "center", flexDirection: "row", gap: 2, opacity: 0.7 }}
+          >
+            <Text aria-hidden variant="caption">
+              🕯
+            </Text>
+            <Text
+              style={{ color: tokens.colors.textFaint, fontFamily: tokens.typography.families.mono }}
+              variant="caption"
+            >
+              {`${clockModel.filled}/${clockModel.total}`}
+            </Text>
+          </View>
         ) : null}
       </Pressable>
 

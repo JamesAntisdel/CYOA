@@ -55,6 +55,12 @@ export function cloneState(state: PlayerState): PlayerState {
     // legacy saves — the conditional spread keeps them absent (BC4/BC9).
     ...(state.arc !== undefined ? { arc: cloneArc(state.arc) } : {}),
     ...(state.clock !== undefined ? { clock: { ...state.clock } } : {}),
+    // itemsEverGranted ledger (story-bible R4.1): optional, copied so appends
+    // on the new turn never leak into the previous snapshot. Legacy saves
+    // omit it — the conditional spread keeps it absent (BC4/BC9).
+    ...(state.itemsEverGranted !== undefined
+      ? { itemsEverGranted: [...state.itemsEverGranted] }
+      : {}),
   };
 }
 

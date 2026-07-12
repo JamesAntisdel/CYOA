@@ -589,3 +589,167 @@ describe("pursuit token budget (W2-S3, ≤ baseline + 1400 cumulative tokens)", 
     expect(addedTokens).toBeLessThanOrEqual(1400);
   });
 });
+
+// ===========================================================================
+// Story-bible digest section + registry gating rule (story-bible SB-S4, R3).
+// ===========================================================================
+
+import type { BibleDigest } from "@cyoa/engine";
+
+/**
+ * Worst-case digest fixture: every engine cap saturated (6 keys, 3 doors,
+ * 5 cast, 2 twists, 2 outstanding) with realistically long ids/labels/hints —
+ * the digest a maximally chatty bible actually produces after
+ * `buildBibleDigest`'s count caps and the renderer's per-field clips.
+ */
+function bibleDigestFixture(overrides: Partial<BibleDigest> = {}): BibleDigest {
+  const keys = [
+    ["bone-reliquary-key", "the Bone Reliquary Key", "opens the reliquary gate beneath the drowned chapel", true, true],
+    ["ferrymans-brass-token", "a ferryman's brass token", "buys one crossing over the flooded causeway", true, false],
+    ["tide-warden-seal", "the Tide Warden's wax seal", "commands the sluice crews at the outer locks", true, false],
+    ["salt-lantern", "a salt-crusted storm lantern", "lights the under-stair where the bells are kept", false, false],
+    ["drowned-ledger", "the drowned harbormaster's ledger", "names every soul who took the Crown's coin", false, false],
+    ["iron-writ-of-passage", "an iron writ of passage", "opens the landward gate after curfew", false, false],
+  ] as const;
+  return {
+    keys: keys.map(([id, label, opensHint, due, promised]) => ({
+      id,
+      label,
+      opensHint,
+      surfaceBand: "mid" as const,
+      due,
+      promised,
+    })),
+    doors: [
+      { id: "reliquary-gate", label: "the reliquary gate", keyId: "bone-reliquary-key", gateBand: "mid", note: "below the chapel; the verger guards it at night" },
+      { id: "flooded-causeway", label: "the flooded causeway crossing", keyId: "ferrymans-brass-token", gateBand: "mid", note: "the ferryman poles only for token-bearers" },
+      { id: "outer-locks", label: "the outer sluice locks", keyId: "tide-warden-seal", gateBand: "late", note: "crews obey the seal, not the face that carries it" },
+    ],
+    cast: [
+      { id: "mira-vale", label: "Mira Vale, ferrywoman", want: "passage north for her brother", secret: "she deserted the Iron Court fleet", bondHint: "pay her fare honestly three times" },
+      { id: "verger-ossian", label: "Ossian, the chapel verger", want: "to keep the reliquary sealed", secret: "he drowned the last keyholder himself", bondHint: "bring him proof of the Crown's debt" },
+      { id: "warden-hesse", label: "Tide Warden Hesse", want: "order at the locks at any cost", secret: "her seal is a forgery of the true one", bondHint: "cover for her when the audit comes" },
+      { id: "brother-callum", label: "Callum, the drowned bellringer", want: "someone to hear the sunken bells", secret: "he is not entirely dead", bondHint: "answer the bells three nights running" },
+      { id: "the-harbormaster", label: "the Harbormaster's shade", want: "the ledger burned unread", secret: "his own name leads the ledger", bondHint: "read him one name he cannot" },
+    ],
+    twists: [
+      { id: "the-drowned-bell", label: "the Drowned Bell tolls itself", precondition: "the reader has trusted the ferryman with a secret" },
+      { id: "seal-is-forged", label: "the Warden's seal is exposed", precondition: "the reader carries both seal and ledger at once" },
+    ],
+    outstanding: [
+      { keyId: "bone-reliquary-key", label: "the Bone Reliquary Key", state: "promised", promisedAtTurn: 4 },
+      { keyId: "ferrymans-brass-token", label: "a ferryman's brass token", state: "reoffer", grantedAtTurn: 6 },
+    ],
+    ...overrides,
+  };
+}
+
+describe("story-bible digest section (SB-S4, R3.1/R3.2/R3.5)", () => {
+  it("keeps bible-less prompts free of every bible marker (R3.5 — byte-identical path)", () => {
+    for (const prompt of [
+      buildScenePrompt(llmRequest()),
+      buildScenePrompt(llmRequest({ pursuit: pursuitFixture() })),
+    ]) {
+      expect(prompt).not.toContain("STORY BIBLE");
+      expect(prompt).not.toContain("REGISTRY RULE");
+      expect(prompt).not.toContain("OUTSTANDING KEYS");
+    }
+  });
+
+  it("renders the digest directly after the story-so-far summary, above the pursuit spine", () => {
+    const prompt = buildScenePrompt(
+      llmRequest({
+        storySummary: "LOCATION: the ferry dock at dusk.",
+        pursuit: pursuitFixture(),
+        storyBible: bibleDigestFixture(),
+      }),
+    );
+    const summaryIdx = prompt.indexOf("Story so far");
+    const bibleIdx = prompt.indexOf("STORY BIBLE (server plan");
+    const pursuitIdx = prompt.indexOf("== YOUR PURSUIT");
+    const memoryIdx = prompt.indexOf("Recent story memory");
+    expect(summaryIdx).toBeGreaterThan(-1);
+    expect(bibleIdx).toBeGreaterThan(summaryIdx);
+    expect(bibleIdx).toBeLessThan(pursuitIdx);
+    expect(pursuitIdx).toBeLessThan(memoryIdx);
+  });
+
+  it("renders keys with due/promised markers, doors, cast, twists, and OUTSTANDING KEYS lines", () => {
+    const prompt = buildScenePrompt(
+      llmRequest({ pursuit: pursuitFixture(), storyBible: bibleDigestFixture() }),
+    );
+    expect(prompt).toContain("KEYS (gate ONLY on these ids");
+    expect(prompt).toContain('- bone-reliquary-key "the Bone Reliquary Key"');
+    expect(prompt).toContain("[promised]");
+    expect(prompt).toContain("[due now]");
+    expect(prompt).toContain("[surfaces later]");
+    expect(prompt).toContain("DOORS planned: the reliquary gate (needs bone-reliquary-key, mid");
+    expect(prompt).toContain("CAST: Mira Vale, ferrywoman — wants passage north for her brother");
+    expect(prompt).toContain("TWISTS held back: the Drowned Bell tolls itself");
+    expect(prompt).toContain(
+      "OUTSTANDING KEYS: bone-reliquary-key teased at turn 4 — surface it naturally soon",
+    );
+    expect(prompt).toContain(
+      "OUTSTANDING KEYS: ferrymans-brass-token landed at turn 6 — re-offer its locked door",
+    );
+    // Gravity, not rails (R3.2).
+    expect(prompt).toContain("relocate or delay, never force");
+  });
+
+  it("skips empty digest subsections entirely", () => {
+    const prompt = buildScenePrompt(
+      llmRequest({
+        pursuit: pursuitFixture(),
+        storyBible: bibleDigestFixture({ doors: [], cast: [], twists: [], outstanding: [] }),
+      }),
+    );
+    expect(prompt).toContain("STORY BIBLE (server plan");
+    expect(prompt).not.toContain("DOORS planned:");
+    expect(prompt).not.toContain("CAST:");
+    expect(prompt).not.toContain("TWISTS held back:");
+    expect(prompt).not.toContain("OUTSTANDING KEYS:");
+  });
+});
+
+describe("story-bible GATED CHOICE tightening (SB-S4, R3.3)", () => {
+  it("adds the registry-only rule + in-world lockedHint requirement on bible+arc prompts", () => {
+    const prompt = buildScenePrompt(
+      llmRequest({ pursuit: pursuitFixture(), storyBible: bibleDigestFixture() }),
+    );
+    expect(prompt).toContain("GATED CHOICE — REGISTRY RULE");
+    expect(prompt).toContain("`has_item` conditions may ONLY reference ids listed under KEYS");
+    expect(prompt).toContain("never gate on an id the story has not introduced");
+    expect(prompt).toContain(
+      "must NEVER name a hidden stat, a flag, or an internal id",
+    );
+  });
+
+  it("keeps the rule out of arc prompts without a bible (R3.5)", () => {
+    const prompt = buildScenePrompt(llmRequest({ pursuit: pursuitFixture() }));
+    expect(prompt).toContain("GATED CHOICE —"); // the base W1 rule is untouched
+    expect(prompt).not.toContain("REGISTRY RULE");
+  });
+});
+
+describe("story-bible token budget (SB-S4, R3.4 — digest + rule ≤ 600 tokens)", () => {
+  it("stays within +600 tokens over the same worst-case prompt without the digest", () => {
+    const base = llmRequest({
+      produceArc: true,
+      storySummary: "LOCATION: the ferry dock at dusk.",
+      pursuit: pursuitFixture({
+        firedBeatLabels: ["A", "B", "C", "D"],
+        directive: "surface_beat",
+        surfaceBeatLabel: "The flood gate breaks",
+        threadFires: ["a long foreshadow line that pays off a much earlier promise"],
+        clock: { label: "The candle burns", value: 9, max: 12, directive: "escalate_75" },
+      }),
+    });
+    const withoutBible = buildScenePrompt(base);
+    const withBible = buildScenePrompt({ ...base, storyBible: bibleDigestFixture() });
+    // 4-chars/token heuristic (SB5): the story-bible slice of the R16.5
+    // cumulative budget is ≤600 tokens (R3.4).
+    const addedTokens = (withBible.length - withoutBible.length) / 4;
+    expect(addedTokens).toBeGreaterThan(0);
+    expect(addedTokens).toBeLessThanOrEqual(600);
+  });
+});

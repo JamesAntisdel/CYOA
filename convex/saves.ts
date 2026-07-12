@@ -5,6 +5,7 @@ import {
   evaluateNodeChoices,
   llmSceneOutputSchema,
   migrateEngineState,
+  resolveSkillCheck,
   resolveTerminal,
   type ChoiceEvaluation,
   type LlmSceneProposal,
@@ -152,15 +153,27 @@ export type ProjectionCheck = {
   label: string;
   difficulty: "easy" | "risky" | "desperate";
   odds: "likely" | "even" | "risky" | "desperate";
+  /**
+   * Companion-support PHRASE ("Mira stands with you") when visible companion
+   * attributes would add to this check — the same contributions
+   * `resolveChoiceCheck` folds into its breakdown. Words only, never the bonus
+   * number (BC10). Absent when no companion helps (legacy shape unchanged).
+   */
+  companion?: string;
 };
 
 /**
  * A projected choice: the engine's `ChoiceEvaluation` (choice + visibility +
  * lockedHint) plus the optional W2 skill-check summary. `check` is present only
  * on choices the LLM gated behind a `skillCheck`; mutually exclusive with a
- * locked state (R7.5).
+ * locked state (R7.5). `nearness` is the near-miss BAND on a locked numeric
+ * gate — a phrase, never the value/threshold (BC10, same discipline as the
+ * check odds phrase).
  */
-export type ProjectedChoice = ChoiceEvaluation & { check?: ProjectionCheck };
+export type ProjectedChoice = ChoiceEvaluation & {
+  check?: ProjectionCheck;
+  nearness?: "near" | "far";
+};
 
 /** One Codex row (design §7). `turnNumber` is when the truth was recorded. */
 export type CodexEntry = { flag: string; text: string; turnNumber: number };
@@ -607,6 +620,8 @@ export function projectLlmDrivenScene(input: {
     choiceId: string;
     visibility: "visible" | "locked";
     lockedHint?: string;
+    /** Engine near-miss band on a locked numeric gate (optional — legacy callers omit it). */
+    nearness?: "near" | "far";
   }>;
 }): SceneProjection {
   // The reader doesn't render effects on choices — they exist only for the
@@ -637,6 +652,13 @@ export function projectLlmDrivenScene(input: {
       },
       visibility,
       ...(evaluated?.lockedHint ? { lockedHint: evaluated.lockedHint } : {}),
+      // Near-miss band (BC10): the PHRASE only — value/threshold never leave
+      // the server (see the `deriveCheckOdds` odds-phrase precedent). Gated on
+      // `locked` because the engine's scene invariants can flip a result back
+      // to visible (unlock) without scrubbing a stale band.
+      ...(visibility === "locked" && evaluated?.nearness
+        ? { nearness: evaluated.nearness }
+        : {}),
       ...(check ? { check } : {}),
     };
   });
@@ -737,12 +759,44 @@ function projectChoiceCheck(
     raw.difficulty === "easy" || raw.difficulty === "risky" || raw.difficulty === "desperate"
       ? raw.difficulty
       : "risky";
+  const companion = deriveCheckCompanionPhrase(state, statId);
   return {
     statId,
     label: state.attributes?.[statId]?.label ?? statId,
     difficulty,
     odds: deriveCheckOdds(state, { statId, difficulty }),
+    ...(companion !== undefined ? { companion } : {}),
   };
+}
+
+/**
+ * Companion-support phrase for the check chip: WHO stands with the reader when
+ * visible companion attributes would add to the check — the same
+ * `companionContributions` that `resolveChoiceCheck` folds into its score. A
+ * PHRASE only; the bonus value never leaves the server (BC10, same discipline
+ * as the odds phrase). Tolerant: an engine rejection or a name-less roster
+ * yields no phrase, never a turn failure. Exported for the projection tests.
+ */
+export function deriveCheckCompanionPhrase(
+  state: PlayerState,
+  statId: string,
+): string | undefined {
+  try {
+    // The numeric difficulty only affects pass/fail, not the contributions —
+    // any value works for reading WHO helps.
+    const breakdown = resolveSkillCheck(state, { statId, difficulty: 0, includeCompanions: true });
+    const roster = Object.values(state.npcs ?? {});
+    const names = breakdown.companionContributions
+      .filter((entry) => entry.value > 0)
+      .map((entry) => roster.find((npc) => npc?.id === entry.npcId)?.name)
+      .filter((name): name is string => typeof name === "string" && name.length > 0);
+    if (names.length === 0) return undefined;
+    if (names.length === 1) return `${names[0]} stands with you`;
+    if (names.length === 2) return `${names[0]} and ${names[1]} stand with you`;
+    return `${names[0]}, ${names[1]}, and others stand with you`;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

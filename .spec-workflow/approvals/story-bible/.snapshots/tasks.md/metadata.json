@@ -1,0 +1,22 @@
+{
+  "filePath": ".spec-workflow/specs/story-bible/tasks.md",
+  "currentVersion": 2,
+  "snapshots": [
+    {
+      "version": 1,
+      "filename": "snapshot-001.json",
+      "timestamp": "2026-07-11T05:46:36.176Z",
+      "trigger": "initial",
+      "approvalId": "approval_1783748796167_vfojpd5ub",
+      "approvalTitle": "Story Bible — Tasks (agent team breakdown, SB-E/SB-S/integrator)"
+    },
+    {
+      "version": 2,
+      "filename": "snapshot-002.json",
+      "timestamp": "2026-07-11T05:56:09.571Z",
+      "trigger": "approved",
+      "approvalId": "approval_1783748796167_vfojpd5ub",
+      "approvalTitle": "Story Bible — Tasks (agent team breakdown, SB-E/SB-S/integrator)"
+    }
+  ]
+}

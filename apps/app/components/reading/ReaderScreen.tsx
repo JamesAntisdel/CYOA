@@ -6,6 +6,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { AppNav } from "../navigation";
 import { Text } from "../primitives";
 import { useAccountProfile } from "../../hooks/useAccountProfile";
+import { useLibrary } from "../../hooks/useLibrary";
 import { useReaderSettings } from "../../hooks/useReaderSettings";
 import { guestAuthArgs, useGuestSession } from "../../hooks/useGuestSession";
 import { hasRemoteGameApi } from "../../lib/gameApi";
@@ -244,6 +245,7 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
     chapterBoundary,
     acknowledgeChapter,
     recentChoiceEcho,
+    choiceHistory,
     retryCurrentTurn,
   } = useTurn(saveId);
   const { isStreaming, streamedProse } = useStreamingScene(projection.scene, {
@@ -330,6 +332,40 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
       return next;
     });
   }, []);
+  // Terminal-panel promises (core-read-loop Req 8.3 / story-engagement R14.2).
+  // "Begin again" creates a FRESH save of the SAME story via the exact
+  // create-save flow the cover screen uses (useLibrary.createSave, with
+  // `forceNew` so it never resumes the just-ended run) and opens its reader.
+  // Guest/limit/network failures fall back to the story cover — the tap must
+  // never be dead. The in-flight ref suppresses double-taps synchronously.
+  const library = useLibrary(guest.session);
+  const beginAgainInFlightRef = useRef(false);
+  const beginAgain = useCallback(async () => {
+    if (beginAgainInFlightRef.current) return;
+    beginAgainInFlightRef.current = true;
+    try {
+      const storyId = projection.storyId;
+      if (!storyId) {
+        // No story identity on this projection (legacy/demo shell) — the
+        // cover screen is the closest place to start over from.
+        router.push("/");
+        return;
+      }
+      // Fresh runs always restart in Story mode: Hardcore requires the
+      // explicit consent gate in the seed flow, so we never auto-relaunch it.
+      const save = await library.createSave(storyId, "story", undefined, undefined, undefined, {
+        forceNew: true,
+      });
+      router.push(`/read/${save.saveId}`);
+    } catch {
+      // guest_session_required / save limits / network — land on the cover
+      // so the reader can restart from there.
+      router.push("/");
+    } finally {
+      beginAgainInFlightRef.current = false;
+    }
+  }, [library, projection.storyId, router]);
+
   const inlineMoment = pickInlineMoment(cinematicViews, seenCinematics);
   const showInlineMoment = Boolean(inlineMoment) && !projection.ending && !chapterBoundary;
   // The chapter stinger shown at the chapter-end recap: the newest chapter
@@ -432,6 +468,17 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
             onOpenEndings={() => router.push("/endings")}
             onOpenLibrary={() => router.push("/library")}
             onReturnHome={() => router.push("/")}
+            // Terminal-panel promises. "Begin again" = fresh save of the SAME
+            // story (Req 8.3); "See the map" = this save's path map; "Fork
+            // from a decision" = the run-history fork surface (R14.2). The
+            // legacy onReturnHome / onOpenEndings wires above stay for the
+            // non-terminal chrome (and as builder fallbacks).
+            onBeginAgain={() => void beginAgain()}
+            onSeeMap={() => router.push(`/map/${saveId}`)}
+            onFork={() => router.push(`/read/${saveId}/history`)}
+            // The run's visible-choice history — drives the terminal panel's
+            // ConsequenceReel ("your choices echoed").
+            choiceHistory={choiceHistory}
             pendingChoiceId={pendingChoiceId}
             projection={projectionWithLiveMedia}
             reducedMotion={reduceMotion || settings.reduceMotion}

@@ -58,6 +58,7 @@ import type * as llm_prompts_scene from "../llm/prompts/scene.js";
 import type * as llm_providerPolicy from "../llm/providerPolicy.js";
 import type * as llm_responseSchema from "../llm/responseSchema.js";
 import type * as llm_router from "../llm/router.js";
+import type * as llm_storyBible from "../llm/storyBible.js";
 import type * as llm_summarizer from "../llm/summarizer.js";
 import type * as llm_ttsVoices from "../llm/ttsVoices.js";
 import type * as llm_types from "../llm/types.js";
@@ -145,6 +146,7 @@ declare const fullApi: ApiFromModules<{
   "llm/providerPolicy": typeof llm_providerPolicy;
   "llm/responseSchema": typeof llm_responseSchema;
   "llm/router": typeof llm_router;
+  "llm/storyBible": typeof llm_storyBible;
   "llm/summarizer": typeof llm_summarizer;
   "llm/ttsVoices": typeof llm_ttsVoices;
   "llm/types": typeof llm_types;

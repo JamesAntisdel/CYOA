@@ -98,6 +98,16 @@ export function useLibrary(session: GuestSession | null) {
          */
         dailyId?: string;
       },
+      options?: {
+        /**
+         * Skip the reuse-an-active-save shortcut and always mint a fresh save
+         * (core-read-loop Req 8.3 — the ending panel's "Begin again"). The
+         * shortcut reads the localStorage library snapshot, which can still
+         * mark the just-ended save "active" mid-session and would bounce the
+         * reader straight back onto their own corpse.
+         */
+        forceNew?: boolean;
+      },
     ) => {
       if (!session) {
         throw new Error("guest_session_required");
@@ -114,12 +124,13 @@ export function useLibrary(session: GuestSession | null) {
 
       const now = Date.now();
       const existing = readSaves(session.accountId);
-      // Reuse an existing active save only for non-seeded launches. Every
-      // reader-authored seed must create a NEW save — otherwise launching
-      // a second seeded adventure (which shares the OPEN_STARTER_ID
-      // "open-canvas" storyId with prior seeded saves) would hijack the
-      // first one and reopen its premise instead of starting fresh.
-      if (!seed?.premise) {
+      // Reuse an existing active save only for non-seeded, non-forced
+      // launches. Every reader-authored seed must create a NEW save —
+      // otherwise launching a second seeded adventure (which shares the
+      // OPEN_STARTER_ID "open-canvas" storyId with prior seeded saves) would
+      // hijack the first one and reopen its premise instead of starting
+      // fresh. `forceNew` (Begin again) likewise always mints a new run.
+      if (!seed?.premise && !options?.forceNew) {
         const existingActiveSave = existing.find(
           (save) => save.storyId === storyId && save.status === "active",
         );

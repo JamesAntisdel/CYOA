@@ -1,4 +1,4 @@
-import type { NpcState } from "@cyoa/engine";
+import type { BibleDigest, NpcState } from "@cyoa/engine";
 
 import type {
   CheckOutcomePromptContext,
@@ -224,6 +224,98 @@ export function buildCheckOutcomeSection(check: CheckOutcomePromptContext): stri
   return lines.join("\n");
 }
 
+// Per-field render clamps for the STORY BIBLE digest (story-bible R3.4). The
+// engine's digest caps COUNTS (≤6 keys / ≤3 doors / ≤2 twists / ≤2
+// outstanding); these clamp the rendered TEXT so even a bible whose strings
+// all sit at their validation maxima (label 80 / hint 120) cannot push the
+// digest past its ≤600-token budget slice. Mid-phrase truncation is fine —
+// this is planner-facing shorthand, not reader prose.
+const BIBLE_LINE_LABEL_MAX = 48;
+const BIBLE_LINE_HINT_MAX = 72;
+const BIBLE_LINE_CAST_MAX = 56;
+
+function clipBibleText(text: string, max: number): string {
+  const trimmed = (text ?? "").trim();
+  return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed;
+}
+
+/**
+ * Render the STORY BIBLE digest section (story-bible R3.1–R3.2, design §4).
+ * Placed directly after the story-so-far summary so it reads as canonical
+ * continuity. The digest arrives pre-filtered + capped from the engine's
+ * `buildBibleDigest` (due-band keys, due/promised doors, cast, pending
+ * twists, OUTSTANDING KEYS lines); this renderer only formats — gravity, not
+ * rails: the guidance line makes relocate/delay explicit and the reader's
+ * actions always win. Returns null when the request carries no digest so
+ * bible-less prompts stay byte-identical (R3.5/BC9).
+ *
+ * Spoiler discipline (BC10): this section exists ONLY in the LLM prompt. No
+ * digest field is ever projected to the client.
+ */
+export function buildStoryBibleSection(digest: BibleDigest): string {
+  const lines: string[] = [
+    "STORY BIBLE (server plan — canonical, invisible to the reader):",
+  ];
+  if (digest.keys.length > 0) {
+    lines.push("KEYS (gate ONLY on these ids; grant before or while gating):");
+    for (const key of digest.keys) {
+      const hint = clipBibleText(key.opensHint, BIBLE_LINE_HINT_MAX);
+      const marker = key.promised ? "[promised]" : key.due ? "[due now]" : "[surfaces later]";
+      lines.push(
+        `- ${key.id} "${clipBibleText(key.label, BIBLE_LINE_LABEL_MAX)}"${hint ? ` — ${hint}` : ""} ${marker}`,
+      );
+    }
+  }
+  if (digest.doors.length > 0) {
+    // Door notes are deliberately NOT rendered (budget, R3.4) — the label +
+    // key id + band carry the plan; the key's own opensHint has the flavor.
+    const doors = digest.doors
+      .map(
+        (door) =>
+          `${clipBibleText(door.label, BIBLE_LINE_LABEL_MAX)} (needs ${door.keyId}, ${door.gateBand})`,
+      )
+      .join("; ");
+    lines.push(`DOORS planned: ${doors}`);
+  }
+  if (digest.cast.length > 0) {
+    // want + secret only (design §4 example); bondHint stays server-side —
+    // the NPC sheets already carry relationship texture (budget, R3.4).
+    for (const member of digest.cast) {
+      const parts = [
+        member.want ? `wants ${clipBibleText(member.want, BIBLE_LINE_CAST_MAX)}` : null,
+        member.secret ? `secret: ${clipBibleText(member.secret, BIBLE_LINE_CAST_MAX)}` : null,
+      ].filter((part): part is string => part !== null);
+      lines.push(
+        `CAST: ${clipBibleText(member.label, BIBLE_LINE_LABEL_MAX)}${parts.length > 0 ? ` — ${parts.join("; ")}` : ""}`,
+      );
+    }
+  }
+  if (digest.twists.length > 0) {
+    const twists = digest.twists
+      .map((twist) => {
+        const pre = clipBibleText(twist.precondition, BIBLE_LINE_HINT_MAX);
+        return `${clipBibleText(twist.label, BIBLE_LINE_LABEL_MAX)}${pre ? ` (needs: ${pre})` : ""}`;
+      })
+      .join("; ");
+    lines.push(`TWISTS held back: ${twists}`);
+  }
+  for (const entry of digest.outstanding) {
+    if (entry.state === "promised") {
+      lines.push(
+        `OUTSTANDING KEYS: ${entry.keyId} teased at turn ${entry.promisedAtTurn} — surface it naturally soon.`,
+      );
+    } else {
+      lines.push(
+        `OUTSTANDING KEYS: ${entry.keyId} landed at turn ${entry.grantedAtTurn} — re-offer its locked door within 2 scenes.`,
+      );
+    }
+  }
+  lines.push(
+    "Guidance: weave due entries in when natural; the reader's actions always win; relocate or delay, never force.",
+  );
+  return lines.join("\n");
+}
+
 /**
  * Turn-1 STORY ARC production block (R1.1). Instructs the model to emit a
  * `storyArc` object alongside the scene so the engine can persist the spine.
@@ -340,7 +432,14 @@ function buildLlmDrivenPrompt(request: SceneGenerationRequest): string {
   const checkOutcomeBlock = request.checkOutcome
     ? buildCheckOutcomeSection(request.checkOutcome)
     : null;
+  // Story-bible digest (R3.1). Rendered right after the story-so-far summary
+  // so it reads as canonical continuity. Absent on bible-less saves — the
+  // prompt stays byte-identical to today (R3.5/BC9).
+  const storyBibleBlock = request.storyBible
+    ? buildStoryBibleSection(request.storyBible)
+    : null;
   const hasArc = request.pursuit !== undefined;
+  const hasBible = request.storyBible !== undefined;
   const candidateEndings = request.pursuit?.candidateEndings ?? [];
   const hasNpcSheets = Array.isArray(request.npcSheets) && request.npcSheets.length > 0;
   // Build the output rule bodies dynamically so the numbering stays consecutive
@@ -382,6 +481,15 @@ function buildLlmDrivenPrompt(request: SceneGenerationRequest): string {
       "CHOICE CONSEQUENCE (this outranks flavor) — every choice you offer should visibly ADVANCE THE PURSUIT, SPEND OR RISK A RESOURCE, or CHANGE A RELATIONSHIP. Label concrete costs in the choice text itself, e.g. \"Bribe the ferryman (-15 gold)\" or \"Break the seal (risk your Nerve)\". A choice with no mechanical or arc consequence is a defect.",
       "GATED CHOICE — roughly every 2-4 scenes, include EXACTLY ONE choice the reader cannot take yet, gated on state they have or nearly have. Attach `conditions` (0-2 of: { kind: 'stat_at_least'|'stat_at_most', statId, value }, { kind: 'has_item'|'missing_item', itemId }, { kind: 'flag_equals', flag, value }, { kind: 'currency_at_least', value }) and a `lockedHint` (≤90 chars, e.g. \"Needs the Bone Key\") so the reader sees the locked door and wants it. At most ONE gated choice per scene, and never gate so hard that fewer than 2 choices remain takeable.",
       "ITEM-ID CONSISTENCY (critical — a mismatch locks a door forever) — when you gate a choice on `has_item`/`missing_item`, the `itemId` MUST be the SAME id you used in the `inventory_add` that grants the item. Reuse the exact kebab-case id (e.g. grant `{ kind: 'inventory_add', item: { id: 'bone-key', label: 'Bone Key' } }`, then gate with `{ kind: 'has_item', itemId: 'bone-key' }`). Do not invent a new spelling ('bonekey', 'the_bone_key', 'Bone Key') for the same object — the reader will hold the key and still be locked out. The Current Player State block lists every held item's id; copy the id from there.",
+      // Story-bible registry tightening (R3.3): only when a digest is present
+      // (bible-less prompts stay byte-identical — R3.5). `has_item` gates are
+      // registry-enforced server-side; this rule makes the contract explicit
+      // so hallucinated gate ids stop at the source.
+      ...(hasBible
+        ? [
+            "GATED CHOICE — REGISTRY RULE — `has_item` conditions may ONLY reference ids listed under KEYS in the STORY BIBLE, items the reader currently holds, or items granted earlier this run; to tease a brand-new key, grant it this scene — never gate on an id the story has not introduced. `lockedHint` must be in-world language and must NEVER name a hidden stat, a flag, or an internal id.",
+          ]
+        : []),
       "THREADS (foreshadowing that pays off) — use the `delayed` effect to plant a seed now that fires later: at most ONE `delayed` per scene, and its `note` is the foreshadow line the reader should feel when it lands. When a thread fires (surfaced in YOUR PURSUIT as \"A THREAD FIRES THIS SCENE\"), you MUST narrate the callback this scene.",
     );
     if (candidateEndings.length > 0) {
@@ -423,6 +531,9 @@ function buildLlmDrivenPrompt(request: SceneGenerationRequest): string {
     turnContext,
     `Scene length: ${lengthInstruction(request.sceneLength, turnBand)}`,
     storySummaryBlock,
+    // Story-bible digest rides directly after the summary (R3.1) so the plan
+    // reads as canonical continuity. Null on bible-less saves (R3.5).
+    storyBibleBlock,
     // Pursuit section sits ABOVE the memory window — canonical spine before
     // scene texture (R6.1). The resolved check outcome (W2) rides just under it.
     pursuitBlock,

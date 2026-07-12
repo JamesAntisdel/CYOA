@@ -9,6 +9,7 @@ import { guestAuthArgs, useGuestSession } from "../../hooks/useGuestSession";
 import { useLibrary } from "../../hooks/useLibrary";
 import { useTrophyCinematics } from "../../hooks/useTrophyCinematics";
 import { hasRemoteGameApi } from "../../lib/gameApi";
+import { preferredPathHint, prettifyEndingLabel } from "../../lib/endingLabels";
 import { listRemoteUnlockedEndings, type RemoteUnlockedEnding } from "../../lib/endingsApi";
 import type { RemoteCinematicView } from "../../lib/cinematicApi";
 import { useAppTheme } from "../../theme";
@@ -47,11 +48,18 @@ function buildEndingNodes(
       seen.add(key);
       const unlock = unlockByKey.get(key);
       const cinematic = cinematicsByEndingId[ending.id];
+      // Prefer the server-persisted choice labels (`pathLabels`); legacy rows
+      // fall back to the recorded node-id path, which can contain synthetic
+      // `storyId:llm:N` ids — preferredPathHint drops those and title-cases
+      // the readable slugs, so machine hints never surface.
+      const pathHint = unlock
+        ? preferredPathHint(unlock.pathLabels, unlock.path)
+        : undefined;
       nodes.push({
         id: key,
         title: ending.label,
         unlocked: Boolean(unlock),
-        ...(unlock && unlock.path.length > 0 ? { pathHint: unlock.path.join(" → ") } : {}),
+        ...(pathHint ? { pathHint } : {}),
         ...(unlock && now - unlock.firstSeen < NEW_BADGE_WINDOW_MS ? { isNew: true } : {}),
         ...(unlock && cinematic ? { cinematic } : {}),
       });
@@ -64,11 +72,16 @@ function buildEndingNodes(
     if (seen.has(key)) continue;
     seen.add(key);
     const cinematic = cinematicsByEndingId[u.endingId];
+    // Prefer a server-persisted label; fall back to a title-cased slug so
+    // kebab-case endingIds ("grim-harvest") read as trophies, and machine
+    // ids never leak (see lib/endingLabels.ts). Same preference for the path
+    // hint: server choice labels first, prettified node ids for legacy rows.
+    const pathHint = preferredPathHint(u.pathLabels, u.path);
     nodes.push({
       id: key,
-      title: u.safetyEnding ? "A safe close" : u.endingId,
+      title: u.safetyEnding ? "A safe close" : prettifyEndingLabel(u.endingId, u.label),
       unlocked: true,
-      ...(u.path.length > 0 ? { pathHint: u.path.join(" → ") } : {}),
+      ...(pathHint ? { pathHint } : {}),
       ...(now - u.firstSeen < NEW_BADGE_WINDOW_MS ? { isNew: true } : {}),
       ...(cinematic ? { cinematic } : {}),
     });
