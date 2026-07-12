@@ -79,6 +79,56 @@ describe("starter stories", () => {
     expect(() => assertValidStory(story)).toThrow(/startNodeId: Start node does not exist/u);
   });
 
+  it("fails validation when an authored gate's key is never granted (dead key)", () => {
+    const story = structuredClone(trainingRoom.story);
+    story.nodes["rune-hall"]!.choices[0]!.conditions = [
+      { kind: "has_item", itemId: "golden_key", hint: "Needs Golden Key" },
+    ];
+
+    const result = validateStory(story);
+
+    expect(result.valid).toBe(false);
+    const lintIssue = result.issues.find((issue) => issue.severity === "error");
+    expect(lintIssue?.path).toBe("nodes.rune-hall.choices.unlock-gate.conditions.0");
+    expect(lintIssue?.message).toContain('"golden_key"');
+    expect(() => assertValidStory(story)).toThrow(/golden_key/u);
+  });
+
+  it("fails validation on strict-vs-fuzzy spelling drift, citing both spellings", () => {
+    const story = structuredClone(trainingRoom.story);
+    // The grant stays "rusty_key"; the gate drifts to "Rusty-Key". The
+    // authored runtime matches ids strictly (engine hasItem), so this is a
+    // soft-lock even though normalizeItemRef would consider them the same.
+    story.nodes["rune-hall"]!.choices[0]!.conditions = [
+      { kind: "has_item", itemId: "Rusty-Key", hint: "Needs Rusty Key" },
+    ];
+
+    const result = validateStory(story);
+
+    expect(result.valid).toBe(false);
+    const lintIssue = result.issues.find((issue) => issue.severity === "error");
+    expect(lintIssue?.message).toContain('"Rusty-Key"');
+    expect(lintIssue?.message).toContain('"rusty_key"');
+  });
+
+  it("keeps unreachable-stat lint warnings non-blocking", () => {
+    const story = structuredClone(trainingRoom.story);
+    story.nodes["weight-room"]!.choices[2]!.conditions = [
+      { kind: "stat_at_least", statId: "resolve", value: 99 },
+    ];
+
+    const result = validateStory(story);
+
+    expect(result.valid).toBe(true);
+    expect(result.issues).toEqual([
+      expect.objectContaining({
+        severity: "warning",
+        path: "nodes.weight-room.choices.force-final-door.conditions.0",
+      }),
+    ]);
+    expect(() => assertValidStory(story)).not.toThrow();
+  });
+
   it("training-room includes required tutorial mechanics", () => {
     const story = trainingRoom.story;
     const nodes = Object.values(story.nodes);

@@ -349,6 +349,40 @@ export default defineSchema({
     status: v.union(v.literal("draft"), v.literal("published"), v.literal("archived")),
     story: jsonValue,
     safetySummary: jsonValue,
+    // --- creator-arc community shelf (core-read-loop Req 22.3/22.6; steering
+    // product feature 13). ALL optional: legacy rows keep working untouched.
+    // Publish metadata collected in the creator route's publish step
+    // (mirrors the tale-publish form: synopsis / privacy / fork policy).
+    // Synopsis is capped at 200 chars server-side (SEED_SYNOPSIS_MAX).
+    synopsis: v.optional(v.string()),
+    // SeedTone id from the creator UI (e.g. "gothic-mystery"); free string
+    // server-side, capped at 40 chars.
+    tone: v.optional(v.string()),
+    // Community-shelf visibility. ABSENT on seeds published before this field
+    // existed — read as "unlisted" (owner + direct-link only) so nothing that
+    // was published pre-shelf leaks onto the public shelf retroactively.
+    visibility: v.optional(v.union(v.literal("public"), v.literal("unlisted"))),
+    // Mature-exclusion mirror of published_tales.isMature (Req 12.9): derived
+    // from the publish-time safety summary's matureCategories. Defensive —
+    // the publishing-surface policy currently blocks mature text outright, so
+    // this is false on every seed the gate lets through — but the shelf query
+    // filters on it so a future policy loosening can't leak mature seeds to
+    // guests / non-opted-in readers. Absent = derive from safetySummary.
+    isMature: v.optional(v.boolean()),
+    // Remix policy mirroring TaleForkPolicy semantics collapsed to the two
+    // states that make sense for a whole-graph copy (there is no mid-run
+    // decision point to fork from). Absent = "allowed" (matches the open
+    // default tales ship with).
+    forkPolicy: v.optional(v.union(v.literal("allowed"), v.literal("disabled"))),
+    // Publish timestamp for shelf ordering + cursor paging (newest first).
+    // Absent on legacy published rows — readers fall back to updatedAt
+    // (published seeds are immutable, so updatedAt ≈ publish time).
+    publishedAt: v.optional(v.number()),
+    // Remix lineage: set on a draft created by `creatorFunctions:remix`.
+    // Title is denormalized so the credit line survives the source seed
+    // being archived or retitled.
+    remixOfSeedId: v.optional(v.id("authored_seeds")),
+    remixOfTitle: v.optional(v.string()),
     createdAt: v.number(),
     updatedAt: v.number(),
   })

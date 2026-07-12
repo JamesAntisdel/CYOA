@@ -24,6 +24,7 @@ import { PATRON_TIERS_BY_ID, resolvePatronTier } from "../../lib/billingConfig";
 import { useBreakpoint } from "../../lib/responsive";
 import { useAppTheme } from "../../theme";
 import { ChapterEnd } from "./ChapterEnd";
+import { DoorsJournal } from "./DoorsJournal";
 import { QuestLine } from "./QuestLine";
 import { ThreadsPill } from "./ThreadsPill";
 import { READER_LAYOUTS } from "./layouts";
@@ -423,6 +424,14 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
               {...(projection.recentDiffs ? { recentDiffs: projection.recentDiffs } : {})}
             />
           ) : null}
+          {/* DOORS-JOURNAL — the teased-doors pill (story-bible fetch-quest
+              loop, reader half). Self-fetching + zero-state invisible, so
+              legacy / bible-less / local saves render nothing here. */}
+          <DoorsJournal
+            saveId={saveId}
+            sceneId={projection.scene.id}
+            {...(remoteAuth ? { auth: remoteAuth } : {})}
+          />
         </View>
 
         <ReaderSaveActions saveId={saveId} />

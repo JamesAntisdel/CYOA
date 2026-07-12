@@ -1,15 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { ScrollView, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { Story } from "@cyoa/engine";
 import { OPEN_STARTER_ID } from "@cyoa/stories";
 
-import { SeedStoryFlow } from "../../components/creator";
+import { SeedStoryFlow, SeedToneSelector, type SeedTone } from "../../components/creator";
 import { AppNav } from "../../components/navigation";
 import { Button, Chip, Divider, Stamp, Surface, Text } from "../../components/primitives";
 import { convexClient } from "../../lib/convex";
 import { convexHttp } from "../../lib/convexHttp";
+import { templateFormValues } from "../../lib/creatorTemplates";
 import { createRemoteCreatorDraft, publishRemoteCreatorSeed } from "../../lib/gameApi";
 import { listLocalCreatorSeeds, saveLocalCreatorSeed } from "../../lib/localCreatorSeeds";
 import { useBreakpoint } from "../../lib/responsive";
@@ -26,6 +27,10 @@ type CreatorSeedStatus = "draft" | "published" | "archived";
 type CreatorFormField = "title" | "opening" | "carefulChoice" | "boldChoice" | "general";
 
 type SeedIssue = { path: string; message: string; kind?: "structure" | "safety" };
+
+/** Non-blocking lint advisory from `creatorFunctions:validateSeed` (creator-arc
+ * publish gate: errors block, warnings surface with confirmation copy). */
+type SeedAdvisory = { path: string; message: string; severity: "warning" | "info" };
 
 type ShelfSeed = {
   seedId: string;
@@ -57,7 +62,7 @@ async function validateRemoteCreatorSeed(input: {
   accountId: string;
   guestTokenHash?: string;
   story: Story;
-}): Promise<{ valid: boolean; issues: SeedIssue[] } | null> {
+}): Promise<{ valid: boolean; issues: SeedIssue[]; advisories?: SeedAdvisory[] } | null> {
   if (!convexClient) return null;
   return convexHttp("query", "creatorFunctions:validateSeed", input as unknown as Record<string, unknown>);
 }
@@ -136,6 +141,10 @@ export function formValuesFromStory(story: Story): {
 
 export default function CreatorRoute() {
   const router = useRouter();
+  // ?template=<stub id> prefiils the form from a chosen starter stub;
+  // ?load=<seedId> auto-loads a drafts-shelf seed (the Discover remix flow
+  // lands here with the freshly credited draft).
+  const params = useLocalSearchParams<{ template?: string; load?: string }>();
   const guest = useGuestSession();
   const library = useLibrary(guest.session);
   // Story-engagement Wave 3 (R12.2): the account's owned keepsakes feed the
@@ -150,12 +159,20 @@ export default function CreatorRoute() {
   // wastes ~48px on phones, cramping inputs that already have their own
   // borderWidth + padding.
   const { isPhone } = useBreakpoint();
-  const [title, setTitle] = useState("Lantern Market");
-  const [opening, setOpening] = useState(
-    "A midnight market opens under glass lanterns, and every stall asks for a different kind of courage.",
+  // The form starts from a CHOSEN template (?template=) or blank — never from
+  // prefilled sample text (the old "Lantern Market" default polluted drafts
+  // saved without edits). `templateFormValues` returns blanks for unknown ids.
+  const initialForm = useMemo(
+    () => templateFormValues(typeof params.template === "string" ? params.template : null),
+    // Deliberately locked to the mount-time param: later param churn must not
+    // clobber in-progress edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
   );
-  const [carefulChoice, setCarefulChoice] = useState("Ask the mapmaker which lantern is safest.");
-  const [boldChoice, setBoldChoice] = useState("Follow the brightest lantern into the crowd.");
+  const [title, setTitle] = useState(initialForm.title);
+  const [opening, setOpening] = useState(initialForm.opening);
+  const [carefulChoice, setCarefulChoice] = useState(initialForm.carefulChoice);
+  const [boldChoice, setBoldChoice] = useState(initialForm.boldChoice);
   const [seedId, setSeedId] = useState<string | null>(null);
   // Tracks the loaded/saved seed's lifecycle so saveDraft knows whether the
   // current seedId is an updatable remote draft (published/archived seeds are
@@ -169,6 +186,19 @@ export default function CreatorRoute() {
   const [fieldIssues, setFieldIssues] = useState<Partial<Record<CreatorFormField, string[]>>>({});
   const [shelf, setShelf] = useState<ShelfSeed[]>([]);
   const [shelfNonce, setShelfNonce] = useState(0);
+  // Publish panel (creator-arc, Req 22.6): metadata mirroring the tale-publish
+  // form (synopsis / visibility / remix policy + tone), plus the non-blocking
+  // lint advisories surfaced for confirmation before publish.
+  const [publishPanelOpen, setPublishPanelOpen] = useState(false);
+  const [synopsis, setSynopsis] = useState("");
+  const [publishTone, setPublishTone] = useState<SeedTone | null>(null);
+  const [visibility, setVisibility] = useState<"public" | "unlisted">("public");
+  const [remixAllowed, setRemixAllowed] = useState(true);
+  const [advisories, setAdvisories] = useState<SeedAdvisory[]>([]);
+  // Drafts-shelf seed to auto-load once the shelf arrives (?load=<seedId>).
+  const [pendingLoad, setPendingLoad] = useState<string | null>(
+    typeof params.load === "string" && params.load.length > 0 ? params.load : null,
+  );
   const story = useMemo(
     () => buildCreatorStory({ title, opening, carefulChoice, boldChoice }),
     [boldChoice, carefulChoice, opening, title],
@@ -294,6 +324,50 @@ export default function CreatorRoute() {
     }
   };
 
+  /**
+   * Step 1 of publishing: validate (blocking errors paint their fields), pull
+   * the non-blocking lint advisories, and open the metadata panel. The actual
+   * publish happens in `publishSeed` once the creator confirms.
+   */
+  const openPublishPanel = async () => {
+    if (!guest.session) {
+      setStatus("Start a session before publishing.");
+      return;
+    }
+    setBusy(true);
+    setFieldIssues({});
+    try {
+      const validation = await validateRemoteCreatorSeed({
+        accountId: guest.session.accountId,
+        ...guestAuthArgs(),
+        story,
+      });
+      if (validation && !validation.valid) {
+        setFieldIssues(groupIssuesByField(validation.issues));
+        setStatus("Fix the highlighted fields before publishing.");
+        return;
+      }
+      setAdvisories(validation?.advisories ?? []);
+      // Default the shelf tone to the reader-facing SEED_TONES id when the
+      // creator hasn't picked one yet — left null so the chip stays optional.
+      setPublishPanelOpen(true);
+      setStatus("Choose how this seed sits on the shelf, then confirm.");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "creator_publish_failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Publish metadata forwarded to `creatorFunctions:publish` (all optional
+   * server-side; omitted keys via conditional spread per BC4). */
+  const publishMetadataArgs = () => ({
+    ...(synopsis.trim().length > 0 ? { synopsis: synopsis.trim() } : {}),
+    ...(publishTone ? { tone: publishTone } : {}),
+    visibility,
+    forkPolicy: (remixAllowed ? "allowed" : "disabled") as "allowed" | "disabled",
+  });
+
   const publishSeed = async () => {
     if (!guest.session) {
       setStatus("Start a session before publishing.");
@@ -317,6 +391,7 @@ export default function CreatorRoute() {
             accountId: guest.session.accountId,
             ...guestAuthArgs(),
             seedId: remote.seedId,
+            ...publishMetadataArgs(),
           });
           setSeedId(remote.seedId);
           setSeedStatus(published ? "published" : "draft");
@@ -327,8 +402,17 @@ export default function CreatorRoute() {
             status: published ? "published" : "draft",
             updatedAt: Date.now(),
           });
-          if (published) setPublishedSeedId(remote.seedId);
-          setStatus(published ? "Seed published." : "Draft saved. Publishing is not available yet.");
+          if (published) {
+            setPublishedSeedId(remote.seedId);
+            setPublishPanelOpen(false);
+          }
+          setStatus(
+            published
+              ? visibility === "public"
+                ? "Seed published to the community shelf."
+                : "Seed published (unlisted)."
+              : "Draft saved. Publishing is not available yet.",
+          );
           refreshShelf();
           return;
         }
@@ -375,6 +459,7 @@ export default function CreatorRoute() {
         accountId: guest.session.accountId,
         ...guestAuthArgs(),
         seedId: draftId,
+        ...publishMetadataArgs(),
       });
       if (published) setSeedStatus("published");
       saveLocalCreatorSeed({
@@ -384,8 +469,17 @@ export default function CreatorRoute() {
         status: published ? "published" : "draft",
         updatedAt: Date.now(),
       });
-      if (published) setPublishedSeedId(draftId);
-      setStatus(published ? "Seed published." : "Publishing is not available yet.");
+      if (published) {
+        setPublishedSeedId(draftId);
+        setPublishPanelOpen(false);
+      }
+      setStatus(
+        published
+          ? visibility === "public"
+            ? "Seed published to the community shelf."
+            : "Seed published (unlisted)."
+          : "Publishing is not available yet.",
+      );
       refreshShelf();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "creator_publish_failed");
@@ -406,6 +500,19 @@ export default function CreatorRoute() {
     setFieldIssues({});
     setStatus(`Loaded "${item.title}".`);
   };
+
+  // Auto-load a shelf seed named by ?load= once the drafts shelf arrives
+  // (Discover's remix flow routes here with the fresh draft's id).
+  useEffect(() => {
+    if (!pendingLoad) return;
+    const item = shelf.find((entry) => entry.seedId === pendingLoad);
+    if (!item) return;
+    loadShelfSeed(item);
+    setPendingLoad(null);
+    // loadShelfSeed is stable-enough (recreated per render but effect-guarded
+    // by pendingLoad); shelf is the real trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shelf, pendingLoad]);
 
   const archiveShelfSeed = async (item: ShelfSeed) => {
     if (!guest.session || item.source !== "remote") return;
@@ -483,7 +590,17 @@ export default function CreatorRoute() {
 
           <Surface padded style={{ maxWidth: 680, width: "100%" }}>
             <View style={{ gap: tokens.spacing.md }}>
-              <Text variant="subtitle">Your drafts</Text>
+              <View
+                style={{ alignItems: "center", flexDirection: "row", flexWrap: "wrap", gap: tokens.spacing.sm }}
+              >
+                <View style={{ flex: 1, minWidth: 140 }}>
+                  <Text variant="subtitle">Your drafts</Text>
+                </View>
+                {/* Req 22.4: creator analytics live one hop from the shelf. */}
+                <Button onPress={() => router.push("/creator/dashboard")} variant="ghost">
+                  Creator dashboard
+                </Button>
+              </View>
               {shelf.length === 0 ? (
                 <Text muted>No saved drafts yet. Save one below and it will appear here.</Text>
               ) : (
@@ -595,9 +712,109 @@ export default function CreatorRoute() {
                   <Text muted variant="bodySmall">{boldChoice}</Text>
                 </View>
               </Surface>
+              {publishPanelOpen ? (
+                <Surface padded variant="muted">
+                  <View style={{ gap: tokens.spacing.md }}>
+                    <Text variant="subtitle">Shelve this seed</Text>
+                    <TextInput
+                      accessibilityLabel="Seed synopsis"
+                      multiline
+                      onChangeText={(next) => setSynopsis(next.slice(0, 200))}
+                      placeholder="One-line synopsis for the shelf card"
+                      placeholderTextColor={tokens.colors.textFaint}
+                      style={{
+                        borderColor: tokens.colors.borderMuted,
+                        borderRadius: tokens.radii.sm,
+                        borderWidth: tokens.borderWidths.regular,
+                        color: tokens.colors.text,
+                        minHeight: 66,
+                        padding: tokens.spacing.md,
+                        textAlignVertical: "top",
+                      }}
+                      value={synopsis}
+                    />
+                    <Text muted variant="caption">{`${synopsis.length}/200`}</Text>
+                    <Text muted variant="bodySmall">Tone</Text>
+                    <SeedToneSelector onChange={setPublishTone} value={publishTone} />
+                    <Text muted variant="bodySmall">Who can find it</Text>
+                    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: tokens.spacing.sm }}>
+                      <Button
+                        accessibilityLabel="Visibility Public shelf"
+                        disabled={busy}
+                        onPress={() => setVisibility("public")}
+                        variant={visibility === "public" ? "primary" : "default"}
+                      >
+                        Public shelf
+                      </Button>
+                      <Button
+                        accessibilityLabel="Visibility Unlisted"
+                        disabled={busy}
+                        onPress={() => setVisibility("unlisted")}
+                        variant={visibility === "unlisted" ? "primary" : "default"}
+                      >
+                        Unlisted
+                      </Button>
+                    </View>
+                    <Text muted variant="bodySmall">Remix policy</Text>
+                    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: tokens.spacing.sm }}>
+                      <Button
+                        accessibilityLabel="Remix allowed"
+                        disabled={busy}
+                        onPress={() => setRemixAllowed(true)}
+                        variant={remixAllowed ? "primary" : "default"}
+                      >
+                        Remix allowed
+                      </Button>
+                      <Button
+                        accessibilityLabel="Remix disabled"
+                        disabled={busy}
+                        onPress={() => setRemixAllowed(false)}
+                        variant={remixAllowed ? "default" : "primary"}
+                      >
+                        No remixing
+                      </Button>
+                    </View>
+                    {advisories.length > 0 ? (
+                      <View accessibilityRole="alert" style={{ gap: tokens.spacing.xs }}>
+                        <Text variant="bodySmall">
+                          A few advisories — none of these block publishing, but readers may
+                          notice them:
+                        </Text>
+                        {advisories.map((advisory) => (
+                          <Text key={`${advisory.path}:${advisory.message}`} muted variant="caption">
+                            {advisory.message}
+                          </Text>
+                        ))}
+                        <Text muted variant="caption">
+                          Confirm below to publish anyway.
+                        </Text>
+                      </View>
+                    ) : null}
+                    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: tokens.spacing.sm }}>
+                      <Button disabled={busy} onPress={publishSeed} variant="primary">
+                        Confirm and publish
+                      </Button>
+                      <Button
+                        disabled={busy}
+                        onPress={() => {
+                          setPublishPanelOpen(false);
+                          setStatus("Publish canceled. The draft is untouched.");
+                        }}
+                        variant="ghost"
+                      >
+                        Cancel
+                      </Button>
+                    </View>
+                  </View>
+                </Surface>
+              ) : null}
               <View style={{ flexDirection: "row", flexWrap: "wrap", gap: tokens.spacing.sm }}>
                 <Button disabled={busy} onPress={saveDraft}>Save draft</Button>
-                <Button disabled={busy} onPress={publishSeed} variant="primary">Publish seed</Button>
+                {!publishPanelOpen ? (
+                  <Button disabled={busy} onPress={openPublishPanel} variant="primary">
+                    Publish seed
+                  </Button>
+                ) : null}
                 {publishedSeedId ? (
                   <Button onPress={() => router.push("/library")}>
                     Open in library
@@ -611,10 +828,13 @@ export default function CreatorRoute() {
             <View style={{ gap: tokens.spacing.md }}>
               <Text variant="subtitle">After publishing</Text>
               <Text muted>
-                Published seeds appear in your Library. Drafts saved on this device stay here until you publish them.
+                Published seeds appear in your Library — and, when shelved as public, on the
+                community shelf in Discover where any reader can begin or remix them. Drafts
+                saved on this device stay here until you publish them.
               </Text>
               <View style={{ flexDirection: "row", flexWrap: "wrap", gap: tokens.spacing.sm }}>
                 <Button onPress={() => router.push("/library")} variant="primary">Open library</Button>
+                <Button onPress={() => router.push("/discover")} variant="ghost">Open Discover</Button>
               </View>
             </View>
           </Surface>

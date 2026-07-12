@@ -1,5 +1,6 @@
 import type { ContentPolicySummary } from "@cyoa/shared";
 import type { Story } from "@cyoa/engine";
+import { lintStoryGates } from "@cyoa/stories";
 
 import type { AccountRecord } from "./account";
 import { evaluateTextPolicy } from "./contentPolicy";
@@ -88,6 +89,21 @@ export function validateCreatorSeedStory(story: Story): CreatorSeedValidation {
         });
       }
     }
+  }
+  // Dead-key / reachability lint (core-read-loop Req 22.2: validate before
+  // making it launchable). Only lint ERRORS block here — a `has_item` /
+  // `flag_equals` gate no path can ever satisfy soft-locks the published
+  // story, since authored seeds play under strict id matching. Warnings and
+  // info (unreachable stat thresholds, trivially-true missing_item) stay
+  // non-blocking and are NOT surfaced through this contract: the drafts-shelf
+  // client treats every returned issue as a save-blocking field error, and an
+  // advisory must not stop a draft from saving. They remain available via
+  // `lintStoryGates` for an advisory surface later. The lint is graph-hole
+  // tolerant (skips edges to missing nodes), so running it alongside the
+  // structural issues above never double-reports or false-positives.
+  for (const lintIssue of lintStoryGates(story)) {
+    if (lintIssue.severity !== "error") continue;
+    issues.push({ path: lintIssue.path, message: lintIssue.message });
   }
   return { valid: issues.length === 0, issues };
 }

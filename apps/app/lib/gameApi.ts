@@ -358,6 +358,39 @@ export async function getRemoteCurrentScene(input: {
 }
 
 /**
+ * One doors-journal row (DOORS-JOURNAL — the reader-facing half of the
+ * story-bible fetch-quest loop). The server projects ONLY doors the reader has
+ * already seen rendered locked on screen (BC10): `label` is the lock as the
+ * reader met it, `hint` the tease that rendered with it (may be empty), and
+ * `state` tracks the loop — "teased" (key still out there), "key-in-hand"
+ * (the promised key has since landed in inventory), "opened". Nothing else —
+ * no ids, bands, turns, or unfired plan entries — ever crosses the wire.
+ */
+export type RemoteDoorsJournalEntry = {
+  label: string;
+  hint: string;
+  state: "teased" | "key-in-hand" | "opened";
+};
+
+/**
+ * Fetch the save's doors journal from `llm/storyBible:getDoorsJournal`.
+ * Empty array = no teased doors yet (the DoorsJournal surface renders
+ * nothing); null = no remote backend / transport failure.
+ */
+export async function getRemoteDoorsJournal(input: {
+  accountId: string;
+  guestTokenHash?: string;
+  saveId: string;
+}): Promise<RemoteDoorsJournalEntry[] | null> {
+  if (!convexClient) return null;
+  return callConvexHttp<any>(
+    "query",
+    "llm/storyBible:getDoorsJournal",
+    input as unknown as Record<string, unknown>,
+  ) as any;
+}
+
+/**
  * One past turn surfaced by `getRunHistory`. The shape mirrors the server
  * projection in `convex/game.ts:getRunHistory` — keep them in sync when
  * either side changes a field.
@@ -831,6 +864,18 @@ export async function publishRemoteCreatorSeed(input: {
   accountId: string;
   guestTokenHash?: string;
   seedId: string;
+  /**
+   * Creator-arc publish-step metadata (Req 22.6 / product feature 13),
+   * collected in the creator route's publish panel. All optional — the server
+   * defaults a metadata-less publish to `visibility:"unlisted"` so nothing
+   * reaches the community shelf without an explicit choice. Synopsis is
+   * capped at 200 chars server-side (`seed_synopsis_too_long`) and gated by
+   * the publishing-surface classifier (`seed_synopsis_blocked`).
+   */
+  synopsis?: string;
+  tone?: string;
+  visibility?: "public" | "unlisted";
+  forkPolicy?: "allowed" | "disabled";
 }): Promise<{ seedId: string; seed: { status: "draft" | "published" | "archived" } } | null> {
   if (!convexClient) return null;
   return callConvexHttp<any>("mutation", "creatorFunctions:publish", input as unknown as Record<string, unknown>) as any;
