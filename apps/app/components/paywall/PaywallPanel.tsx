@@ -1,4 +1,5 @@
 import { Platform } from "react-native";
+import type { JSX } from "react";
 import { useMemo } from "react";
 
 import {

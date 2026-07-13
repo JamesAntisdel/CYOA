@@ -1,3 +1,5 @@
+import type { JSX } from "react";
+
 import type { ReaderLayoutVariant } from "../../../hooks/useReaderSettings";
 import { BookLayout } from "./Book";
 import { GraphicNovelLayout } from "./GraphicNovel";

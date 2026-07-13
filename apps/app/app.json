@@ -4,20 +4,24 @@
     "slug": "cyoa",
     "version": "0.1.0",
     "scheme": "cyoa",
-    "platforms": ["ios", "android", "web"],
+    "platforms": [
+      "ios",
+      "android",
+      "web"
+    ],
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
     "icon": "./assets/design/marketing/favicon-512.png",
-    "splash": {
-      "image": "./assets/design/marketing/favicon-512.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#f4ecd8"
-    },
     "ios": {
       "bundleIdentifier": "com.cyoa.unwritten",
       "buildNumber": "1",
       "supportsTablet": true,
-      "icon": "./assets/design/marketing/favicon-512.png"
+      "icon": "./assets/design/marketing/favicon-512.png",
+      "infoPlist": {
+        "UIBackgroundModes": [
+          "audio"
+        ]
+      }
     },
     "android": {
       "package": "com.cyoa.unwritten",
@@ -26,12 +30,38 @@
         "foregroundImage": "./assets/design/marketing/favicon-512.png",
         "backgroundColor": "#f4ecd8"
       },
-      "permissions": []
+      "permissions": [
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.WAKE_LOCK"
+      ]
     },
     "web": {
       "bundler": "metro",
       "favicon": "./assets/design/marketing/favicon-32.png"
     },
-    "plugins": ["expo-router"]
+    "plugins": [
+      "expo-router",
+      "expo-audio",
+      "expo-secure-store",
+      "expo-status-bar",
+      "expo-notifications",
+      [
+        "expo-dev-client",
+        {
+          "launchMode": "most-recent"
+        }
+      ],
+      "expo-asset",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/design/marketing/favicon-512.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#f4ecd8"
+        }
+      ]
+    ]
   }
 }
