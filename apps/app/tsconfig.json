@@ -2,7 +2,8 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "jsx": "react-jsx",
-    "types": ["node", "react"]
+    "types": ["node", "react"],
+    "ignoreDeprecations": "6.0"
   },
   "include": ["app", "components", "hooks", "lib", "theme", "*.ts", "*.tsx"],
   "exclude": ["**/__tests__/**", "**/*.test.ts", "**/*.test.tsx", "vitest.config.ts"]

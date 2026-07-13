@@ -1,3 +1,4 @@
+import type { JSX } from "react";
 import { useEffect, useMemo, useRef } from "react";
 
 import { useAppTheme } from "../../theme";
