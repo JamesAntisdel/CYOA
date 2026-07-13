@@ -46,12 +46,17 @@ export function parseConfiguredProviders(raw: string | undefined): SocialProvide
 
 /** Social providers the server has secrets for (and should render buttons for). */
 export function getConfiguredSocialProviders(): SocialProvider[] {
-  return parseConfiguredProviders(readEnv("EXPO_PUBLIC_AUTH_SOCIAL_PROVIDERS"));
+  // Literal access so Expo inlines the value on web (see isMagicLinkAvailable).
+  return parseConfiguredProviders(process.env.EXPO_PUBLIC_AUTH_SOCIAL_PROVIDERS);
 }
 
 /** True when the server can deliver email magic links. */
 export function isMagicLinkAvailable(): boolean {
-  const flag = readEnv("EXPO_PUBLIC_AUTH_MAGIC_LINK");
+  // MUST be a literal `process.env.EXPO_PUBLIC_*` access — Expo's web bundler
+  // only statically inlines literal reads. A dynamic `readEnv(key)` lookup is
+  // left as `process.env[key]` in the bundle and resolves to `undefined` at
+  // runtime, which silently disabled the magic-link path.
+  const flag = process.env.EXPO_PUBLIC_AUTH_MAGIC_LINK;
   return flag === "1" || flag === "true";
 }
 
