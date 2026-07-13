@@ -42,7 +42,7 @@ function bibleFixture(overrides: Partial<StoryBible> = {}): StoryBible {
       { id: "crypt-gate", label: "the crypt gate", keyId: "bone-key", gateBand: "mid", note: "under the chapel", status: "planned" },
     ],
     cast: [
-      { id: "mira", label: "Mira, ferrywoman", want: "passage north", secret: "deserted the Iron Court", bondHint: "pay her fare honestly" },
+      { id: "mira", label: "Mira, ferrywoman", want: "passage north", secret: "deserted the Iron Court", bondHint: "pay her fare honestly", appearance: "weathered woman, oilskin coat, grey braid" },
     ],
     twists: [
       { id: "drowned-bell", label: "the Drowned Bell", precondition: "reader trusts the ferryman", status: "pending" },
@@ -69,6 +69,12 @@ describe("buildStoryBiblePrompt", () => {
     expect(prompt).toContain('"lockPlan": 2-5 entries');
     expect(prompt).toContain('"cast": 2-5 entries');
     expect(prompt).toContain('"twists": 2-4 entries');
+    // Character-consistency §1/§2: the model must fix a protagonist identity
+    // and give each cast member a visible appearance descriptor.
+    expect(prompt).toContain('"protagonist"');
+    expect(prompt).toContain("ONE person the reader plays");
+    expect(prompt).toContain("it must NEVER change over the whole story");
+    expect(prompt).toContain('"appearance": string (≤120, what the reader SEES');
     expect(prompt).toContain('"endingHints": 2-4 entries');
     expect(prompt).toContain('"motifs": 3-6 strings');
     expect(prompt).toContain("Output ONLY the JSON object");
@@ -151,6 +157,32 @@ describe("readStoryBible", () => {
     expect(readStoryBible(null)).toBeNull();
     expect(readStoryBible("x")).toBeNull();
     expect(readStoryBible({ keyRegistry: "nope" })).toBeNull();
+  });
+
+  // Regression (character-consistency §1): readStoryBible runs on BOTH the
+  // write path (_setStoryBible) and every turn's read-back. It must carry the
+  // protagonist identity through — dropping it here silently strips the whole
+  // prose+image drift fix even when the model emitted a valid protagonist.
+  it("round-trips the protagonist identity (and cast appearance)", () => {
+    const protagonist = {
+      name: "Elara Vance",
+      gender: "Female",
+      pronouns: "she/her",
+      appearance: ["auburn hair", "ink-stained hands", "navigator's coat"],
+      voice: "quiet, frantic precision",
+    };
+    const read = readStoryBible(bibleFixture({ protagonist }));
+    expect(read?.protagonist).toEqual(protagonist);
+    // Cast appearance (the image path's NPC descriptor) must survive too.
+    expect(read?.cast[0]?.appearance).toBe("weathered woman, oilskin coat, grey braid");
+  });
+
+  it("omits protagonist when the stored row has none (legacy-tolerant)", () => {
+    const legacy = bibleFixture();
+    delete (legacy as { protagonist?: unknown }).protagonist;
+    const read = readStoryBible(legacy);
+    expect(read).not.toBeNull();
+    expect(read?.protagonist).toBeUndefined();
   });
 });
 

@@ -26,6 +26,10 @@ const LABEL_MAX = 80;
 const HINT_MAX = 120;
 const REQUIRES_MAX = 160;
 const MOTIF_LEN_MAX = 40;
+// --- protagonist bounds (design §1.3) ---------------------------------------
+const GENDER_MAX = 40;
+const APPEARANCE_MAX = 6;
+const APPEARANCE_LEN_MAX = 60;
 const KEYS_MAX = 12;
 /** A bible salvageable to ≥4 registry keys is kept; anything less → null (R1.3). */
 const KEYS_MIN_SALVAGE = 4;
@@ -98,6 +102,7 @@ export type BibleCast = {
   want: string; // ≤120
   secret: string; // ≤120
   bondHint: string; // ≤120
+  appearance: string; // ≤120 — what the reader SEES (build, hair, dress, age-look)
 };
 
 export type BibleTwist = {
@@ -112,6 +117,20 @@ export type BibleEndingHint = {
   requires: string; // ≤160
 };
 
+/**
+ * The ONE person the reader plays. Fixed at bible generation and NEVER changed
+ * over the whole story (immutable across act refresh — see `mergeBibleRefresh`).
+ * The single load-bearing anchor against mid-story protagonist drift (gender
+ * flips): re-injected verbatim into every scene/image prompt via the digest.
+ */
+export type BibleProtagonist = {
+  name: string; // ≤80 (LABEL_MAX)
+  gender: string; // ≤40, free text ("woman", "man", "nonbinary", …)
+  pronouns: string; // ≤40 ("she/her")
+  appearance: string[]; // 2–6 short descriptors, ≤60 each (hair, build, dress, age-look)
+  voice: string; // ≤120 (HINT_MAX), speech register / demeanor
+};
+
 export type StoryBible = {
   keyRegistry: BibleKey[]; // 6–12 at generation; ≤16 after adoption
   lockPlan: BibleDoor[]; // 2–5
@@ -119,6 +138,7 @@ export type StoryBible = {
   twists: BibleTwist[]; // 2–4
   endingHints: BibleEndingHint[]; // 0–4 after arc fuzzy-match
   motifs: string[]; // 3–6, ≤40 each
+  protagonist?: BibleProtagonist; // optional — legacy stored bibles have none
   source: "llm";
   version: 1;
 };
@@ -137,6 +157,7 @@ export const storyBibleOutputSchema = z
     twists: z.array(z.unknown()).optional(),
     endingHints: z.array(z.unknown()).optional(),
     motifs: z.array(z.unknown()).optional(),
+    protagonist: z.unknown().optional(), // shape-check only; salvaged by validateProposedBible
   })
   .passthrough();
 
@@ -266,6 +287,7 @@ export function validateProposedBible(raw: unknown): StoryBible | null {
       want: optionalText(member.want, HINT_MAX),
       secret: optionalText(member.secret, HINT_MAX),
       bondHint: optionalText(member.bondHint, HINT_MAX),
+      appearance: optionalText(member.appearance, HINT_MAX),
     });
   }
 
@@ -315,7 +337,49 @@ export function validateProposedBible(raw: unknown): StoryBible | null {
     motifs.push(motif);
   }
 
-  return { keyRegistry, lockPlan, cast, twists, endingHints, motifs, source: "llm", version: 1 };
+  const protagonist = validateProtagonist(obj.protagonist);
+  return {
+    keyRegistry,
+    lockPlan,
+    cast,
+    twists,
+    endingHints,
+    motifs,
+    ...(protagonist ? { protagonist } : {}),
+    source: "llm",
+    version: 1,
+  };
+}
+
+/**
+ * Salvage the protagonist identity (design §1.3, BC5 — never throws; malformed
+ * sub-fields are tolerant-dropped, not rejected). Returns `undefined` when the
+ * payload is not an object or has no usable name, so a bible with no
+ * protagonist stays legacy-tolerant (the spread omits the field entirely).
+ * `appearance` is clamped to 2–6 unique, non-empty descriptors; over-cap or
+ * duplicate entries are dropped rather than failing the whole object.
+ */
+function validateProtagonist(raw: unknown): BibleProtagonist | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const p = raw as Record<string, unknown>;
+  const name = isString(p.name) ? clampLen(p.name, 1, LABEL_MAX) : null;
+  if (name === null) return undefined; // no name → no protagonist (tolerant)
+  const appearance: string[] = [];
+  const rawApp = Array.isArray(p.appearance) ? p.appearance : [];
+  for (const d of rawApp) {
+    if (appearance.length >= APPEARANCE_MAX) break;
+    if (!isString(d)) continue;
+    const t = clampLen(d, 1, APPEARANCE_LEN_MAX);
+    if (t === null || appearance.includes(t)) continue;
+    appearance.push(t);
+  }
+  return {
+    name,
+    gender: optionalText(p.gender, GENDER_MAX),
+    pronouns: optionalText(p.pronouns, GENDER_MAX),
+    appearance,
+    voice: optionalText(p.voice, HINT_MAX),
+  };
 }
 
 /**
@@ -731,6 +795,8 @@ export type BibleDigest = {
   cast: BibleCast[];
   twists: BibleDigestTwist[]; // ≤2
   outstanding: BibleDigestOutstanding[]; // ≤2
+  /** Verbatim identity — no band filtering; due every turn (design §1.4). */
+  protagonist?: BibleProtagonist;
 };
 
 /**
@@ -821,6 +887,10 @@ export function buildBibleDigest(bible: StoryBible, turnNumber: number): BibleDi
     cast: bible.cast.map((member) => ({ ...member })),
     twists,
     outstanding,
+    // Identity is due EVERY turn — passed through verbatim, no band filtering.
+    ...(bible.protagonist
+      ? { protagonist: { ...bible.protagonist, appearance: [...bible.protagonist.appearance] } }
+      : {}),
   };
 }
 
@@ -914,8 +984,10 @@ export function mergeBibleRefresh(current: StoryBible, proposedRaw: unknown): St
     twists.push({ ...candidate });
   }
 
-  // cast / endingHints / motifs stay as-attached: endingHints were fuzzy-matched
-  // to the arc at attach time (a refresh payload is not arc-aware), and the
-  // cast/motif anchors keep the story's voice stable across acts.
+  // cast / endingHints / motifs / protagonist stay as-attached: endingHints were
+  // fuzzy-matched to the arc at attach time (a refresh payload is not arc-aware),
+  // the cast/motif anchors keep the story's voice stable across acts, and the
+  // protagonist identity is intentionally immutable — it must NEVER change
+  // mid-story (it carries automatically through the `...current` spread).
   return { ...current, keyRegistry, lockPlan, twists };
 }

@@ -257,8 +257,11 @@ const BIBLE_CAST_ENTRY = {
     want: { type: "STRING", maxLength: BIBLE_HINT_MAX },
     secret: { type: "STRING", maxLength: BIBLE_HINT_MAX },
     bondHint: { type: "STRING", maxLength: BIBLE_HINT_MAX },
+    // What the reader SEES — a stable descriptor the image path reuses so a
+    // named NPC keeps ONE face across scenes (character-consistency §2).
+    appearance: { type: "STRING", maxLength: BIBLE_HINT_MAX },
   },
-  required: ["id", "label", "want", "secret"],
+  required: ["id", "label", "want", "secret", "appearance"],
 } as const;
 
 const BIBLE_TWIST_ENTRY = {
@@ -280,6 +283,28 @@ const BIBLE_ENDING_HINT_ENTRY = {
   required: ["endingId", "requires"],
 } as const;
 
+// The ONE person the reader plays (character-consistency §1). Fixed at bible
+// generation and re-injected verbatim into every scene/image prompt via the
+// digest — the load-bearing anchor against mid-story gender/identity drift.
+// `appearance` is an array of 2–6 short descriptors (minItems forces the model
+// to commit specifics, not a single vague sentence).
+const BIBLE_PROTAGONIST_ENTRY = {
+  type: "OBJECT",
+  properties: {
+    name: { type: "STRING", minLength: 1, maxLength: BIBLE_LABEL_MAX },
+    gender: { type: "STRING", maxLength: 40 },
+    pronouns: { type: "STRING", maxLength: 40 },
+    appearance: {
+      type: "ARRAY",
+      minItems: 2,
+      maxItems: 6,
+      items: { type: "STRING", minLength: 1, maxLength: 60 },
+    },
+    voice: { type: "STRING", maxLength: BIBLE_HINT_MAX },
+  },
+  required: ["name", "gender", "pronouns", "appearance"],
+} as const;
+
 /**
  * Full Story Bible response schema — mirrors `storyBibleOutputSchema` in the
  * engine. `keyRegistry` leads via propertyOrdering intent (required-first) so
@@ -289,6 +314,9 @@ const BIBLE_ENDING_HINT_ENTRY = {
 export const STORY_BIBLE_RESPONSE_SCHEMA = {
   type: "OBJECT",
   properties: {
+    // Identity leads the object (propertyOrdering intent) so the model fixes
+    // the protagonist before planning nouns.
+    protagonist: BIBLE_PROTAGONIST_ENTRY,
     keyRegistry: {
       type: "ARRAY",
       minItems: 6,
@@ -296,7 +324,10 @@ export const STORY_BIBLE_RESPONSE_SCHEMA = {
       items: BIBLE_KEY_ENTRY,
     },
     lockPlan: { type: "ARRAY", maxItems: 5, items: BIBLE_DOOR_ENTRY },
-    cast: { type: "ARRAY", maxItems: 5, items: BIBLE_CAST_ENTRY },
+    // `minItems: 2` + `cast` in `required` is the empty-cast fix: with cast
+    // optional and no floor, the grammar-constrained model satisfied the schema
+    // by emitting an empty array on nearly every save (character-consistency §2).
+    cast: { type: "ARRAY", minItems: 2, maxItems: 5, items: BIBLE_CAST_ENTRY },
     twists: { type: "ARRAY", maxItems: 4, items: BIBLE_TWIST_ENTRY },
     endingHints: { type: "ARRAY", maxItems: 4, items: BIBLE_ENDING_HINT_ENTRY },
     motifs: {
@@ -305,7 +336,7 @@ export const STORY_BIBLE_RESPONSE_SCHEMA = {
       items: { type: "STRING", minLength: 1, maxLength: BIBLE_MOTIF_MAX },
     },
   },
-  required: ["keyRegistry"],
+  required: ["keyRegistry", "protagonist", "cast"],
 } as const;
 
 /** Typed export so the pin test can snapshot the wire contract. */

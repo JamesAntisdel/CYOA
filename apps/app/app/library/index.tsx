@@ -320,9 +320,12 @@ export default function LibraryRoute() {
                   accessibilityLabel={`${story.title} cover`}
                   resizeMode="contain"
                   source={getStoryCoverSource(story.id)}
+                  // Explicit book-cover dimensions (7:10). Relying on
+                  // `aspectRatio` + `width: "100%"` alone let RN-web stretch
+                  // the image — and the whole row card — to ~700 px tall.
                   style={{
-                    aspectRatio: 7 / 10,
-                    width: "100%",
+                    height: isPhone ? 120 : 160,
+                    width: isPhone ? 84 : 112,
                   }}
                 />
                 <View

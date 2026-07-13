@@ -357,6 +357,54 @@ describe("buildScenePrompt opener + premise anchor (coherence fixes)", () => {
   });
 });
 
+describe("buildScenePrompt continuity guard (character-consistency follow-up)", () => {
+  it("renders the CONTINUITY block directly above the memory window", () => {
+    // Default fixture has memory length 2 → turnNumber resolves to 3 (>1).
+    const prompt = buildScenePrompt(llmRequest());
+    const continuityIdx = prompt.indexOf("CONTINUITY (read before you write)");
+    const memoryIdx = prompt.indexOf("Recent story memory");
+    expect(continuityIdx).toBeGreaterThan(-1);
+    expect(memoryIdx).toBeGreaterThan(-1);
+    expect(continuityIdx).toBeLessThan(memoryIdx);
+    // High-signal anti-re-narration language is present.
+    expect(prompt).toContain("has ALREADY happened");
+    expect(prompt).toContain("move the situation FORWARD in time");
+  });
+
+  it("emits the continuity block on arc + bible prompts too (always-on past-turn guard)", () => {
+    const prompt = buildScenePrompt(
+      llmRequest({ pursuit: pursuitFixture(), turnNumber: 8 }),
+    );
+    expect(prompt).toContain("CONTINUITY (read before you write)");
+  });
+
+  it("omits the continuity block on the opening turn (BC5 — nothing prior to re-introduce)", () => {
+    const prompt = buildScenePrompt(llmRequest({ turnNumber: 1, memory: [] }));
+    expect(prompt).not.toContain("CONTINUITY (read before you write)");
+  });
+
+  it("keeps the continuity block within a tight token budget (≤140 tokens)", () => {
+    const withContinuity = buildScenePrompt(llmRequest({ turnNumber: 3 }));
+    const withoutContinuity = buildScenePrompt(llmRequest({ turnNumber: 1, memory: [] }));
+    // Isolate the continuity block's contribution. Both prompts share the same
+    // base; the turn-1 variant carries no continuity line. 4-chars/token
+    // heuristic (design §3): the guard is one tight line (~122 tokens) so it
+    // costs almost nothing against the snapshot-tested prompt budget.
+    const continuityLine =
+      "CONTINUITY (read before you write): everything in the Story so far and the Recent story memory below has ALREADY happened — treat it as the past. Never re-introduce, re-announce, or re-describe an event, object, character, or revelation the reader has already seen as if it were new (e.g. a radio that already crackled to life does not crackle to life again, a person already on-scene does not arrive again). Begin exactly where the last scene ended and move the situation FORWARD in time.";
+    expect(withContinuity).toContain(continuityLine);
+    expect(continuityLine.length / 4).toBeLessThanOrEqual(140);
+    // Sanity: the turn-1 baseline genuinely lacks the line.
+    expect(withoutContinuity).not.toContain("CONTINUITY (read before you write)");
+  });
+
+  it("nudges object visual consistency in the VISUAL DESCRIPTION rule", () => {
+    const prompt = buildScenePrompt(llmRequest());
+    expect(prompt).toContain("OBJECT CONSISTENCY");
+    expect(prompt).toContain("rust-red pickup truck stays a rust-red pickup truck");
+  });
+});
+
 // ===========================================================================
 // Story-arc pursuit section + rules (W1-S3, R1.3 / R6.1 / R2.5 / R3.3 / R4).
 // ===========================================================================
@@ -626,11 +674,11 @@ function bibleDigestFixture(overrides: Partial<BibleDigest> = {}): BibleDigest {
       { id: "outer-locks", label: "the outer sluice locks", keyId: "tide-warden-seal", gateBand: "late", note: "crews obey the seal, not the face that carries it" },
     ],
     cast: [
-      { id: "mira-vale", label: "Mira Vale, ferrywoman", want: "passage north for her brother", secret: "she deserted the Iron Court fleet", bondHint: "pay her fare honestly three times" },
-      { id: "verger-ossian", label: "Ossian, the chapel verger", want: "to keep the reliquary sealed", secret: "he drowned the last keyholder himself", bondHint: "bring him proof of the Crown's debt" },
-      { id: "warden-hesse", label: "Tide Warden Hesse", want: "order at the locks at any cost", secret: "her seal is a forgery of the true one", bondHint: "cover for her when the audit comes" },
-      { id: "brother-callum", label: "Callum, the drowned bellringer", want: "someone to hear the sunken bells", secret: "he is not entirely dead", bondHint: "answer the bells three nights running" },
-      { id: "the-harbormaster", label: "the Harbormaster's shade", want: "the ledger burned unread", secret: "his own name leads the ledger", bondHint: "read him one name he cannot" },
+      { id: "mira-vale", label: "Mira Vale, ferrywoman", want: "passage north for her brother", secret: "she deserted the Iron Court fleet", bondHint: "pay her fare honestly three times", appearance: "wiry woman in a salt-stained oilskin coat, grey braid, forearms roped with muscle" },
+      { id: "verger-ossian", label: "Ossian, the chapel verger", want: "to keep the reliquary sealed", secret: "he drowned the last keyholder himself", bondHint: "bring him proof of the Crown's debt", appearance: "gaunt older man, black cassock, milky blind left eye, ink-stained fingers" },
+      { id: "warden-hesse", label: "Tide Warden Hesse", want: "order at the locks at any cost", secret: "her seal is a forgery of the true one", bondHint: "cover for her when the audit comes", appearance: "broad-shouldered woman in a brass-buttoned storm-warden's coat, iron-grey crop" },
+      { id: "brother-callum", label: "Callum, the drowned bellringer", want: "someone to hear the sunken bells", secret: "he is not entirely dead", bondHint: "answer the bells three nights running", appearance: "young man, waterlogged wool, pale lips, kelp still tangled in his hair" },
+      { id: "the-harbormaster", label: "the Harbormaster's shade", want: "the ledger burned unread", secret: "his own name leads the ledger", bondHint: "read him one name he cannot", appearance: "translucent figure in a frock coat, lantern-light shows through him" },
     ],
     twists: [
       { id: "the-drowned-bell", label: "the Drowned Bell tolls itself", precondition: "the reader has trusted the ferryman with a secret" },
@@ -708,6 +756,81 @@ describe("story-bible digest section (SB-S4, R3.1/R3.2/R3.5)", () => {
     expect(prompt).not.toContain("CAST:");
     expect(prompt).not.toContain("TWISTS held back:");
     expect(prompt).not.toContain("OUTSTANDING KEYS:");
+  });
+});
+
+describe("story-bible PROTAGONIST identity lock (character-consistency §1.7)", () => {
+  const protagonist = {
+    name: "Imelda Ruiz",
+    gender: "woman",
+    pronouns: "she/her",
+    appearance: ["late 30s", "close-cropped black hair", "burn scar along the jaw"],
+    voice: "clipped, dry, never raises her voice",
+  };
+
+  it("renders the PROTAGONIST line FIRST in the bible block, above KEYS", () => {
+    const prompt = buildScenePrompt(
+      llmRequest({
+        pursuit: pursuitFixture(),
+        storyBible: bibleDigestFixture({ protagonist }),
+      }),
+    );
+    const headerIdx = prompt.indexOf("STORY BIBLE (server plan");
+    const protagonistIdx = prompt.indexOf("PROTAGONIST (fixed");
+    const keysIdx = prompt.indexOf("KEYS (gate ONLY on these ids");
+    expect(headerIdx).toBeGreaterThan(-1);
+    expect(protagonistIdx).toBeGreaterThan(headerIdx);
+    expect(protagonistIdx).toBeLessThan(keysIdx);
+  });
+
+  it("states the exact name, gender, and pronouns with a keep-consistent instruction", () => {
+    const prompt = buildScenePrompt(
+      llmRequest({ pursuit: pursuitFixture(), storyBible: bibleDigestFixture({ protagonist }) }),
+    );
+    expect(prompt).toContain("Imelda Ruiz, woman (she/her)");
+    expect(prompt).toContain("NEVER change the name, gender, or pronouns");
+    expect(prompt).toContain("Use these pronouns consistently every scene");
+    expect(prompt).toContain("close-cropped black hair");
+    expect(prompt).toContain("Voice: clipped, dry");
+  });
+
+  it("emits no PROTAGONIST line when the digest has no protagonist (legacy-tolerant, R3.5)", () => {
+    const withProtagonist = buildScenePrompt(
+      llmRequest({ pursuit: pursuitFixture(), storyBible: bibleDigestFixture({ protagonist }) }),
+    );
+    const without = buildScenePrompt(
+      llmRequest({ pursuit: pursuitFixture(), storyBible: bibleDigestFixture() }),
+    );
+    expect(withProtagonist).toContain("PROTAGONIST (fixed");
+    expect(without).not.toContain("PROTAGONIST (fixed");
+    // Bible-less prompts stay entirely free of the marker too.
+    expect(buildScenePrompt(llmRequest())).not.toContain("PROTAGONIST (fixed");
+  });
+
+  it("keeps cast appearance OUT of the prose digest (budget R3.4 — it rides the image path, §3)", () => {
+    // appearance is carried in the digest for the MEDIA image path, but must
+    // NOT be rendered into the prose prompt: the worst-case 5-member cast has
+    // no headroom under the ≤600-token digest slice.
+    const prompt = buildScenePrompt(
+      llmRequest({
+        pursuit: pursuitFixture(),
+        storyBible: bibleDigestFixture({
+          cast: [
+            {
+              id: "mira-vale",
+              label: "Mira Vale, ferrywoman",
+              want: "passage north",
+              secret: "she deserted the fleet",
+              bondHint: "pay her fare honestly",
+              appearance: "weathered woman, oilskin coat, grey braid",
+            },
+          ],
+        }),
+      }),
+    );
+    expect(prompt).toContain("CAST: Mira Vale, ferrywoman");
+    expect(prompt).not.toContain("looks:");
+    expect(prompt).not.toContain("weathered woman, oilskin coat");
   });
 });
 

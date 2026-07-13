@@ -522,6 +522,13 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
             // guest-session path has a server-issued accountId; local saves
             // (training-room etc.) intentionally omit it.
             {...(guest.session ? { accountId: guest.session.accountId } : {})}
+            // "Illuminate this page" candle (Iris proposal). saveId + reader
+            // auth thread to the per-layout <IlluminateButton>, which self-hides
+            // when the page can't be lit. remoteAuth is present only on the
+            // guest-session (remote) path — local/demo saves omit it and render
+            // no candle.
+            saveId={saveId}
+            {...(remoteAuth ? { illuminateAuth: remoteAuth } : {})}
             // Most-recent visible choice — feeds the inline EffectBadge each
             // layout renders so the reader can SEE what their last pick did
             // without scrolling to the chapter recap. Conditional-spread so

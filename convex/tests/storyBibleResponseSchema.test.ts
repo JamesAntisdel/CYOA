@@ -13,7 +13,13 @@ import { STORY_BIBLE_RESPONSE_SCHEMA } from "../llm/responseSchema";
 
 const wireProps = STORY_BIBLE_RESPONSE_SCHEMA.properties as Record<
   string,
-  { type: string; items?: { properties?: Record<string, unknown>; required?: readonly string[] } }
+  {
+    type: string;
+    minItems?: number;
+    properties?: Record<string, unknown>;
+    required?: readonly string[];
+    items?: { properties?: Record<string, unknown>; required?: readonly string[] };
+  }
 >;
 
 describe("STORY_BIBLE_RESPONSE_SCHEMA ↔ storyBibleOutputSchema sync", () => {
@@ -23,20 +29,29 @@ describe("STORY_BIBLE_RESPONSE_SCHEMA ↔ storyBibleOutputSchema sync", () => {
     const engineSections = Object.keys(storyBibleOutputSchema.shape).sort();
     expect(Object.keys(wireProps).sort()).toEqual(engineSections);
     expect(engineSections).toEqual(
-      ["cast", "endingHints", "keyRegistry", "lockPlan", "motifs", "twists"].sort(),
+      ["cast", "endingHints", "keyRegistry", "lockPlan", "motifs", "protagonist", "twists"].sort(),
     );
   });
 
-  it("requires only keyRegistry — mirroring the engine's optional sections", () => {
-    expect(STORY_BIBLE_RESPONSE_SCHEMA.required).toEqual(["keyRegistry"]);
-    // Engine side: keyRegistry is the only non-optional section.
+  it("requires keyRegistry + protagonist + cast (identity/cast are load-bearing)", () => {
+    // protagonist is the anchor against mid-story drift; cast is `required`
+    // + `minItems:2` to fix the empty-cast bug (character-consistency §1/§2).
+    expect(STORY_BIBLE_RESPONSE_SCHEMA.required).toEqual([
+      "keyRegistry",
+      "protagonist",
+      "cast",
+    ]);
+    expect(wireProps.cast?.minItems).toBe(2);
+    // Engine side stays tolerant: keyRegistry alone parses the loose envelope
+    // (the hard gate is validateProposedBible, not the wire `required`).
     expect(storyBibleOutputSchema.safeParse({ keyRegistry: [] }).success).toBe(true);
     expect(storyBibleOutputSchema.safeParse({}).success).toBe(false);
   });
 
-  it("declares every section as an ARRAY (engine parity)", () => {
+  it("declares every ARRAY section as an ARRAY; protagonist is the lone OBJECT", () => {
     for (const [section, spec] of Object.entries(wireProps)) {
-      expect(spec.type, `${section} wire type`).toBe("ARRAY");
+      const expected = section === "protagonist" ? "OBJECT" : "ARRAY";
+      expect(spec.type, `${section} wire type`).toBe(expected);
     }
   });
 
@@ -48,7 +63,15 @@ describe("STORY_BIBLE_RESPONSE_SCHEMA ↔ storyBibleOutputSchema sync", () => {
       "surfaceBand",
     ]);
     expect(wireProps.lockPlan?.items?.required).toEqual(["id", "label", "keyId", "gateBand"]);
-    expect(wireProps.cast?.items?.required).toEqual(["id", "label", "want", "secret"]);
+    // Cast now carries a stable `appearance` descriptor (character-consistency §2).
+    expect(wireProps.cast?.items?.required).toEqual([
+      "id",
+      "label",
+      "want",
+      "secret",
+      "appearance",
+    ]);
+    expect(wireProps.cast?.items?.properties?.appearance).toBeDefined();
     expect(wireProps.twists?.items?.required).toEqual(["id", "label", "precondition"]);
     expect(wireProps.endingHints?.items?.required).toEqual(["endingId", "requires"]);
     // Band enums match the engine's SurfaceBand / gateBand unions.
@@ -58,6 +81,25 @@ describe("STORY_BIBLE_RESPONSE_SCHEMA ↔ storyBibleOutputSchema sync", () => {
     expect(
       (wireProps.lockPlan?.items?.properties?.gateBand as { enum: string[] }).enum,
     ).toEqual(["mid", "late"]);
+  });
+
+  it("pins the protagonist identity object (character-consistency §1)", () => {
+    const protagonist = wireProps.protagonist;
+    expect(protagonist?.type).toBe("OBJECT");
+    // gender + pronouns REQUIRED so identity is never left implicit (the drift
+    // root cause). appearance is an array with a floor so the model commits
+    // specifics rather than one vague sentence.
+    expect(protagonist?.required).toEqual(["name", "gender", "pronouns", "appearance"]);
+    const appearance = protagonist?.properties?.appearance as {
+      type: string;
+      minItems: number;
+      maxItems: number;
+    };
+    expect(appearance.type).toBe("ARRAY");
+    expect(appearance.minItems).toBe(2);
+    expect(appearance.maxItems).toBe(6);
+    expect(protagonist?.properties?.name).toBeDefined();
+    expect(protagonist?.properties?.voice).toBeDefined();
   });
 });
 

@@ -320,7 +320,7 @@ export const runNpcPortraitJob = actionGeneric({
 
       await ctx.runMutation(
         ("media/npcMedia:markReady" as unknown) as any,
-        { assetId: args.assetId, url, at: Date.now() },
+        { assetId: args.assetId, url, at: Date.now(), storageId: storageId as string, mime: live.mime },
       );
       // Patch save.state.npcs[npcId].portraitAssetId so the engine state
       // and the UI roster card share the same handle. Best-effort — a
@@ -362,8 +362,36 @@ export const markGenerating = internalMutationGeneric({
 });
 
 export const markReady = internalMutationGeneric({
-  args: { assetId: v.id("assets"), url: v.string(), at: v.number() },
+  args: {
+    assetId: v.id("assets"),
+    url: v.string(),
+    at: v.number(),
+    // Character-consistency (design §3.2): stamp the portrait's storageId +
+    // mime onto provenance so the scene renderer's `loadReferenceBytes` (which
+    // reads `provenance.storageId` via `_getAssetForReference`) can pass this
+    // portrait as a scene reference. Absent → today's behavior (portrait not
+    // usable as a reference, silently skipped by the loader).
+    storageId: v.optional(v.string()),
+    mime: v.optional(v.string()),
+  },
   handler: async (ctx, args) => {
+    if (args.storageId) {
+      const asset = (await ctx.db.get(args.assetId)) as AssetDoc | null;
+      if (asset) {
+        await ctx.db.patch(args.assetId, {
+          status: "ready",
+          url: args.url,
+          provenance: {
+            ...asset.provenance,
+            storageId: args.storageId,
+            ...(args.mime ? { mime: args.mime } : {}),
+          },
+          updatedAt: args.at,
+          readyAt: args.at,
+        });
+        return;
+      }
+    }
     await ctx.db.patch(args.assetId, {
       status: "ready",
       url: args.url,

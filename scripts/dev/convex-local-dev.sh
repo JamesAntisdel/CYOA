@@ -85,6 +85,15 @@ push_env GEMINI_VEO_ESTIMATED_CENTS_PER_SECOND
 push_env DEEPSEEK_API_KEY
 push_env DEEPSEEK_MODEL
 push_env LLM_TIMEOUT_MS
+# Fireworks (primary provider once provisioned). Until FIREWORKS_API_KEY is
+# set, LLM_PROVIDER_OVERRIDE pins ALL tiers to Gemini so free/guest turns do
+# not fall through to the deterministic stub (providerPolicy.overrideOrder).
+push_env FIREWORKS_API_KEY
+push_env FIREWORKS_BASE_URL
+push_env FIREWORKS_MODEL_CHEAP
+push_env FIREWORKS_MODEL_MID
+push_env FIREWORKS_MODEL_PREMIUM
+push_env LLM_PROVIDER_OVERRIDE
 
 # Dev override: when set, queueSceneImage skips the Pro entitlement
 # check so local testing of MediaPlate doesn't require billing config.
@@ -95,6 +104,8 @@ push_env CYOA_DEV_FORCE_PRO_MEDIA "1"
 # prompt/UI changes doesn't get blocked mid-session. Same sentinel pattern
 # as the Pro media override above — UNSET before any tunnel exposure.
 push_env CYOA_DEV_UNLIMITED_TURNS "1"
+push_env CYOA_DEV_LOG_MAGIC_LINK "1"
+push_env CYOA_DEV_ALLOW_ADMIN_GRANT "1"
 
 # Stripe — push the secret so the webhook handler can reach signature
 # validation (and return 400 instead of crashing) even when no real

@@ -1,13 +1,25 @@
-import { ScrollView, View } from "react-native";
+import { useRouter } from "expo-router";
+import { Pressable, ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { useAppTheme } from "../../theme";
 import { Chip, Stamp, Text } from "../primitives";
 import { AdminGate } from "./AdminGate";
-import { CostBoard, FunnelBoard, LiveBoard, SafetyBoard } from "./boards";
+import { CostBoard, FunnelBoard, LiveBoard, SafetyBoard, StoriesBoard, UsersBoard } from "./boards";
 import type { AdminAccount, AdminDashboardData } from "./types";
 
-export type AdminDashboardView = "overview" | "funnel" | "cost" | "safety" | "live";
+export type AdminDashboardView =
+  | "overview"
+  | "funnel"
+  | "cost"
+  | "safety"
+  | "live"
+  | "stories"
+  | "users";
+
+// The content views (stories / users) self-fetch their admin-gated data via
+// the useAdminContent hooks, so they don't consume the passed `dashboard`.
+const CONTENT_VIEWS: readonly AdminDashboardView[] = ["stories", "users"];
 
 type AdminDashboardScreenProps = {
   account: AdminAccount | null;
@@ -44,6 +56,10 @@ export function AdminDashboardScreen({
         >
           <AdminGate account={account}>
             <DashboardHeader dashboard={dashboard} view={view} />
+            <AdminNav view={view} />
+
+            {view === "stories" ? <StoriesBoard /> : null}
+            {view === "users" ? <UsersBoard /> : null}
 
             {view === "overview" || view === "funnel" ? (
               <FunnelBoard dashboard={dashboard} />
@@ -105,9 +121,56 @@ function titleForView(view: AdminDashboardView): string {
       return "Safety · what the wards caught";
     case "live":
       return "Live · the room's pulse";
+    case "stories":
+      return "Stories · content across accounts";
+    case "users":
+      return "Users · accounts & admin";
     default:
       return "The keeper's desk";
   }
+}
+
+const NAV_ITEMS: ReadonlyArray<{ view: AdminDashboardView; label: string; href: string }> = [
+  { view: "overview", label: "Overview", href: "/admin" },
+  { view: "funnel", label: "Funnel", href: "/admin/funnel" },
+  { view: "cost", label: "Cost", href: "/admin/cost" },
+  { view: "safety", label: "Safety", href: "/admin/safety" },
+  { view: "live", label: "Live", href: "/admin/live" },
+  { view: "stories", label: "Stories", href: "/admin/stories" },
+  { view: "users", label: "Users", href: "/admin/users" },
+];
+
+/**
+ * Deep-link tab row across every admin surface. Each tab routes to the matching
+ * `/admin/*` screen; the active view is highlighted. Kept here (not a separate
+ * nav component) so the switch, the routes, and the tabs stay in lockstep.
+ */
+function AdminNav({ view }: { view: AdminDashboardView }) {
+  const { tokens } = useAppTheme();
+  const router = useRouter();
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        flexWrap: "wrap",
+        gap: tokens.spacing.sm,
+      }}
+    >
+      {NAV_ITEMS.map((item) => {
+        const active = item.view === view;
+        return (
+          <Pressable
+            key={item.view}
+            accessibilityRole="link"
+            accessibilityState={{ selected: active }}
+            onPress={() => router.push(item.href as never)}
+          >
+            <Chip variant={active ? "accent" : "default"}>{item.label}</Chip>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
 }
 
 function formatWindow(from: number, to: number): string {

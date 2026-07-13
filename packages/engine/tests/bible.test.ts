@@ -320,6 +320,118 @@ describe("validateProposedBible", () => {
     expect(() => validateProposedBible(horror)).not.toThrow();
     expect(validateProposedBible(horror)?.keyRegistry).toHaveLength(4);
   });
+
+  // --- protagonist salvage (character-consistency §1.3) ---------------------
+
+  it("salvages a well-formed protagonist verbatim (clamped)", () => {
+    const bible = validateProposedBible(
+      rawBible({
+        protagonist: {
+          name: "Ines Vega",
+          gender: "woman",
+          pronouns: "she/her",
+          appearance: ["dark cropped hair", "wiry build", "salt-stained coat"],
+          voice: "clipped and dry",
+        },
+      }),
+    );
+    expect(bible?.protagonist).toEqual({
+      name: "Ines Vega",
+      gender: "woman",
+      pronouns: "she/her",
+      appearance: ["dark cropped hair", "wiry build", "salt-stained coat"],
+      voice: "clipped and dry",
+    });
+  });
+
+  it("clamps protagonist strings to their bounds and appearance to ≤6 unique", () => {
+    const bible = validateProposedBible(
+      rawBible({
+        protagonist: {
+          name: "N".repeat(200),
+          gender: "G".repeat(200),
+          pronouns: "P".repeat(200),
+          appearance: [
+            "a".repeat(200),
+            "b",
+            "b", // duplicate — dropped
+            "c",
+            "d",
+            "e",
+            "f",
+            "g", // 7th unique — over the 6 cap, dropped
+          ],
+          voice: "V".repeat(200),
+        },
+      }),
+    );
+    const p = bible?.protagonist;
+    expect(p?.name).toHaveLength(80);
+    expect(p?.gender).toHaveLength(40);
+    expect(p?.pronouns).toHaveLength(40);
+    expect(p?.voice).toHaveLength(120);
+    expect(p?.appearance[0]).toHaveLength(60);
+    expect(p?.appearance).toHaveLength(6);
+    expect(p?.appearance).toEqual(["a".repeat(60), "b", "c", "d", "e", "f"]);
+  });
+
+  it("drops a protagonist with no usable name but still salvages the bible (BC5)", () => {
+    const noName = validateProposedBible(rawBible({ protagonist: { gender: "man", appearance: ["tall"] } }));
+    expect(noName?.protagonist).toBeUndefined();
+    expect(noName?.keyRegistry).toHaveLength(4);
+
+    const blankName = validateProposedBible(rawBible({ protagonist: { name: "   " } }));
+    expect(blankName?.protagonist).toBeUndefined();
+  });
+
+  it("tolerant-drops malformed protagonist sub-fields without throwing", () => {
+    const bible = validateProposedBible(
+      rawBible({
+        protagonist: {
+          name: "Kell",
+          gender: 42, // wrong type → ""
+          pronouns: null, // wrong type → ""
+          appearance: [null, 7, "  visible scar  ", {}], // only the string survives, trimmed
+          voice: ["nope"], // wrong type → ""
+        },
+      }),
+    );
+    expect(bible?.protagonist).toEqual({
+      name: "Kell",
+      gender: "",
+      pronouns: "",
+      appearance: ["visible scar"],
+      voice: "",
+    });
+  });
+
+  it("omits protagonist entirely for a legacy bible (no field)", () => {
+    const bible = validateProposedBible(rawBible());
+    expect(bible).not.toBeNull();
+    expect("protagonist" in (bible as object)).toBe(false);
+  });
+
+  // --- cast appearance (character-consistency §2) ---------------------------
+
+  it("salvages a cast appearance descriptor (clamped ≤120) and defaults to empty", () => {
+    const bible = validateProposedBible(
+      rawBible({
+        cast: [
+          {
+            id: "mira",
+            label: "Mira",
+            want: "passage north",
+            secret: "deserted",
+            bondHint: "shared grief",
+            appearance: "A".repeat(200),
+          },
+          { id: "jonah", label: "Jonah" }, // no appearance → ""
+        ],
+      }),
+    );
+    expect(bible?.cast[0]?.appearance).toHaveLength(120);
+    expect(bible?.cast[1]?.appearance).toBe("");
+  });
 });
 
 describe("storyBibleOutputSchema (loose envelope)", () => {
@@ -989,6 +1101,40 @@ describe("buildBibleDigest", () => {
     expect(digest.cast[0]).not.toBe(bible.cast[0]);
     expect(JSON.stringify(bible)).toBe(before);
   });
+
+  it("carries the cast appearance descriptor into the digest", () => {
+    const bible: StoryBible = {
+      ...digestBible(),
+      cast: [
+        { id: "mira", label: "Mira", want: "", secret: "", bondHint: "", appearance: "wiry, ash-blond, patched coat" },
+      ],
+    };
+    expect(buildBibleDigest(bible, 6).cast[0]?.appearance).toBe("wiry, ash-blond, patched coat");
+  });
+
+  it("passes the protagonist through verbatim (deep-copied, every turn)", () => {
+    const protagonist = {
+      name: "Ines Vega",
+      gender: "woman",
+      pronouns: "she/her",
+      appearance: ["dark cropped hair", "wiry build"],
+      voice: "clipped and dry",
+    };
+    const bible: StoryBible = { ...digestBible(), protagonist };
+    // Identity is due regardless of turn band — assert on an early AND a late turn.
+    for (const turn of [1, 12]) {
+      const digest = buildBibleDigest(bible, turn);
+      expect(digest.protagonist).toEqual(protagonist);
+      expect(digest.protagonist).not.toBe(protagonist);
+      expect(digest.protagonist?.appearance).not.toBe(protagonist.appearance);
+    }
+  });
+
+  it("omits protagonist from the digest for a legacy bible", () => {
+    const digest = buildBibleDigest(digestBible(), 6);
+    expect(digest.protagonist).toBeUndefined();
+    expect("protagonist" in digest).toBe(false);
+  });
 });
 
 // ===========================================================================
@@ -1149,5 +1295,22 @@ describe("mergeBibleRefresh", () => {
     expect(merged.cast).toEqual(bible.cast);
     expect(merged.endingHints).toEqual(bible.endingHints);
     expect(merged.motifs).toEqual(bible.motifs);
+  });
+
+  it("preserves the protagonist identity unchanged across an act refresh", () => {
+    const protagonist = {
+      name: "Ines Vega",
+      gender: "woman",
+      pronouns: "she/her",
+      appearance: ["dark cropped hair", "wiry build"],
+      voice: "clipped and dry",
+    };
+    const bible: StoryBible = { ...current(), protagonist };
+    // Even a refresh payload proposing a DIFFERENT protagonist must not change it.
+    const merged = mergeBibleRefresh(
+      bible,
+      refreshRaw({ protagonist: { name: "Someone Else", gender: "man", pronouns: "he/him" } }),
+    );
+    expect(merged.protagonist).toEqual(protagonist);
   });
 });

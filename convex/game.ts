@@ -2348,6 +2348,15 @@ export const completeSceneStream = mutationGeneric({
             nodeId: save.currentNodeId,
             prompt: visualPrompt,
             alt: `Scene illustration for ${save.currentNodeId}`,
+            // Character-consistency §3.2: the NPC ids this scene named ride
+            // through so queueSceneImage can (a) bake each rostered NPC's bible
+            // `appearance` descriptor into the image prompt and (b) thread up to
+            // two of their portraits as scene-render references — a named NPC
+            // keeps ONE face across scenes. Absent/empty on scenes that name no
+            // recurring NPC, which leaves the image path byte-identical to today.
+            ...(proposalForVisual?.npcMentions && proposalForVisual.npcMentions.length > 0
+              ? { npcMentions: proposalForVisual.npcMentions }
+              : {}),
           },
         );
       } catch {

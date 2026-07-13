@@ -146,6 +146,15 @@ export type ReaderLayoutProps = {
    * don't render the fallback panel.
    */
   onRetryCurrentTurn?: () => void | Promise<void>;
+  /**
+   * Save id + reader session auth for the reader-facing "Illuminate this page"
+   * candle (Iris proposal). Threaded to `<IlluminateButton>`, which self-hides
+   * on any page that can't be illuminated (unresolved prose, no session, local
+   * save). Both optional — layouts render no candle when either is absent, so
+   * scripted / local / guest-less saves keep the previous chrome exactly.
+   */
+  saveId?: string;
+  illuminateAuth?: { accountId: string; guestTokenHash?: string };
 };
 
 type Nav = (() => void) | undefined;
