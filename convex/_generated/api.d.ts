@@ -11,6 +11,7 @@
 import type * as account from "../account.js";
 import type * as accountFunctions from "../accountFunctions.js";
 import type * as admin_devRollback from "../admin/devRollback.js";
+import type * as adminContent from "../adminContent.js";
 import type * as analytics from "../analytics.js";
 import type * as analyticsEvents from "../analyticsEvents.js";
 import type * as assets from "../assets.js";
@@ -75,6 +76,7 @@ import type * as media_cinematicFunctions from "../media/cinematicFunctions.js";
 import type * as media_cinematicTriggers from "../media/cinematicTriggers.js";
 import type * as media_cinematics from "../media/cinematics.js";
 import type * as media_geminiImageClient from "../media/geminiImageClient.js";
+import type * as media_illuminate from "../media/illuminate.js";
 import type * as media_imagen from "../media/imagen.js";
 import type * as media_imagenClient from "../media/imagenClient.js";
 import type * as media_mediaCleanup from "../media/mediaCleanup.js";
@@ -106,6 +108,7 @@ declare const fullApi: ApiFromModules<{
   account: typeof account;
   accountFunctions: typeof accountFunctions;
   "admin/devRollback": typeof admin_devRollback;
+  adminContent: typeof adminContent;
   analytics: typeof analytics;
   analyticsEvents: typeof analyticsEvents;
   assets: typeof assets;
@@ -170,6 +173,7 @@ declare const fullApi: ApiFromModules<{
   "media/cinematicTriggers": typeof media_cinematicTriggers;
   "media/cinematics": typeof media_cinematics;
   "media/geminiImageClient": typeof media_geminiImageClient;
+  "media/illuminate": typeof media_illuminate;
   "media/imagen": typeof media_imagen;
   "media/imagenClient": typeof media_imagenClient;
   "media/mediaCleanup": typeof media_mediaCleanup;

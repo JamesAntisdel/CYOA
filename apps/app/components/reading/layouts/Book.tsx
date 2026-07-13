@@ -5,6 +5,7 @@ import { EndingPanel } from "../../death/EndingPanel";
 import { CinematicMoment } from "../../media/CinematicMoment";
 import { SceneCinematic } from "../../media/SceneCinematic";
 import { SceneMedia } from "../../media/SceneMedia";
+import { IlluminateButton } from "../IlluminateButton";
 import { Divider, Stamp, Surface, Text } from "../../primitives";
 import { StatsHud } from "../../stats/StatsHud";
 import { useAppTheme } from "../../../theme";
@@ -58,6 +59,8 @@ export function BookLayout({
   accountId,
   recentChoiceEcho = null,
   onRetryCurrentTurn,
+  saveId,
+  illuminateAuth,
 }: ReaderLayoutProps) {
   const { tokens } = useAppTheme();
   const showHud = hudMode !== "hidden";
@@ -93,6 +96,10 @@ export function BookLayout({
             narratorPlaybackRate={narratorPlaybackRate}
             {...(onNarratorPlaybackRateChange ? { onNarratorPlaybackRateChange } : {})}
           />
+
+          {saveId && illuminateAuth ? (
+            <IlluminateButton saveId={saveId} auth={illuminateAuth} reducedMotion={reducedMotion} />
+          ) : null}
 
           <Surface padded style={{ gap: tokens.spacing.lg }}>
             <ProseRenderer

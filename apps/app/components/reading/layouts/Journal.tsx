@@ -9,6 +9,7 @@ import { StatsHud } from "../../stats/StatsHud";
 import { useAppTheme } from "../../../theme";
 import { ConsequenceReel } from "../ConsequenceReel";
 import { EffectBadge } from "../EffectBadge";
+import { IlluminateButton } from "../IlluminateButton";
 import { FallbackTurnPanel } from "../FallbackTurnPanel";
 import { ProseRenderer } from "../ProseRenderer";
 import { WhatMightHaveBeen } from "../WhatMightHaveBeen";
@@ -56,6 +57,8 @@ export function JournalLayout({
   accountId,
   recentChoiceEcho = null,
   onRetryCurrentTurn,
+  saveId,
+  illuminateAuth,
 }: ReaderLayoutProps) {
   const { tokens } = useAppTheme();
   const showHud = hudMode !== "hidden";
@@ -104,6 +107,10 @@ export function JournalLayout({
         />
       ) : (
         <>
+          {saveId && illuminateAuth ? (
+            <IlluminateButton saveId={saveId} auth={illuminateAuth} reducedMotion={reducedMotion} />
+          ) : null}
+
           <Surface
             padded
             style={{

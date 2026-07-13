@@ -105,6 +105,7 @@ push_env CYOA_DEV_FORCE_PRO_MEDIA "1"
 # as the Pro media override above — UNSET before any tunnel exposure.
 push_env CYOA_DEV_UNLIMITED_TURNS "1"
 push_env CYOA_DEV_LOG_MAGIC_LINK "1"
+push_env CYOA_DEV_ALLOW_ADMIN_GRANT "1"
 
 # Stripe — push the secret so the webhook handler can reach signature
 # validation (and return 400 instead of crashing) even when no real

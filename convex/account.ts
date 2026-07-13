@@ -1,6 +1,11 @@
+import { mutationGeneric } from "convex/server";
+import { v } from "convex/values";
+
 import type { AgeBand, Entitlement } from "@cyoa/shared";
 
-import { AppError } from "./lib/errors";
+import { AppError, forbidden } from "./lib/errors";
+import { assertAdmin, loadAndAuthorizeAccount } from "./lib/authz";
+import { accountFromDoc } from "./lib/docs";
 
 export type AgeSelection = AgeBand | "under_13";
 
@@ -271,3 +276,123 @@ export function createAccountDeletionSummary(accountId: string): AccountDeletion
     publishedTalesRevoked: 0,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Admin grant / promote (ADMIN-VIEW). Pure helpers first (unit-tested in
+// convex/tests/adminGrant.test.ts), then the two registered mutations.
+// ---------------------------------------------------------------------------
+
+/**
+ * Env name that lets `devGrantAdmin` bootstrap the FIRST admin locally without
+ * an existing admin caller. Set (e.g. `CYOA_DEV_ALLOW_ADMIN_GRANT=1`) in the
+ * local/dockerized dev env only — never in production. Once one admin exists,
+ * further grants can go through an authenticated admin caller instead.
+ */
+export const CYOA_DEV_ALLOW_ADMIN_GRANT = "CYOA_DEV_ALLOW_ADMIN_GRANT";
+
+/**
+ * Interpret an env-flag string as a boolean. Absent / "" / "0" / "false" /
+ * "off" (any case) → disabled; any other non-empty value → enabled. Pure so
+ * the grant authorization decision is unit-testable without a live env.
+ */
+export function isAdminGrantEnvEnabled(value: string | undefined | null): boolean {
+  if (typeof value !== "string") return false;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "" || normalized === "0" || normalized === "false" || normalized === "off") {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Normalize the target email for the grant lookup. `userId` on a claimed
+ * account holds the email verbatim (see the claimGuest note above), so we trim
+ * only — no lowercasing, to match however the account was claimed. Throws when
+ * empty so a blank arg can't match an arbitrary row.
+ */
+export function normalizeGrantEmail(email: string): string {
+  const trimmed = typeof email === "string" ? email.trim() : "";
+  if (trimmed.length === 0) throw new AppError("admin_grant_email_required");
+  return trimmed;
+}
+
+/**
+ * Gate for `devGrantAdmin`: allow when the local bootstrap env is set OR the
+ * (already session-verified) caller is an existing admin. Throws
+ * `admin_grant_not_allowed` otherwise. Pure — the mutation resolves `envAllow`
+ * and `callerIsAdmin` and hands them here.
+ */
+export function assertCanGrantAdmin(input: { envAllow: boolean; callerIsAdmin: boolean }): void {
+  if (input.envAllow || input.callerIsAdmin) return;
+  throw forbidden("admin_grant_not_allowed");
+}
+
+/** The patch that flips (or clears) an account's admin claim. */
+export function buildAdminClaimUpdate(isAdmin: boolean): { isAdmin: boolean } {
+  return { isAdmin: isAdmin === true };
+}
+
+/**
+ * Dev-gated bootstrap: grant admin to the USER account matching `email`.
+ * Authorized when `CYOA_DEV_ALLOW_ADMIN_GRANT` is set (first-admin bootstrap)
+ * OR an existing admin caller proves their session. Idempotent — re-granting
+ * an already-admin account is a no-op patch.
+ *
+ * Path (BC1): `account:devGrantAdmin`.
+ */
+export const devGrantAdmin = mutationGeneric({
+  args: {
+    email: v.string(),
+    // Optional caller proof: required when the bootstrap env is NOT set (so an
+    // existing admin can still grant even without the env). Ignored for the
+    // env-bootstrap path.
+    callerAccountId: v.optional(v.id("accounts")),
+    guestTokenHash: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const email = normalizeGrantEmail(args.email);
+    const envAllow = isAdminGrantEnvEnabled(process.env[CYOA_DEV_ALLOW_ADMIN_GRANT]);
+
+    let callerIsAdmin = false;
+    if (args.callerAccountId) {
+      // Prove the caller owns this session BEFORE trusting its admin claim.
+      const caller = await loadAndAuthorizeAccount(ctx, args.callerAccountId, args.guestTokenHash);
+      callerIsAdmin = accountFromDoc(caller).isAdmin === true;
+    }
+    assertCanGrantAdmin({ envAllow, callerIsAdmin });
+
+    const target = await ctx.db
+      .query("accounts")
+      .withIndex("by_userId", (q: any) => q.eq("userId", email))
+      .first();
+    if (!target || target.kind !== "user") throw new AppError("admin_grant_target_not_found");
+
+    await ctx.db.patch(target._id, buildAdminClaimUpdate(true));
+    return { accountId: String(target._id), email, isAdmin: true };
+  },
+});
+
+/**
+ * Admin-only toggle of another account's admin claim, driven from the Users
+ * view. The caller must prove their session AND hold an admin claim.
+ *
+ * Path (BC1): `account:promoteUser`.
+ */
+export const promoteUser = mutationGeneric({
+  args: {
+    accountId: v.id("accounts"),
+    guestTokenHash: v.optional(v.string()),
+    targetAccountId: v.id("accounts"),
+    isAdmin: v.boolean(),
+  },
+  handler: async (ctx, args) => {
+    const caller = await loadAndAuthorizeAccount(ctx, args.accountId, args.guestTokenHash);
+    assertAdmin(accountFromDoc(caller));
+
+    const target = await ctx.db.get(args.targetAccountId);
+    if (!target) throw new AppError("admin_grant_target_not_found");
+
+    await ctx.db.patch(args.targetAccountId, buildAdminClaimUpdate(args.isAdmin));
+    return { accountId: String(args.targetAccountId), isAdmin: args.isAdmin === true };
+  },
+});
