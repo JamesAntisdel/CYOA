@@ -56,6 +56,14 @@ const TAB_MIN_WIDTH = 96;
 // height so the tab pills are reliably tappable on phones.
 const TAB_MIN_HEIGHT = 44;
 
+// The desktop tab row (brand wordmark + up to six fixed-cell pills) needs
+// roughly this much width to lay out without the last pill ("Login") being
+// clipped at the viewport edge. Below it we fall back to the hamburger drawer
+// instead of a horizontally-scrolled row whose overflow reads as "cut off"
+// rather than "swipe me". Above the shared phone breakpoint (520) but below
+// this, tablets get the drawer too — a clean menu beats a clipped one.
+const NAV_ROW_MIN_WIDTH = 900;
+
 /**
  * Global top-nav shell.
  *
@@ -78,7 +86,10 @@ export function AppNav({ current }: AppNavProps) {
   const router = useRouter();
   const auth = useAuthSession();
   const { tokens } = useAppTheme();
-  const { isPhone } = useBreakpoint();
+  const { isPhone, width } = useBreakpoint();
+  // Use the hamburger drawer whenever the row can't fit, not only on phones —
+  // this is what stops the "Login" pill being clipped on mid-width viewports.
+  const useDrawer = isPhone || width < NAV_ROW_MIN_WIDTH;
   const items: readonly { key: AppNavTab; label: string; href: string }[] = auth.session
     ? NAV_ITEMS
     : [...NAV_ITEMS, LOGIN_ITEM];
@@ -92,11 +103,11 @@ export function AppNav({ current }: AppNavProps) {
   const activeIndex = current ? items.findIndex((item) => item.key === current) : -1;
 
   useEffect(() => {
-    if (isPhone) return;
+    if (useDrawer) return;
     if (activeIndex < 0 || !scrollRef.current) return;
     const offset = activeIndex * (TAB_MIN_WIDTH + tokens.spacing.xs);
     scrollRef.current.scrollTo({ x: offset, animated: false });
-  }, [activeIndex, isPhone, tokens.spacing.xs]);
+  }, [activeIndex, useDrawer, tokens.spacing.xs]);
 
   const goTo = (href: string) => {
     setDrawerOpen(false);
@@ -140,7 +151,7 @@ export function AppNav({ current }: AppNavProps) {
           )}
         </Pressable>
 
-        {isPhone ? (
+        {useDrawer ? (
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Open navigation menu"

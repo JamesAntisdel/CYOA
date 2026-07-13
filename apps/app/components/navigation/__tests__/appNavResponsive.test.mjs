@@ -170,11 +170,12 @@ test("AppNav auto-scrolls the active tab into view on tablet/desktop entry", () 
     /useEffect\(/,
     "AppNav must use a useEffect to scroll the active tab into view after mount",
   );
-  // And the effect must early-return on phone so we don't try to
+  // And the effect must early-return whenever the drawer is shown (phone
+  // OR mid-width tablets that fall back to the hamburger) so we don't try to
   // measure a ScrollView that didn't render.
   assert.match(
     appNavSource,
-    /if\s*\(isPhone\)\s*return\s*;/,
-    "auto-scroll effect must early-return on phone",
+    /if\s*\(useDrawer\)\s*return\s*;/,
+    "auto-scroll effect must early-return when the drawer is shown",
   );
 });
