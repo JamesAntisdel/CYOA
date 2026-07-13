@@ -17,7 +17,15 @@
  */
 import { Platform } from "react-native";
 
+import { convexHttp } from "./convexHttp";
+
 const CANDLE_CHANNEL_ID = "candle-relights";
+
+/**
+ * Registered path of the server mutation that stores this device's Expo push
+ * token for an account (SERVER half lives in `convex/pushNotifications.ts`).
+ */
+export const REGISTER_PUSH_TOKEN_PATH = "pushNotifications:registerPushToken";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function notifications(): any {
@@ -83,6 +91,37 @@ export async function registerForPushToken(): Promise<string | null> {
 }
 
 /**
+ * Acquire the Expo push token AND persist it server-side (`registerPushToken`)
+ * so the "candle re-lights" cron can push this account back in. Native-only:
+ * web returns null before any work (byte-for-byte web build unchanged), and a
+ * denied permission / missing token short-circuits before the network call.
+ *
+ * The store call is best-effort — the token is returned even if the mutation
+ * fails, so a caller can retry — and mirrors the tolerant server half.
+ */
+export async function registerAndStorePushToken(input: {
+  accountId: string;
+  guestTokenHash?: string;
+}): Promise<string | null> {
+  if (Platform.OS === "web") return null;
+  const token = await registerForPushToken();
+  if (!token) return null;
+  try {
+    await convexHttp("mutation", REGISTER_PUSH_TOKEN_PATH, {
+      accountId: input.accountId,
+      ...(input.guestTokenHash ? { guestTokenHash: input.guestTokenHash } : {}),
+      token,
+      ...(Platform.OS === "ios" || Platform.OS === "android"
+        ? { platform: Platform.OS }
+        : {}),
+    });
+  } catch {
+    // best-effort — the token is still returned so the caller may retry.
+  }
+  return token;
+}
+
+/**
  * Schedule a LOCAL notification for the "candle re-lights" re-entry nudge.
  * `at` is when it should fire (Date or epoch ms). Returns the scheduled
  * notification id (for later cancellation) or null on web / failure.
@@ -136,6 +175,10 @@ export async function cancelScheduledNotification(id: string): Promise<void> {
  */
 export function usePushNotifications(): {
   register: () => Promise<string | null>;
+  registerAndStore: (input: {
+    accountId: string;
+    guestTokenHash?: string;
+  }) => Promise<string | null>;
   scheduleCandleRelight: (input: {
     at: Date | number;
     title?: string;
@@ -145,6 +188,7 @@ export function usePushNotifications(): {
 } {
   return {
     register: registerForPushToken,
+    registerAndStore: registerAndStorePushToken,
     scheduleCandleRelight,
     cancel: cancelScheduledNotification,
   };

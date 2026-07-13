@@ -54,4 +54,15 @@ crons.daily(
   {},
 );
 
+// "candle re-lights" re-entry push (SERVER half in convex/pushNotifications.ts).
+// Fire one minute after `mint-daily-tale` (00:05 UTC) so today's Daily exists
+// before we nudge idle readers back in. Selects active-but-idle saves with a
+// registered push token and fans out an Expo push. Tolerant — never throws.
+crons.daily(
+  "notify-guttered-candles",
+  { hourUTC: 0, minuteUTC: 6 },
+  makeFunctionReference<"action">("pushNotifications:notifyGutteredCandles"),
+  {},
+);
+
 export default crons;

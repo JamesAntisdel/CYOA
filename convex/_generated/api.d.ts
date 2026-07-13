@@ -89,6 +89,7 @@ import type * as media_veo from "../media/veo.js";
 import type * as memory from "../memory.js";
 import type * as migrations from "../migrations.js";
 import type * as operatorDashboardFunctions from "../operatorDashboardFunctions.js";
+import type * as pushNotifications from "../pushNotifications.js";
 import type * as ratelimit from "../ratelimit.js";
 import type * as safety from "../safety.js";
 import type * as saves from "../saves.js";
@@ -186,6 +187,7 @@ declare const fullApi: ApiFromModules<{
   memory: typeof memory;
   migrations: typeof migrations;
   operatorDashboardFunctions: typeof operatorDashboardFunctions;
+  pushNotifications: typeof pushNotifications;
   ratelimit: typeof ratelimit;
   safety: typeof safety;
   saves: typeof saves;

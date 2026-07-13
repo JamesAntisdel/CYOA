@@ -48,15 +48,48 @@ export function configureNativeAudioMode(): void {
 }
 
 /**
- * Minimal structural view of the `expo-audio` AudioPlayer surface AudioMix
- * needs. Kept local so the module has no static expo-audio type dependency.
+ * Playback status delivered by `expo-audio`'s `playbackStatusUpdate` event.
+ * Only the fields the narrator scrub bar / transport need are modelled; all
+ * are optional so a partial status object still type-checks.
+ */
+export type NativeAudioStatus = {
+  /** Current playback offset in seconds. */
+  currentTime?: number;
+  /** Clip duration in seconds; 0 until the item finishes loading. */
+  duration?: number;
+  /** Whether the player is actively playing right now. */
+  playing?: boolean;
+  /** Fired once when the clip reaches its end. */
+  didJustFinish?: boolean;
+  /** Whether the item has finished loading. */
+  isLoaded?: boolean;
+};
+
+/** Handle returned by `addListener`; call `.remove()` to unsubscribe. */
+export type NativeAudioSubscription = { remove(): void };
+
+/**
+ * Minimal structural view of the `expo-audio` AudioPlayer surface the native
+ * audio paths need. Kept local so the module has no static expo-audio type
+ * dependency. AudioMix's layers use the volume/loop/play/pause/remove subset;
+ * the narrator (`useNarratorPlayback`) additionally uses currentTime/duration,
+ * seekTo, setPlaybackRate, and the status listener for its scrub bar.
  */
 export type NativeAudioPlayer = {
   volume: number;
   loop: boolean;
+  playbackRate: number;
+  currentTime: number;
+  duration: number;
   play(): void;
   pause(): void;
   remove(): void;
+  seekTo(seconds: number): Promise<void>;
+  setPlaybackRate(rate: number, pitchCorrectionQuality?: string): void;
+  addListener(
+    event: "playbackStatusUpdate",
+    listener: (status: NativeAudioStatus) => void,
+  ): NativeAudioSubscription;
 };
 
 /**
