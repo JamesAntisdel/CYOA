@@ -455,6 +455,22 @@ function buildLlmDrivenPrompt(request: SceneGenerationRequest): string {
   const checkOutcomeBlock = request.checkOutcome
     ? buildCheckOutcomeSection(request.checkOutcome)
     : null;
+  // CONTINUITY guard (character-consistency follow-up). Distinct from the
+  // ANTI-REPETITION output rule below: that rule polices stylistic VARIETY
+  // (don't reuse the same opener/motif/object). This block polices TEMPORAL
+  // continuity — the specific bug where a small model re-narrates a beat it
+  // already showed ("the radio crackled to life…" introduced as new across
+  // consecutive scenes). It reframes the Story-so-far summary + memory window
+  // as PAST fact so the model advances instead of re-establishing. Rendered
+  // directly above the memory window (the prose it must not re-narrate) so it
+  // reads as a lens over that content. Gated on turnNumber > 1 — on the opening
+  // turn there is nothing prior to re-introduce, so the block is skipped and the
+  // turn-1 prompt stays byte-identical to today (BC5). Kept to one tight line so
+  // it costs almost nothing against the snapshot-tested token budget.
+  const continuityBlock =
+    turnNumber > 1
+      ? "CONTINUITY (read before you write): everything in the Story so far and the Recent story memory below has ALREADY happened — treat it as the past. Never re-introduce, re-announce, or re-describe an event, object, character, or revelation the reader has already seen as if it were new (e.g. a radio that already crackled to life does not crackle to life again, a person already on-scene does not arrive again). Begin exactly where the last scene ended and move the situation FORWARD in time."
+      : null;
   // Story-bible digest (R3.1). Rendered right after the story-so-far summary
   // so it reads as canonical continuity. Absent on bible-less saves — the
   // prompt stays byte-identical to today (R3.5/BC9).
@@ -493,7 +509,7 @@ function buildLlmDrivenPrompt(request: SceneGenerationRequest): string {
       "  • beat: confrontation — a direct face-off, dialogue heavy, decision pressure. An NPC pushes back, demands a commitment, escalates an existing thread. " +
       "  • beat: momentum-shift — a hard pivot in pace, location, or stakes. The story breaks open: a chase begins, a door closes, a deadline lands. " +
       "Brisk, consequence-driven. Lead with the action or the dialogue. Two short establishment lines maximum. The beat is a TARGET, not a straitjacket — adjacent beats can blend, but never deliver two consecutive turns of the same beat shape.",
-    "VISUAL DESCRIPTION (REQUIRED — the image renderer relies on this field; missing it produces a wrong image). Provide a `visualDescription` field with one concise sentence (under 320 chars) optimized for image generation. Name the SUBJECT (who/what is in frame RIGHT NOW in this scene — not a memory, not a past location), the SETTING (where the scene physically takes place AT THIS MOMENT, time of day, weather/light), 1-3 KEY OBJECTS with their SPATIAL RELATION (\"the cracked windshield to her left\", \"the radio above the seat\"), and the COMPOSITION (close-up, wide shot, over-the-shoulder, etc.). Use concrete real-world referents (\"Boeing 737 cockpit\", \"stainless steel coffee thermos\", \"vinyl bench seat\") not vague nouns (\"airplane\", \"cup\", \"chair\"). Avoid impossible or self-contradictory imagery (no airplanes without noses, no glass that is also wood, no characters described as both tall and seated-with-eye-level-at-ankles). The visualDescription MUST match the CURRENT physical scene in the prose — not a flashback, not a memory, not what the character is thinking about. If the prose opens with a memory or flashback, the visualDescription describes where the character is RIGHT NOW (the cockpit, the conference room, the porch), not the remembered location (their childhood living room, etc.). Example: prose mentions \"she remembers her living room before the flight\" but the scene is set in a 737 cockpit → visualDescription is about the cockpit, NOT the living room.",
+    "VISUAL DESCRIPTION (REQUIRED — the image renderer relies on this field; missing it produces a wrong image). Provide a `visualDescription` field with one concise sentence (under 320 chars) optimized for image generation. Name the SUBJECT (who/what is in frame RIGHT NOW in this scene — not a memory, not a past location), the SETTING (where the scene physically takes place AT THIS MOMENT, time of day, weather/light), 1-3 KEY OBJECTS with their SPATIAL RELATION (\"the cracked windshield to her left\", \"the radio above the seat\"), and the COMPOSITION (close-up, wide shot, over-the-shoulder, etc.). Use concrete real-world referents (\"Boeing 737 cockpit\", \"stainless steel coffee thermos\", \"vinyl bench seat\") not vague nouns (\"airplane\", \"cup\", \"chair\"). Avoid impossible or self-contradictory imagery (no airplanes without noses, no glass that is also wood, no characters described as both tall and seated-with-eye-level-at-ankles). The visualDescription MUST match the CURRENT physical scene in the prose — not a flashback, not a memory, not what the character is thinking about. If the prose opens with a memory or flashback, the visualDescription describes where the character is RIGHT NOW (the cockpit, the conference room, the porch), not the remembered location (their childhood living room, etc.). Example: prose mentions \"she remembers her living room before the flight\" but the scene is set in a 737 cockpit → visualDescription is about the cockpit, NOT the living room. OBJECT CONSISTENCY — if a KEY OBJECT already appeared in an earlier scene (check the running summary's KEY OBJECTS line and the memory), describe it the SAME way here (same type, make, colour, and condition — a rust-red pickup truck stays a rust-red pickup truck, not a white van) unless its state has visibly changed, and then describe the change.",
   ];
   // Story-arc rules (R6.2, R3.3, R4 guidance, R2.5). Only emitted on arc
   // saves — legacy saves keep the exact prior rule set (BC9). CHOICE
@@ -561,6 +577,9 @@ function buildLlmDrivenPrompt(request: SceneGenerationRequest): string {
     // scene texture (R6.1). The resolved check outcome (W2) rides just under it.
     pursuitBlock,
     checkOutcomeBlock,
+    // Continuity lens sits directly above the memory window it governs (BC5:
+    // null on turn 1, so the opening prompt is unchanged).
+    continuityBlock,
     `Recent story memory (oldest → newest):\n${memory}`,
     `Current player state:\n${playerStateSummary(request.playerState)}`,
     npcSheetsBlock(request.npcSheets),
