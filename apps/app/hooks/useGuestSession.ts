@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Platform } from "react-native";
 
-import { getLocalStorage as getStorage } from "../lib/storage";
+import { getLocalStorage as getStorage, hydrateStorage } from "../lib/storage";
 import { createId } from "../lib/ids";
 
 import type { AgeBand } from "@cyoa/shared";
@@ -44,16 +45,29 @@ export function useGuestSession() {
   });
 
   useEffect(() => {
-    const restored = readStoredSession();
-    setState({ status: "ready", session: restored, blocked: false, error: null });
-
-    if (!restored || !hasRemoteGameApi()) return undefined;
-
     let cancelled = false;
-    void createRemoteGuestAccount({
-      ageSelection: restored.ageBand,
-      guestTokenHash: getOrCreateGuestToken(),
-    }).then((remote) => {
+
+    void (async () => {
+      // NATIVE: storage.ts hydrates its synchronous cache from AsyncStorage /
+      // expo-secure-store asynchronously at boot. Await it here so the
+      // restored guest session (and its Convex accountId + guest token)
+      // reflects on-disk state on a cold launch instead of reading an empty
+      // cache and minting a throwaway identity. On web this resolves
+      // immediately (localStorage is already synchronous).
+      if (Platform.OS !== "web") {
+        await hydrateStorage();
+        if (cancelled) return;
+      }
+
+      const restored = readStoredSession();
+      setState({ status: "ready", session: restored, blocked: false, error: null });
+
+      if (!restored || !hasRemoteGameApi()) return;
+
+      const remote = await createRemoteGuestAccount({
+        ageSelection: restored.ageBand,
+        guestTokenHash: getOrCreateGuestToken(),
+      });
       if (cancelled || !remote) return;
       const session: GuestSession = {
         accountId: remote.account.accountId,
@@ -85,7 +99,7 @@ export function useGuestSession() {
         }
         return { status: "ready", session, blocked: false, error: null };
       });
-    });
+    })();
 
     return () => {
       cancelled = true;

@@ -14,6 +14,7 @@ import {
   PLAY_SECONDS_CAP,
   PLAY_SECONDS_MIN,
   QUIT_STALE_AFTER_MS,
+  READING_ACTIVE_WITHIN_MS,
   aggregatePlayTimeBySeed,
   buildSeedStats,
   clampPlaySeconds,
@@ -334,6 +335,56 @@ describe("creatorDashboard — buildSeedStats", () => {
     expect(stats.plays).toBe(0);
     expect(stats.endings).toEqual([]);
     expect(stats.quitPoints).toEqual([]);
+  });
+
+  it("does not misreport a recent quitter as 'still reading' (panel-2 honesty fix)", () => {
+    const stats = buildSeedStats({
+      seed,
+      storyId: "authored_seed:seed1",
+      saves: [
+        // Touched 20 min ago → confidently reading.
+        saveRow({ status: "active", turnNumber: 2, updatedAt: NOW - 20 * 60_000 }),
+        // Idle 10h: drifted (2h–48h) → NOT "still reading", NOT yet a quit.
+        saveRow({ status: "active", turnNumber: 3, updatedAt: NOW - 10 * 60 * 60_000 }),
+        // Idle > 48h → confirmed quit point.
+        saveRow({ status: "active", turnNumber: 4, updatedAt: NOW - QUIT_STALE_AFTER_MS - 1 }),
+      ],
+      forkCount: 0,
+      playSeconds: { total: 0, external: 0 },
+      now: NOW,
+    });
+    expect(stats.inProgress).toBe(1); // only the 20-min-ago save
+    expect(stats.idle).toBe(1); // the 10h drifter — surfaced, not hidden in inProgress
+    expect(stats.quitPoints).toEqual([{ turnNumber: 4, count: 1 }]);
+    expect(stats.quitStaleAfterMs).toBe(QUIT_STALE_AFTER_MS);
+  });
+
+  it("honors a custom reading-active window boundary", () => {
+    const atBoundary = buildSeedStats({
+      seed,
+      storyId: "authored_seed:seed1",
+      saves: [saveRow({ status: "active", turnNumber: 2, updatedAt: NOW - READING_ACTIVE_WITHIN_MS })],
+      forkCount: 0,
+      playSeconds: { total: 0, external: 0 },
+      now: NOW,
+    });
+    // Exactly at the window → idle (>=), not reading.
+    expect(atBoundary.inProgress).toBe(0);
+    expect(atBoundary.idle).toBe(1);
+  });
+
+  it("flags playSecondsApprox when the play-time scan was saturated", () => {
+    const base = {
+      seed,
+      storyId: "authored_seed:seed1",
+      saves: [] as Array<Record<string, unknown>>,
+      forkCount: 0,
+      playSeconds: { total: 120, external: 90 },
+      now: NOW,
+    };
+    expect(buildSeedStats({ ...base, playSecondsApprox: true }).playSecondsApprox).toBe(true);
+    // Default (exact) when the flag is absent.
+    expect(buildSeedStats(base).playSecondsApprox).toBe(false);
   });
 });
 

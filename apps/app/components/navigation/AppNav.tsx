@@ -62,7 +62,12 @@ const TAB_MIN_HEIGHT = 44;
 // instead of a horizontally-scrolled row whose overflow reads as "cut off"
 // rather than "swipe me". Above the shared phone breakpoint (520) but below
 // this, tablets get the drawer too — a clean menu beats a clipped one.
-const NAV_ROW_MIN_WIDTH = 900;
+// Only show the full desktop pill row when the viewport is genuinely wide
+// enough for brand + every tab + Login without clipping. Below this we use the
+// hamburger drawer. Set generously (a clean menu beats a clipped one), and a
+// falsy/zero width (unreliable through some webviews/tunnels) also falls back
+// to the drawer rather than rendering an overflowing row.
+const NAV_ROW_MIN_WIDTH = 1024;
 
 /**
  * Global top-nav shell.
@@ -89,7 +94,7 @@ export function AppNav({ current }: AppNavProps) {
   const { isPhone, width } = useBreakpoint();
   // Use the hamburger drawer whenever the row can't fit, not only on phones —
   // this is what stops the "Login" pill being clipped on mid-width viewports.
-  const useDrawer = isPhone || width < NAV_ROW_MIN_WIDTH;
+  const useDrawer = isPhone || !width || width < NAV_ROW_MIN_WIDTH;
   const items: readonly { key: AppNavTab; label: string; href: string }[] = auth.session
     ? NAV_ITEMS
     : [...NAV_ITEMS, LOGIN_ITEM];

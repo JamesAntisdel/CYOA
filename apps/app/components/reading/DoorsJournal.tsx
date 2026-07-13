@@ -6,7 +6,7 @@ import {
   hasRemoteGameApi,
   type RemoteDoorsJournalEntry,
 } from "../../lib/gameApi";
-import { doorJournalLine, doorsNewlyKeyed } from "../../lib/storyEngagement";
+import { doorJournalLine, doorsNewlyKeyed, keyArrivalToast } from "../../lib/storyEngagement";
 import { useToast } from "../../hooks/useToast";
 import { useAppTheme } from "../../theme";
 import { Surface, Text } from "../primitives";
@@ -63,7 +63,12 @@ export function DoorsJournal({ saveId, auth, sceneId }: DoorsJournalProps) {
       const arrivals = doorsNewlyKeyed(prevEntriesRef.current, next);
       if (arrivals.length > 0 && nudgedSceneRef.current !== sceneId) {
         nudgedSceneRef.current = sceneId;
-        toast.push({ message: "A key has turned up.", tone: "info" });
+        // Name the door the key belongs to and point at the pill above — the
+        // old anonymous "A key has turned up." nudge named nothing and pointed
+        // nowhere (panel-review-2 merged doors-journal idea). Auto-expand the
+        // journal so the tap-through is immediate.
+        setExpanded(true);
+        toast.push({ message: keyArrivalToast(arrivals), tone: "info" });
       }
       prevEntriesRef.current = next;
       setEntries(next);

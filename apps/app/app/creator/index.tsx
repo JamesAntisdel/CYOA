@@ -815,10 +815,37 @@ export default function CreatorRoute() {
                     Publish seed
                   </Button>
                 ) : null}
+                {/* Close the publish loop (panel-review-2 merged fix): after a
+                    publish the creator can jump straight to the tale live on the
+                    shelf and to the dashboard where reads/quit-points land —
+                    no longer only "Open in library". The shelf link shows only
+                    for a PUBLIC publish (unlisted seeds never reach Discover).
+                    DEPENDENCY (PANEL-SERVER): the "your seed" echo — highlighting
+                    the creator's own card — needs `ownerHandle` on the publish
+                    response + `isMine` on listPublishedPublic; neither is wired
+                    yet, so the deep-link lands the creator on Discover without a
+                    self-highlight for now. */}
                 {publishedSeedId ? (
-                  <Button onPress={() => router.push("/library")}>
-                    Open in library
-                  </Button>
+                  <>
+                    {visibility === "public" ? (
+                      <Button
+                        accessibilityLabel="See it on the community shelf"
+                        onPress={() => router.push("/discover")}
+                        variant="primary"
+                      >
+                        See it on the shelf
+                      </Button>
+                    ) : null}
+                    <Button
+                      accessibilityLabel="Watch readers arrive on the creator dashboard"
+                      onPress={() => router.push("/creator/dashboard")}
+                    >
+                      Watch readers arrive
+                    </Button>
+                    <Button onPress={() => router.push("/library")} variant="ghost">
+                      Open in library
+                    </Button>
+                  </>
                 ) : null}
               </View>
               <Text accessibilityLabel="Creator status" muted>{status}</Text>

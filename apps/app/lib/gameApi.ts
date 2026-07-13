@@ -1,3 +1,5 @@
+import { Platform } from "react-native";
+
 import type { NpcState, Story } from "@cyoa/engine";
 
 import { convexClient, convexSiteUrl } from "./convex";
@@ -358,6 +360,36 @@ export async function getRemoteCurrentScene(input: {
 }
 
 /**
+ * "Begin again" via PANEL-SERVER's `game:restartRun` (panel-review-2 ranked
+ * idea 5 / Dana's HIGH restart critique). The server loads the ENDED save,
+ * copies its `storyId` + every seed field (seedPremise/seedTitle/seedTone/
+ * seedNpcs/voiceId) onto a FRESH save, and returns the new save + opening
+ * scene — the same shape as `createSave`. This is what the ending panel's
+ * "Begin again" should call: it fixes both failure modes the old client
+ * restart hit (community `authored_seed:<id>` runs threw `story_not_found`,
+ * and SeedStoryFlow premise runs restarted the blank open-canvas shell) by
+ * copying the seed identity server-side instead of re-deriving it from the
+ * client starter catalog.
+ *
+ * DEPENDENCY (PANEL-SERVER): `game:restartRun` is owned by PANEL-SERVER. Until
+ * it is deployed, `convexHttp` maps the "function not found" server error to
+ * `null` (same as any transport failure), so the caller falls back to the
+ * cover-screen `createSave` path. Coded here to the documented wire shape.
+ */
+export async function restartRemoteRun(input: {
+  accountId: string;
+  guestTokenHash?: string;
+  saveId: string;
+}): Promise<{ saveId: string; sceneId?: string; scene?: RemoteScene } | null> {
+  if (!convexClient) return null;
+  return callConvexHttp<any>(
+    "mutation",
+    "game:restartRun",
+    input as unknown as Record<string, unknown>,
+  ) as any;
+}
+
+/**
  * One doors-journal row (DOORS-JOURNAL — the reader-facing half of the
  * story-bible fetch-quest loop). The server projects ONLY doors the reader has
  * already seen rendered locked on screen (BC10): `label` is the lock as the
@@ -657,7 +689,19 @@ export async function streamRemoteScene(input: {
 }): Promise<boolean> {
   if (!convexSiteUrl) return false;
   try {
-    const response = await fetch(`${convexSiteUrl.replace(/\/$/u, "")}/llm/scene-stream`, {
+    // NATIVE: React Native's global `fetch` (whatwg-fetch / XHR-backed) does
+    // NOT expose a streaming `response.body` — `getReader()` below would be
+    // undefined and every native reader would fall through to the poll
+    // fallback. `expo/fetch` is a native streaming fetch whose FetchResponse
+    // implements `Response` with a real ReadableStream body, so token
+    // streaming works on device. WEB keeps the global `fetch` (its body
+    // streams natively in the browser and the live tunnel depends on it).
+    const streamingFetch: typeof fetch =
+      Platform.OS === "web"
+        ? fetch
+        : // eslint-disable-next-line @typescript-eslint/no-var-requires
+          (require("expo/fetch").fetch as typeof fetch);
+    const response = await streamingFetch(`${convexSiteUrl.replace(/\/$/u, "")}/llm/scene-stream`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(input),

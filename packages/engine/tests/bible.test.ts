@@ -8,6 +8,7 @@ import {
   dueKeySeedings,
   evaluateLlmSceneChoices,
   evaluateLlmSceneChoicesWithRegistry,
+  fireTwistEvent,
   keySeedingPlan,
   llmChoiceSchema,
   llmSceneOutputSchema,
@@ -1312,5 +1313,40 @@ describe("mergeBibleRefresh", () => {
       refreshRaw({ protagonist: { name: "Someone Else", gender: "man", pronouns: "he/him" } }),
     );
     expect(merged.protagonist).toEqual(protagonist);
+  });
+});
+
+// ===========================================================================
+// Twist consumption loop (panel-2 task 4): fireTwistEvent slug-matches the
+// scene's twistFired against PENDING twists and emits a twist_fired event.
+// ===========================================================================
+
+describe("fireTwistEvent (twist consumption loop)", () => {
+  const twistBible = (): Pick<StoryBible, "twists"> => ({
+    twists: [
+      { id: "drowned-bell", label: "The drowned bell tolls", precondition: "", status: "pending" },
+      { id: "seal-forged", label: "The seal is forged", precondition: "", status: "fired" },
+    ],
+  });
+
+  it("emits a twist_fired event for a pending twist matched by id", () => {
+    const event = fireTwistEvent(twistBible(), "drowned-bell", 7);
+    expect(event).toEqual({ kind: "twist_fired", twistId: "drowned-bell", turn: 7 });
+  });
+
+  it("matches slug-tolerantly on the label too", () => {
+    expect(fireTwistEvent(twistBible(), "The Drowned Bell Tolls", 3)).toEqual({
+      kind: "twist_fired",
+      twistId: "drowned-bell",
+      turn: 3,
+    });
+  });
+
+  it("returns null for an already-fired, unknown, blank, or bible-less twist (BC5)", () => {
+    expect(fireTwistEvent(twistBible(), "seal-forged", 4)).toBeNull(); // already fired
+    expect(fireTwistEvent(twistBible(), "no-such-twist", 4)).toBeNull();
+    expect(fireTwistEvent(twistBible(), "", 4)).toBeNull();
+    expect(fireTwistEvent(twistBible(), undefined, 4)).toBeNull();
+    expect(fireTwistEvent(null, "drowned-bell", 4)).toBeNull();
   });
 });

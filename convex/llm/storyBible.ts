@@ -320,6 +320,7 @@ export function foldRegistryEvents(bible: StoryBible, events: RegistryEvent[]): 
   if (events.length === 0) return bible;
   const keyRegistry: BibleKey[] = bible.keyRegistry.map((key) => ({ ...key }));
   const lockPlan: BibleDoor[] = bible.lockPlan.map((door) => ({ ...door }));
+  const twists: BibleTwist[] = bible.twists.map((twist) => ({ ...twist }));
   for (const event of events) {
     switch (event.kind) {
       case "promise": {
@@ -357,12 +358,20 @@ export function foldRegistryEvents(bible: StoryBible, events: RegistryEvent[]): 
         if (door && door.status === "planned") door.status = "opened";
         break;
       }
+      case "twist_fired": {
+        // The reveal landed in prose — mark the twist fired so buildBibleDigest's
+        // pending filter stops re-surfacing it (only pending twists nag). Only a
+        // still-pending twist flips; fired/retired are immutable.
+        const twist = twists.find((candidate) => candidate.id === event.twistId);
+        if (twist && twist.status === "pending") twist.status = "fired";
+        break;
+      }
       case "phantom_unlock":
         // Analytics-only — nothing to fold (the gate was auto-unlocked).
         break;
     }
   }
-  return { ...bible, keyRegistry, lockPlan };
+  return { ...bible, keyRegistry, lockPlan, twists };
 }
 
 // =============================================================================

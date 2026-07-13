@@ -203,7 +203,7 @@ export default function DiscoverRoute() {
             </Surface>
           ) : seeds.length === 0 ? (
             <EmptyState
-              body="No seed sits on the community shelf yet. Publish one from the creator desk with public visibility and it will take up residence here."
+              body="No seed sits on the community shelf yet — but the desk below is open. Begin from a template, carry one of your own finished tales onto the shelf, or seed something new and publish it here for the next reader."
               kicker="the community shelf"
               title="The shelf grows as creators publish."
             />
@@ -256,39 +256,12 @@ export default function DiscoverRoute() {
             </View>
           )}
 
-          <View style={{ gap: tokens.spacing.sm }}>
-            <Stamp>the archive</Stamp>
-            <Text muted variant="body">
-              Tales other readers have published to the open shelf. Browse, read along, or take a copy and write your own ending.
-            </Text>
-          </View>
-
-          {tales.length > 0 ? (
-            <DiscoverList
-              onOpen={(taleId) => router.push(`/tale/${taleId}`)}
-              onShare={(taleId) => {
-                const tale = tales.find((t) => t.taleId === taleId);
-                if (tale) {
-                  setActiveShareTale(tale);
-                  return;
-                }
-                push({ message: "That tale slipped off the shelf. Refresh the page.", tone: "warning" });
-              }}
-              tales={tales}
-            />
-          ) : (
-            <EmptyState
-              body="No tale rests on the open shelf yet. The library grows as readers publish — every finished story bound and placed here takes up permanent residence, including yours."
-              kicker="the open shelf"
-              title="The library grows as readers publish."
-            />
-          )}
-
-          <PublishableShelf
-            onPublish={(saveId) => router.push(`/publish/${saveId}`)}
-            saves={library.saves}
-          />
-
+          {/* Cold-start ordering (panel-review-2 merged shelf fix): the two
+              surfaces a fresh visitor can actually ACT on — begin-from-a-template
+              and their own finished tales ready to publish — sit directly under
+              the community shelf, ABOVE the always-empty public archive. On a
+              fresh deployment the flagship social surface leads with something to
+              do instead of a wall of empty states. */}
           <View style={{ gap: tokens.spacing.md }}>
             <View style={{ gap: tokens.spacing.sm }}>
               <Stamp>begin from a template</Stamp>
@@ -321,6 +294,43 @@ export default function DiscoverRoute() {
               </Button>
             </View>
           </View>
+
+          {/* The reader's own finished tales, ready to carry onto the shelf —
+              the near end of the publish loop, surfaced above the (currently
+              always-empty) public archive so a fresh account sees its own
+              publishable work before a wall of empty states. */}
+          <PublishableShelf
+            onPublish={(saveId) => router.push(`/publish/${saveId}`)}
+            saves={library.saves}
+          />
+
+          <View style={{ gap: tokens.spacing.sm }}>
+            <Stamp>the archive</Stamp>
+            <Text muted variant="body">
+              Tales other readers have published to the open shelf. Browse, read along, or take a copy and write your own ending.
+            </Text>
+          </View>
+
+          {tales.length > 0 ? (
+            <DiscoverList
+              onOpen={(taleId) => router.push(`/tale/${taleId}`)}
+              onShare={(taleId) => {
+                const tale = tales.find((t) => t.taleId === taleId);
+                if (tale) {
+                  setActiveShareTale(tale);
+                  return;
+                }
+                push({ message: "That tale slipped off the shelf. Refresh the page.", tone: "warning" });
+              }}
+              tales={tales}
+            />
+          ) : (
+            <EmptyState
+              body="No tale rests on the open shelf yet. The library grows as readers publish — every finished story bound and placed here takes up permanent residence, including yours."
+              kicker="the open shelf"
+              title="The library grows as readers publish."
+            />
+          )}
 
           <View style={{ marginTop: tokens.spacing.lg }}>
             <Button onPress={() => router.push("/library")} variant="ghost">

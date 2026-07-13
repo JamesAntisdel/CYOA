@@ -9,7 +9,7 @@ import { useAccountProfile } from "../../hooks/useAccountProfile";
 import { useLibrary } from "../../hooks/useLibrary";
 import { useReaderSettings } from "../../hooks/useReaderSettings";
 import { guestAuthArgs, useGuestSession } from "../../hooks/useGuestSession";
-import { hasRemoteGameApi } from "../../lib/gameApi";
+import { hasRemoteGameApi, restartRemoteRun } from "../../lib/gameApi";
 import {
   listRemoteSaveCinematics,
   pickChapterCinematic,
@@ -334,17 +334,43 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
     });
   }, []);
   // Terminal-panel promises (core-read-loop Req 8.3 / story-engagement R14.2).
-  // "Begin again" creates a FRESH save of the SAME story via the exact
-  // create-save flow the cover screen uses (useLibrary.createSave, with
-  // `forceNew` so it never resumes the just-ended run) and opens its reader.
-  // Guest/limit/network failures fall back to the story cover — the tap must
-  // never be dead. The in-flight ref suppresses double-taps synchronously.
+  // "Begin again" mints a FRESH save of the SAME story and opens its reader —
+  // the tap must never be dead.
+  //
+  // PRIMARY path (panel-review-2 ranked idea 5): PANEL-SERVER's `restartRun`
+  // mutation copies the ended save's storyId + seed identity (premise/tone/
+  // NPCs/voice) server-side. This is the ONLY path that works for the runs
+  // shipped by the creator arc — community `authored_seed:<id>` runs and
+  // SeedStoryFlow premise runs — where the old client `createSave` restart
+  // threw `story_not_found` (the seed storyId isn't in the starter catalog)
+  // or silently reopened the blank open-canvas shell.
+  //
+  // FALLBACK: when `restartRun` isn't deployed yet (server error → null) or
+  // there is no remote session (local/tutorial saves), fall back to the cover
+  // screen's create-save flow (useLibrary.createSave + `forceNew` so it never
+  // resumes the just-ended run) — still correct for the 4 bundled starters.
+  // Guest/limit/network failures fall back to the story cover. The in-flight
+  // ref suppresses double-taps synchronously.
   const library = useLibrary(guest.session);
   const beginAgainInFlightRef = useRef(false);
   const beginAgain = useCallback(async () => {
     if (beginAgainInFlightRef.current) return;
     beginAgainInFlightRef.current = true;
     try {
+      // Preferred: server-side restart copies seed identity off the ended
+      // save — the client never re-derives the title from the starter
+      // catalog, so seeded / community runs restart correctly.
+      if (remoteAuth) {
+        const restarted = await restartRemoteRun({
+          accountId: remoteAuth.accountId,
+          ...(remoteAuth.guestTokenHash ? { guestTokenHash: remoteAuth.guestTokenHash } : {}),
+          saveId,
+        });
+        if (restarted?.saveId) {
+          router.push(`/read/${restarted.saveId}`);
+          return;
+        }
+      }
       const storyId = projection.storyId;
       if (!storyId) {
         // No story identity on this projection (legacy/demo shell) — the
@@ -365,7 +391,7 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
     } finally {
       beginAgainInFlightRef.current = false;
     }
-  }, [library, projection.storyId, router]);
+  }, [library, projection.storyId, remoteAuth, router, saveId]);
 
   const inlineMoment = pickInlineMoment(cinematicViews, seenCinematics);
   const showInlineMoment = Boolean(inlineMoment) && !projection.ending && !chapterBoundary;
@@ -485,6 +511,13 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
             onBeginAgain={() => void beginAgain()}
             onSeeMap={() => router.push(`/map/${saveId}`)}
             onFork={() => router.push(`/read/${saveId}/history`)}
+            // Share this ending (panel-review-2 ranked idea 5 / Maya MEDIUM).
+            // The peak-emotion moment — the reader just earned an ending —
+            // routes to the publish flow for THIS save, prefilled downstream
+            // with the run's title/synopsis, turning the trophy moment into a
+            // "first-class marketing artifact" (product feature 12). Previously
+            // an orphaned prop: the panel rendered a share slot with no source.
+            onShareEnding={() => router.push(`/publish/${saveId}`)}
             // The run's visible-choice history — drives the terminal panel's
             // ConsequenceReel ("your choices echoed").
             choiceHistory={choiceHistory}

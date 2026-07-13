@@ -88,9 +88,16 @@ export function resolveSkillCheck(
   const companionContributions: Array<{ npcId: string; value: number }> = [];
   if (includeCompanions && state.npcs) {
     for (const npc of Object.values(state.npcs)) {
-      const contribution = companionVisibleStat(npc, input.statId);
-      if (contribution === undefined) continue;
-      companionContributions.push({ npcId: npc.id, value: contribution });
+      // Two additive layers per companion: a VISIBLE matching attribute (the
+      // original W2 path) plus a bond-derived bonus from the disposition band
+      // (BC10). Either alone qualifies; a companion the reader has won over
+      // lends weight even with no surfaced stat — the common case in LLM-driven
+      // runs, where spawned companions carry `attributes: {}`.
+      const attribute = companionVisibleStat(npc, input.statId) ?? 0;
+      const bond = companionBondBonus(npc);
+      const value = attribute + bond;
+      if (value <= 0) continue;
+      companionContributions.push({ npcId: npc.id, value });
     }
   }
 
@@ -116,6 +123,30 @@ function companionVisibleStat(npc: NpcState, statId: string): number | undefined
   if (!attribute) return undefined;
   if (attribute.visibility !== "visible") return undefined;
   return attribute.value;
+}
+
+/**
+ * Disposition band → additive check bonus (BC10 — phrase, never number). A
+ * companion the reader has genuinely won over lends weight to a check purely
+ * from their disposition, reusing `mapDispositionToVibe`'s bands: +1 at ≥50
+ * (the "friendly" band), +2 at ≥90. Only role `companion` contributes; a
+ * wary/neutral companion adds nothing, and non-companion roles are ignored.
+ *
+ * This is the sink the disposition scalar previously lacked — the LLM already
+ * moves it ±15/turn but nothing mechanical ever happened at a threshold. The
+ * reader sees WHO stands with them (`deriveCheckCompanionPhrase`), never this
+ * number. Deterministic + total: a non-finite disposition scores 0.
+ */
+export const COMPANION_BOND_BONUS_THRESHOLD = 50;
+export const COMPANION_BOND_STRONG_THRESHOLD = 90;
+
+function companionBondBonus(npc: NpcState): number {
+  if (npc.role !== "companion") return 0;
+  const disposition = npc.disposition;
+  if (typeof disposition !== "number" || !Number.isFinite(disposition)) return 0;
+  if (disposition >= COMPANION_BOND_STRONG_THRESHOLD) return 2;
+  if (disposition >= COMPANION_BOND_BONUS_THRESHOLD) return 1;
+  return 0;
 }
 
 // =============================================================================

@@ -34,11 +34,20 @@ test("DoorsJournal fetches the server projection and speaks in the tome voice", 
   assert.match(src, /the tome remembers/, "the pill must carry the tome-voice framing");
 });
 
-test("DoorsJournal nudges once per scene when a teased door's key arrives", () => {
+test("DoorsJournal nudges once per scene when a teased door's key arrives, naming the door", () => {
   const src = read("components/reading/DoorsJournal.tsx");
   assert.match(src, /doorsNewlyKeyed\(/, "arrival detection must go through doorsNewlyKeyed");
-  assert.match(src, /A key has turned up\./, "the nudge toast must use the canonical copy");
+  // The nudge now NAMES the door + points at the pill (panel-review-2 merged
+  // doors-journal idea) via the shared keyArrivalToast helper — no longer the
+  // anonymous "A key has turned up." string inline.
+  assert.match(src, /keyArrivalToast\(arrivals\)/, "the nudge must build its copy from keyArrivalToast");
   assert.match(src, /nudgedSceneRef/, "the nudge must be a one-shot per scene");
+  assert.match(src, /setExpanded\(true\)/, "a key arrival must open the journal so the tap-through is immediate");
+
+  // The canonical copy lives in the shared lib and names the reader-seen door.
+  const lib = read("lib/storyEngagement.ts");
+  assert.match(lib, /export function keyArrivalToast\(/, "keyArrivalToast must be the shared source of the nudge copy");
+  assert.match(lib, /A key has turned up — \$\{label\}\. See the tome above\./, "the nudge must name the door and point at the journal pill");
 });
 
 test("gameApi calls the full-path convex query and pins the spoiler-safe wire shape", () => {

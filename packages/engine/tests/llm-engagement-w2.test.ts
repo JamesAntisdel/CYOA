@@ -205,6 +205,51 @@ describe("resolveChoiceCheck (W2-E2)", () => {
     expect(r.breakdown.score).toBe(r.breakdown.playerValue + 2 + r.breakdown.itemBonus);
   });
 
+  const bondNpc = (disposition: number, role = "companion") => ({
+    npcs: {
+      mira: {
+        id: "mira",
+        name: "Mira",
+        role: role as "companion" | "ally",
+        disposition,
+        attributes: {},
+        knownFacts: [],
+        flags: {},
+      },
+    },
+  });
+
+  it("bond band: a companion at disposition >=50 adds +1 with NO visible stat (the LLM-run case)", () => {
+    const r = resolveChoiceCheck(baseState(bondNpc(50)), check(), "seed");
+    expect(r.breakdown.companionBonus).toBe(1);
+  });
+
+  it("bond band: a companion at disposition >=90 adds +2", () => {
+    expect(resolveChoiceCheck(baseState(bondNpc(92)), check(), "seed").breakdown.companionBonus).toBe(2);
+  });
+
+  it("bond band: below 50, or a non-companion role, contributes nothing", () => {
+    expect(resolveChoiceCheck(baseState(bondNpc(49)), check(), "seed").breakdown.companionBonus).toBe(0);
+    expect(resolveChoiceCheck(baseState(bondNpc(100, "ally")), check(), "seed").breakdown.companionBonus).toBe(0);
+  });
+
+  it("bond band stacks with a visible matching stat on the same companion", () => {
+    const withComp = baseState({
+      npcs: {
+        mira: {
+          id: "mira",
+          name: "Mira",
+          role: "companion",
+          disposition: 90,
+          attributes: { nerve: { id: "nerve", label: "Nerve", value: 2, visibility: "visible", min: 0, max: 5 } },
+          knownFacts: [],
+          flags: {},
+        },
+      },
+    });
+    expect(resolveChoiceCheck(withComp, check(), "seed").breakdown.companionBonus).toBe(4);
+  });
+
   it("grants +1 item bonus when a carried item token-matches the check", () => {
     const s = baseState({ inventory: [{ id: "nerve-tonic", label: "Nerve Tonic" }] });
     expect(resolveChoiceCheck(s, check(), "seed").breakdown.itemBonus).toBe(1);

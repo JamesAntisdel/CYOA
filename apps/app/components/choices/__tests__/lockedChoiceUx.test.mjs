@@ -96,6 +96,14 @@ test("first-lock coach is a persisted one-shot inline line, not a modal", () => 
     /Locked pages can be opened — the story will show you how\./,
     "coach copy must match the tome voice line",
   );
+  // Panel-review-2 merged doors-journal idea: the coach now points the reader
+  // up at the doors-journal pill so the locked door and the journal that
+  // tracks it read as one teaching loop.
+  assert.match(
+    coach,
+    /Watch the doors the tome remembers, in the journal above\./,
+    "coach copy must point at the doors-journal pill",
+  );
   assert.match(coach, /try \{/, "storage access must be guarded (native has no localStorage)");
   assert.match(coach, /getItem\(LOCK_COACH_SEEN_KEY\) === "1"/, "seen check must read the flag");
   assert.match(coach, /setItem\(LOCK_COACH_SEEN_KEY, "1"\)/, "mark must write the flag");

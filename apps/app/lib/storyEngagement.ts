@@ -512,3 +512,20 @@ export function doorsNewlyKeyed(
     .filter((e) => e.state === "key-in-hand" && teasedBefore.has(e.label))
     .map((e) => e.label);
 }
+
+/**
+ * The one-shot key-arrival nudge (panel-review-2 merged doors-journal idea).
+ * The old toast — "A key has turned up." — named no door and pointed nowhere,
+ * so the reader couldn't connect the payoff to the lock they'd met. This NAMES
+ * the door whose key just landed (from the reader-seen labels `doorsNewlyKeyed`
+ * returns — BC10, never a plan/id) and points at the doors-journal pill so the
+ * fetch-quest payoff is legible. Title-cases the first label the same way
+ * `doorJournalLine` does so the sentence reads as the tome speaking.
+ */
+export function keyArrivalToast(labels: string[]): string {
+  const named = labels.map((label) => label.trim()).filter((label) => label.length > 0);
+  const first = named[0];
+  if (!first) return "A key has turned up — see the tome above.";
+  const label = first[0]!.toUpperCase() + first.slice(1);
+  return `A key has turned up — ${label}. See the tome above.`;
+}

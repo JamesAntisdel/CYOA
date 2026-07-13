@@ -20,6 +20,11 @@ import { useEffect, useRef } from "react";
 import { Platform } from "react-native";
 
 import { type AudioMixInput, useAudioMix } from "../../hooks/useAudioMix";
+import {
+  configureNativeAudioMode,
+  createNativePlayer,
+  type NativeAudioPlayer,
+} from "./nativeAudio";
 
 type AudioMixProps = AudioMixInput;
 
@@ -89,17 +94,24 @@ type LayerPlaybackArgs = {
 /**
  * Side-effect playback hook for a single layer.
  *
- * Web-only: uses the global `Audio` constructor — same primitive as the
- * original AmbientSoundscape implementation. On native this is a no-op
- * placeholder; the real native implementation would route through expo-av.
+ * WEB: uses the global `Audio` constructor — same primitive as the original
+ * AmbientSoundscape implementation.
  *
- * Re-creates the `Audio` element when the URI changes, and updates volume
- * on every render so the ducking schedule applies smoothly. Pause+detach
- * on unmount or when the layer goes inactive.
+ * NATIVE: routes through `expo-audio` (see ./nativeAudio) so the layer keeps
+ * playing when the screen locks / the app backgrounds — the reason the app
+ * went native. `configureNativeAudioMode()` installs the background-capable
+ * audio session on first mount.
+ *
+ * Both paths re-create the underlying player when the URI changes and update
+ * volume on every render so the ducking schedule applies smoothly, pausing /
+ * detaching on unmount or when the layer goes inactive. The two platforms use
+ * separate refs; only one branch is live per runtime.
  */
 function useLayerPlayback({ active, id, loop, uri, volume }: LayerPlaybackArgs): void {
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const nativeRef = useRef<NativeAudioPlayer | null>(null);
   const currentUriRef = useRef<string | null>(null);
+  const nativeUriRef = useRef<string | null>(null);
 
   // Create / tear down the audio element when uri changes.
   useEffect(() => {
@@ -160,6 +172,62 @@ function useLayerPlayback({ active, id, loop, uri, volume }: LayerPlaybackArgs):
       }
     } else {
       if (!audio.paused) audio.pause();
+    }
+  }, [active, loop, volume, uri]);
+
+  // Native Effect 1: create / tear down the expo-audio player when uri
+  // changes. Mirrors the web create effect. No-op on web.
+  useEffect(() => {
+    if (Platform.OS === "web") return;
+    configureNativeAudioMode();
+
+    if (!uri || uri.length === 0) {
+      if (nativeRef.current) {
+        nativeRef.current.pause();
+        nativeRef.current.remove();
+        nativeRef.current = null;
+        nativeUriRef.current = null;
+      }
+      return;
+    }
+    if (nativeUriRef.current === uri && nativeRef.current) return;
+
+    if (nativeRef.current) {
+      nativeRef.current.pause();
+      nativeRef.current.remove();
+      nativeRef.current = null;
+    }
+    const player = createNativePlayer(uri, loop, volume);
+    nativeRef.current = player;
+    nativeUriRef.current = uri;
+
+    return () => {
+      if (player) {
+        player.pause();
+        player.remove();
+      }
+      if (nativeRef.current === player) {
+        nativeRef.current = null;
+        nativeUriRef.current = null;
+      }
+    };
+    // `loop` / initial `volume` are captured at creation; later changes flow
+    // through Native Effect 2 below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uri, id]);
+
+  // Native Effect 2: apply volume / active changes without recreating the
+  // player. Mirrors the web volume effect. No-op on web.
+  useEffect(() => {
+    if (Platform.OS === "web") return;
+    const player = nativeRef.current;
+    if (!player) return;
+    player.volume = clamp01(volume);
+    player.loop = loop;
+    if (active && volume > 0) {
+      player.play();
+    } else {
+      player.pause();
     }
   }, [active, loop, volume, uri]);
 }

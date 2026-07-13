@@ -50,6 +50,17 @@ const guestTokenHash = v.optional(v.string());
  */
 export const QUIT_STALE_AFTER_MS = 48 * 60 * 60 * 1000;
 
+/**
+ * A non-terminal save touched within this window is a reader confidently still
+ * IN a session — the only cohort reported as "still reading". Panel-2 fix: the
+ * old logic counted every active save idle < 48h as "still reading", so a
+ * reader who quit yesterday was BOTH invisible to the quit histogram (needs
+ * 48h) AND miscounted as reading. Saves between this window and
+ * `QUIT_STALE_AFTER_MS` are now surfaced as `idle` (drifting, not yet a
+ * confirmed quit) instead of being misreported.
+ */
+export const READING_ACTIVE_WITHIN_MS = 2 * 60 * 60 * 1000;
+
 /** Play-time clamp: a parked tab must not credit hours to the creator. */
 export const PLAY_SECONDS_MIN = 1;
 export const PLAY_SECONDS_CAP = 10 * 60; // 10 minutes per turn slice
@@ -170,6 +181,25 @@ export type SeedStatsWire = {
   playSeconds: number;
   externalPlaySeconds: number;
   quitPoints: SeedQuitPoint[];
+  /**
+   * Active saves that have drifted (idle ≥ READING_ACTIVE_WITHIN_MS but not yet
+   * a confirmed quit at QUIT_STALE_AFTER_MS). NOT counted under `inProgress`
+   * ("still reading") — panel-2 honesty fix so recent quitters aren't
+   * misreported as active readers.
+   */
+  idle: number;
+  /** The staleness a run must reach before it enters `quitPoints` (ms). Lets
+   *  the client render an honest zero-state ("quit points appear once a run's
+   *  been idle for 48h") instead of the false "nobody has drifted away". */
+  quitStaleAfterMs: number;
+  /**
+   * True when `playSeconds`/`externalPlaySeconds` are a LOWER BOUND: the global
+   * `creator.play_time` scan hit its bounded window (EVENT_SCAN_LIMIT) so older
+   * events for this seed were not summed. The client renders "≈"/"approx" so a
+   * money-adjacent number is never shown as exact when it silently decays with
+   * platform volume. False = the window covered every event (exact).
+   */
+  playSecondsApprox: boolean;
 };
 
 /**
@@ -211,8 +241,12 @@ export function buildSeedStats(input: {
   playSeconds: { total: number; external: number };
   now: number;
   staleAfterMs?: number;
+  readingActiveWithinMs?: number;
+  /** True when the bounded play-time scan was saturated (totals are a lower bound). */
+  playSecondsApprox?: boolean;
 }): SeedStatsWire {
   const staleAfterMs = input.staleAfterMs ?? QUIT_STALE_AFTER_MS;
+  const readingActiveWithinMs = input.readingActiveWithinMs ?? READING_ACTIVE_WITHIN_MS;
   const story = (input.seed.story && typeof input.seed.story === "object"
     ? input.seed.story
     : null) as Story | null;
@@ -220,6 +254,7 @@ export function buildSeedStats(input: {
   let plays = 0;
   let selfPlays = 0;
   let inProgress = 0;
+  let idle = 0;
   let completions = 0;
   let deaths = 0;
   let safeExits = 0;
@@ -239,10 +274,15 @@ export function buildSeedStats(input: {
     if (String(row.accountId ?? "") === input.seed.ownerAccountId) selfPlays += 1;
 
     if (status === "active") {
-      // Quit point: a run that stalled mid-story. Fresh active saves are
-      // readers still reading — not churn.
-      if (input.now - updatedAt >= staleAfterMs) {
+      // Three honest cohorts by idle time (panel-2 fix): a run idle ≥ 48h is a
+      // confirmed quit point; a run idle ≥ 2h but < 48h has drifted (`idle`) —
+      // NOT reported as "still reading"; only a run touched within the reading
+      // window counts as `inProgress` ("still reading").
+      const idleMs = input.now - updatedAt;
+      if (idleMs >= staleAfterMs) {
         quitBuckets.set(turnNumber, (quitBuckets.get(turnNumber) ?? 0) + 1);
+      } else if (idleMs >= readingActiveWithinMs) {
+        idle += 1;
       } else {
         inProgress += 1;
       }
@@ -283,6 +323,9 @@ export function buildSeedStats(input: {
     quitPoints: [...quitBuckets.entries()]
       .map(([turnNumber, count]) => ({ turnNumber, count }))
       .sort((left, right) => left.turnNumber - right.turnNumber),
+    idle,
+    quitStaleAfterMs: staleAfterMs,
+    playSecondsApprox: input.playSecondsApprox === true,
   };
 }
 
@@ -331,7 +374,10 @@ export function aggregatePlayTimeBySeed(
  *       plays: number,              // distinct saves created on this seed
  *       selfPlays: number,          // owner's own runs (flagged, separable)
  *       externalPlays: number,      // plays - selfPlays
- *       inProgress: number,         // active AND recently touched
+ *       inProgress: number,         // active AND touched within 2h (still reading)
+ *       idle: number,               // active, drifted 2h–48h (NOT "still reading")
+ *       quitStaleAfterMs: number,   // idle threshold a run must cross to be a quit
+ *       playSecondsApprox: boolean, // play-time is a lower bound (scan saturated)
  *       completions: number,        // status "ended"
  *       deaths: number,             // status "dead"
  *       safeExits: number,          // status "ended_safely"
@@ -368,6 +414,13 @@ export const getSeedStats = queryGeneric({
       .withIndex("by_eventName", (q: any) => q.eq("eventName", "creator.play_time"))
       .order("desc")
       .take(EVENT_SCAN_LIMIT);
+    // Saturation guard (panel-2): a full window means older events for some
+    // seeds were dropped, so every seed's summed play-time is a LOWER BOUND.
+    // Surfaced per seed as `playSecondsApprox` so the client shows "≈" rather
+    // than presenting a silently-decaying revenue-share number as exact. The
+    // durable fix (per-seed running totals on the seed row) needs a schema
+    // change (integrator-reserved) — tracked in the task blockers.
+    const playTimeScanSaturated = playTimeEvents.length >= EVENT_SCAN_LIMIT;
     const playSecondsBySeed = aggregatePlayTimeBySeed(playTimeEvents);
 
     // Fork counts: tale_forks → owning tale → tale.storyId. The tale doc get
@@ -417,6 +470,7 @@ export const getSeedStats = queryGeneric({
           forkCount: forkCountByStory.get(storyId) ?? 0,
           playSeconds: playSecondsBySeed.get(seedId) ?? { total: 0, external: 0 },
           now,
+          playSecondsApprox: playTimeScanSaturated,
         }),
       );
     }
