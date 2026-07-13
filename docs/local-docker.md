@@ -95,3 +95,22 @@ Seed/import completion is tracked as `LR-6`. Keep it open until this command is 
 - Real push notification delivery.
 
 These are intentionally managed or sandboxed systems. Local Docker mirrors contracts, service boundaries, and failure modes only.
+
+## Dependency changes need a reinstall INSIDE the container volumes
+
+The compose stack keeps each workspace's `node_modules` in a **named Docker
+volume** (`app_node_modules`, `root_node_modules`, `convex_node_modules`, …),
+overlaid on the `.:/workspace` source mount. So a host `pnpm install` does NOT
+reach the containers — after pulling any dependency/SDK change you must
+reinstall into the volumes, then recreate:
+
+```
+docker compose run --rm --no-deps --entrypoint sh app -c "cd /workspace && pnpm install"
+docker compose up -d --force-recreate app convex
+```
+
+Symptom if you skip it: the app web export fails to resolve newly-added modules
+(e.g. `PluginError: Failed to resolve plugin for module "expo-audio"`) and the
+container crash-loops. A clean `--force-recreate` after the volume reinstall
+fixes it. If the volume is in a mixed state, `docker volume rm` the
+`*_node_modules` volumes (keep `pnpm_store` for a fast repopulate) and reinstall.
