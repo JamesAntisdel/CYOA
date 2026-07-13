@@ -342,7 +342,11 @@ export function buildAdminClaimUpdate(isAdmin: boolean): { isAdmin: boolean } {
  */
 export const devGrantAdmin = mutationGeneric({
   args: {
-    email: v.string(),
+    // Grant by email (claimed USER account) OR directly by account id — the
+    // latter is the only way to promote a GUEST session, which is needed when
+    // the betterAuth→Convex bridge isn't wired so no user account exists yet.
+    email: v.optional(v.string()),
+    targetAccountId: v.optional(v.id("accounts")),
     // Optional caller proof: required when the bootstrap env is NOT set (so an
     // existing admin can still grant even without the env). Ignored for the
     // env-bootstrap path.
@@ -350,7 +354,6 @@ export const devGrantAdmin = mutationGeneric({
     guestTokenHash: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const email = normalizeGrantEmail(args.email);
     const envAllow = isAdminGrantEnvEnabled(process.env[CYOA_DEV_ALLOW_ADMIN_GRANT]);
 
     let callerIsAdmin = false;
@@ -361,6 +364,14 @@ export const devGrantAdmin = mutationGeneric({
     }
     assertCanGrantAdmin({ envAllow, callerIsAdmin });
 
+    if (args.targetAccountId) {
+      const target = await ctx.db.get(args.targetAccountId);
+      if (!target) throw new AppError("admin_grant_target_not_found");
+      await ctx.db.patch(target._id, buildAdminClaimUpdate(true));
+      return { accountId: String(target._id), email: null, isAdmin: true };
+    }
+
+    const email = normalizeGrantEmail(args.email ?? "");
     const target = await ctx.db
       .query("accounts")
       .withIndex("by_userId", (q: any) => q.eq("userId", email))
