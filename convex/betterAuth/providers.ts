@@ -150,10 +150,22 @@ function renderMagicLinkEmail(url: string): string {
  * The returned plugin closes over `env` so `sendMagicLink` reads live secrets.
  */
 export function buildMagicLinkPlugin(env: Env) {
-  if (!isMagicLinkConfigured(env)) return null;
+  const configured = isMagicLinkConfigured(env);
+  // Dev fallback: when no email provider is configured but
+  // CYOA_DEV_LOG_MAGIC_LINK is set, still load the plugin and print the
+  // sign-in URL to the server log so a local developer can complete sign-in
+  // without Resend. UNSET this in any environment exposed to real users —
+  // it makes every sign-in link readable to anyone with log access.
+  const devLog = Boolean(read(env, "CYOA_DEV_LOG_MAGIC_LINK"));
+  if (!configured && !devLog) return null;
   return magicLink({
     sendMagicLink: async ({ email, url }) => {
-      await sendMagicLinkEmail(env, { email, url });
+      if (configured) {
+        await sendMagicLinkEmail(env, { email, url });
+      } else {
+        // eslint-disable-next-line no-console -- dev-only sign-in aid
+        console.log(`[dev-magic-link] ${email} -> ${url}`);
+      }
     },
   });
 }
