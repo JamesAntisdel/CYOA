@@ -41,6 +41,19 @@ export const MAGIC_LINK_ENV = {
   subject: "AUTH_EMAIL_SUBJECT",
 } as const;
 
+/**
+ * Gmail SMTP magic-link delivery is gated on these env vars. The From address
+ * falls back to `AUTH_EMAIL_FROM` and then to `GMAIL_USER`. `GMAIL_APP_PASSWORD`
+ * is a Gmail 2FA *app password* (16 chars, spaces stripped), NOT the account
+ * password. Delivery itself runs in a Node action (`./emailNode.ts`) because the
+ * Convex HTTP/mutation runtime can't open a raw SMTP socket.
+ */
+export const GMAIL_ENV = {
+  user: "GMAIL_USER",
+  appPassword: "GMAIL_APP_PASSWORD",
+  from: "AUTH_EMAIL_FROM",
+} as const;
+
 function read(env: Env, key: string): string | undefined {
   const value = env[key];
   const trimmed = typeof value === "string" ? value.trim() : "";
@@ -98,9 +111,45 @@ export function buildSocialProviders(env: Env): SocialProvidersConfig {
   return config;
 }
 
-/** True when the environment can actually deliver a magic-link email. */
-export function isMagicLinkConfigured(env: Env): boolean {
+/** True when Resend HTTP email delivery is fully configured. */
+export function isResendConfigured(env: Env): boolean {
   return Boolean(read(env, MAGIC_LINK_ENV.resendApiKey)) && Boolean(read(env, MAGIC_LINK_ENV.from));
+}
+
+/** True when Gmail SMTP delivery is fully configured (user + app password). */
+export function isGmailConfigured(env: Env): boolean {
+  return Boolean(read(env, GMAIL_ENV.user)) && Boolean(read(env, GMAIL_ENV.appPassword));
+}
+
+/**
+ * True when the environment can actually deliver a magic-link email through a
+ * real provider (Gmail SMTP or Resend). Does NOT include the dev-log fallback —
+ * that is handled separately in `buildMagicLinkPlugin` so a dev can complete
+ * sign-in locally without any email provider.
+ */
+export function isMagicLinkConfigured(env: Env): boolean {
+  return isGmailConfigured(env) || isResendConfigured(env);
+}
+
+/**
+ * The delivery transport the magic-link plugin should use, in strict preference
+ * order: Gmail SMTP → Resend → dev-log → none. Pure so the routing decision is
+ * unit-testable without a live BetterAuth instance or network. `dev-log` is only
+ * selected when no real provider is configured but `CYOA_DEV_LOG_MAGIC_LINK` is
+ * set; `none` means the plugin should not even load.
+ */
+export type MagicLinkTransport = "gmail" | "resend" | "dev-log" | "none";
+
+export function selectMagicLinkTransport(env: Env): MagicLinkTransport {
+  if (isGmailConfigured(env)) return "gmail";
+  if (isResendConfigured(env)) return "resend";
+  if (read(env, "CYOA_DEV_LOG_MAGIC_LINK")) return "dev-log";
+  return "none";
+}
+
+/** Resolve the From address for a Gmail send: AUTH_EMAIL_FROM → GMAIL_USER. */
+export function resolveGmailFrom(env: Env): string | undefined {
+  return read(env, GMAIL_ENV.from) ?? read(env, GMAIL_ENV.user);
 }
 
 /**
@@ -113,7 +162,6 @@ export async function sendMagicLinkEmail(env: Env, params: { email: string; url:
   if (!apiKey || !from) {
     throw new Error("magic_link_email_not_configured");
   }
-  const subject = read(env, MAGIC_LINK_ENV.subject) ?? "Your sign-in link";
   const response = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: {
@@ -123,9 +171,9 @@ export async function sendMagicLinkEmail(env: Env, params: { email: string; url:
     body: JSON.stringify({
       from,
       to: params.email,
-      subject,
-      html: renderMagicLinkEmail(params.url),
-      text: `Sign in to The Unwritten:\n\n${params.url}\n\nThis link expires shortly. If you did not request it, ignore this email.`,
+      subject: magicLinkSubject(env),
+      html: renderMagicLinkHtml(params.url),
+      text: renderMagicLinkText(params.url),
     }),
   });
   if (!response.ok) {
@@ -134,7 +182,13 @@ export async function sendMagicLinkEmail(env: Env, params: { email: string; url:
   }
 }
 
-function renderMagicLinkEmail(url: string): string {
+/** The email subject, honoring the `AUTH_EMAIL_SUBJECT` override. */
+export function magicLinkSubject(env: Env): string {
+  return read(env, MAGIC_LINK_ENV.subject) ?? "Your sign-in link";
+}
+
+/** Shared HTML body for the magic-link email (Resend + Gmail both render this). */
+export function renderMagicLinkHtml(url: string): string {
   return [
     '<div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;">',
     "<h2>Sign in to The Unwritten</h2>",
@@ -145,27 +199,77 @@ function renderMagicLinkEmail(url: string): string {
   ].join("");
 }
 
+/** Shared plain-text body for the magic-link email. */
+export function renderMagicLinkText(url: string): string {
+  return `Sign in to The Unwritten:\n\n${url}\n\nThis link expires shortly. If you did not request it, ignore this email.`;
+}
+
 /**
- * Build the magic-link plugin, or `null` when email delivery is not configured.
- * The returned plugin closes over `env` so `sendMagicLink` reads live secrets.
+ * Injected Gmail sender. Gmail delivery runs in a Convex Node action (raw SMTP
+ * can't open from the HTTP/mutation runtime), so the caller (`createAuth` in
+ * auth.ts) passes a closure that SCHEDULES that action against the request's
+ * `ctx.scheduler`. Kept as an injected dependency so this module stays pure and
+ * unit-testable, and so a scheduling failure can be caught here without ever
+ * throwing the sign-in.
  */
-export function buildMagicLinkPlugin(env: Env) {
-  const configured = isMagicLinkConfigured(env);
-  // Dev fallback: when no email provider is configured but
-  // CYOA_DEV_LOG_MAGIC_LINK is set, still load the plugin and print the
-  // sign-in URL to the server log so a local developer can complete sign-in
-  // without Resend. UNSET this in any environment exposed to real users —
-  // it makes every sign-in link readable to anyone with log access.
-  const devLog = Boolean(read(env, "CYOA_DEV_LOG_MAGIC_LINK"));
-  if (!configured && !devLog) return null;
+export type GmailScheduler = (params: { email: string; url: string }) => Promise<void> | void;
+
+/**
+ * Build the magic-link plugin, or `null` when neither a real provider nor the
+ * dev-log fallback is available. The returned plugin closes over `env` so
+ * `sendMagicLink` reads live secrets. Delivery preference is Gmail SMTP → Resend
+ * → dev-log (see `selectMagicLinkTransport`). A send failure is logged, never
+ * rethrown, so a transient provider hiccup can't 500 the sign-in request.
+ *
+ * @param scheduleGmail  Invoked when the selected transport is Gmail. When
+ *   absent (e.g. the plugin is built in a context with no scheduler) the send
+ *   degrades to Resend/dev-log if those are configured, else it logs and no-ops.
+ */
+export function buildMagicLinkPlugin(env: Env, scheduleGmail?: GmailScheduler) {
+  if (selectMagicLinkTransport(env) === "none") return null;
   return magicLink({
     sendMagicLink: async ({ email, url }) => {
-      if (configured) {
-        await sendMagicLinkEmail(env, { email, url });
-      } else {
-        // eslint-disable-next-line no-console -- dev-only sign-in aid
-        console.log(`[dev-magic-link] ${email} -> ${url}`);
-      }
+      await deliverMagicLink(env, { email, url }, scheduleGmail);
     },
   });
+}
+
+/**
+ * Route one magic-link send by the selected transport (Gmail → Resend → dev-log)
+ * and NEVER rethrow — betterAuth turns a thrown `sendMagicLink` into a 500 on the
+ * sign-in request, so a delivery hiccup is logged and swallowed instead. Exported
+ * for unit tests; `buildMagicLinkPlugin`'s `sendMagicLink` is a thin wrapper.
+ */
+export async function deliverMagicLink(
+  env: Env,
+  params: { email: string; url: string },
+  scheduleGmail?: GmailScheduler,
+): Promise<void> {
+  const transport = selectMagicLinkTransport(env);
+  try {
+    if (transport === "gmail" && scheduleGmail) {
+      await scheduleGmail(params);
+      return;
+    }
+    // Gmail selected but no scheduler wired: fall back to whatever else is
+    // configured so the link still goes out.
+    if ((transport === "gmail" || transport === "resend") && isResendConfigured(env)) {
+      await sendMagicLinkEmail(env, params);
+      return;
+    }
+    if (Boolean(read(env, "CYOA_DEV_LOG_MAGIC_LINK"))) {
+      // Dev fallback: print the sign-in URL to the server log so a local
+      // developer can complete sign-in without any email provider. UNSET
+      // CYOA_DEV_LOG_MAGIC_LINK in any environment exposed to real users — it
+      // makes every sign-in link readable to anyone with log access.
+      // eslint-disable-next-line no-console -- dev-only sign-in aid
+      console.log(`[dev-magic-link] ${params.email} -> ${params.url}`);
+      return;
+    }
+    // eslint-disable-next-line no-console -- surface a misconfiguration
+    console.error(`[magic-link] no delivery transport available for ${params.email}`);
+  } catch (error) {
+    // eslint-disable-next-line no-console -- delivery failure diagnostics
+    console.error(`[magic-link] delivery failed for ${params.email}:`, error);
+  }
 }

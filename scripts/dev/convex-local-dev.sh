@@ -56,6 +56,22 @@ push_env EXPO_PUBLIC_APP_URL
 push_env EXPO_PUBLIC_CONVEX_URL
 push_env EXPO_PUBLIC_CONVEX_SITE_URL
 
+# Real login: Google OAuth + magic-link email delivery. Each is env-gated on
+# the Convex side (see convex/betterAuth/providers.ts), so leaving any unset
+# just keeps that method off. Register the Google redirect URI as
+# https://<convex-site>/api/auth/callback/google (see the CONFIG CHECKLIST).
+push_env GOOGLE_CLIENT_ID
+push_env GOOGLE_CLIENT_SECRET
+# Magic link over Gmail SMTP (preferred) — GMAIL_APP_PASSWORD is a Gmail 2FA
+# app password, NOT the account password. Delivery runs in the
+# betterAuth/emailNode Node action via nodemailer.
+push_env GMAIL_USER
+push_env GMAIL_APP_PASSWORD
+push_env AUTH_EMAIL_FROM
+push_env AUTH_EMAIL_SUBJECT
+# Magic link over Resend HTTP (fallback if Gmail is not set).
+push_env RESEND_API_KEY
+
 # Provider routing. Defaults point at the docker-network mock host so the
 # Convex container resolves them even when the developer never sets the
 # vars in `.env`.

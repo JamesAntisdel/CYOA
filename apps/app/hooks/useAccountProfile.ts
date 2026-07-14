@@ -12,6 +12,13 @@ import {
   setRemoteMediaPrefs,
 } from "../lib/gameApi";
 import { adaptKeepsakes, adaptLibrarianRank } from "../lib/storyEngagementW3";
+import {
+  ensureRemoteAppAccount,
+  getRemoteAuthedProfile,
+  type AuthedRemoteProfile,
+  type LinkedAppAccount,
+} from "../lib/appAccountApi";
+import { isConvexAuthConfigured } from "../lib/authConfig";
 import { READER_SETTINGS_CHANGED_EVENT, READER_SETTINGS_KEY, type ReaderSettings } from "./useReaderSettings";
 import { useAuthSession } from "./useAuthSession";
 import { guestAuthArgs, useGuestSession } from "./useGuestSession";
@@ -57,6 +64,11 @@ export function useAccountProfile() {
   const [displayNames, setDisplayNames] = useState<Record<string, string>>({});
   const [remoteProfile, setRemoteProfile] = useState<RemoteProfileState | null>(null);
   const [archetypes, setArchetypes] = useState<ArchetypeTag[]>(DEFAULT_ARCHETYPES);
+  // BetterAuth -> Convex bridge: the real app `accounts` row linked to the
+  // signed-in identity, plus its server profile (tier / mature / admin). Both
+  // stay null for guests and in local-auth mode.
+  const [linkedAccount, setLinkedAccount] = useState<LinkedAppAccount | null>(null);
+  const [authProfile, setAuthProfile] = useState<AuthedRemoteProfile | null>(null);
 
   useEffect(() => {
     setClaimed(readClaimedProfile());
@@ -129,6 +141,34 @@ export function useAccountProfile() {
       cancelled = true;
     };
   }, [guest.session?.accountId]);
+
+  // Authenticated bridge: once a BetterAuth session exists (better-auth mode
+  // only), find-or-create the app `accounts` row for the identity and read its
+  // server profile. This is what makes a real sign-in resolve to a durable
+  // account (keyed by email) that saves/entitlements/admin — and
+  // devGrantAdmin({ email }) / devSetTier — all target. Idempotent server-side,
+  // so it's safe to re-run on every authenticated load. Guests are untouched.
+  const authUserId = auth.session?.userId;
+  const authAgeBand = auth.session?.ageBand;
+  useEffect(() => {
+    if (!isConvexAuthConfigured() || !authUserId) {
+      setLinkedAccount(null);
+      setAuthProfile(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const linked = await ensureRemoteAppAccount(authAgeBand ? { ageBand: authAgeBand } : {});
+      if (cancelled || !linked) return;
+      setLinkedAccount(linked);
+      const profile = await getRemoteAuthedProfile(linked.accountId);
+      if (cancelled) return;
+      setAuthProfile(profile);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [authUserId, authAgeBand]);
 
   const claimWithEmail = useCallback(async (email: string) => {
     if (!guest.session) throw new Error("guest_session_required");
@@ -274,16 +314,19 @@ export function useAccountProfile() {
   return useMemo(() => {
     const profile: AccountProfile | null = auth.session
       ? {
-          accountId: auth.session.userId,
+          // Prefer the bridged app `accounts._id` so saves/entitlements/admin
+          // key off the durable account; fall back to the BetterAuth user id
+          // until the bridge round-trip lands (or in local-auth mode).
+          accountId: linkedAccount?.accountId ?? auth.session.userId,
           kind: "user",
           name: displayNames[auth.session.userId] ?? auth.session.name,
           email: auth.session.email,
-          ageBand: auth.session.ageBand,
-          canEnableMature: false,
-          matureContentEnabled: false,
-          entitlementTier: "free",
-          entitlementStatus: "active",
-          dailyAllowance: 10,
+          ageBand: authProfile?.ageBand ?? auth.session.ageBand,
+          canEnableMature: canEnableMatureAuthed(authProfile),
+          matureContentEnabled: authProfile?.matureContentEnabled ?? false,
+          entitlementTier: authProfile?.entitlementTier ?? "free",
+          entitlementStatus: authProfile?.entitlementStatus ?? "active",
+          dailyAllowance: authProfile?.dailyAllowance ?? 10,
           exportReady: true,
           archetypes,
         }
@@ -332,8 +375,10 @@ export function useAccountProfile() {
     archetypes,
     auth.session,
     auth.status,
+    authProfile,
     claimWithEmail,
     claimed,
+    linkedAccount,
     clearProfile,
     deleteAccountData,
     displayNames,
@@ -422,6 +467,20 @@ function buildLocalExport(input: {
       entitlementStatus: input.remoteProfile?.entitlementStatus ?? "active",
     },
   };
+}
+
+// Mature-content gate for the authenticated (bridged) profile. Mirrors
+// `canEnableMature` but reads the AuthedRemoteProfile shape returned by the
+// authenticated getProfile call. Same policy: user account, 18+, active paid
+// entitlement.
+function canEnableMatureAuthed(profile: AuthedRemoteProfile | null): boolean {
+  return Boolean(
+    profile &&
+      profile.kind === "user" &&
+      profile.ageBand === "18+" &&
+      profile.entitlementStatus === "active" &&
+      (profile.entitlementTier === "unlimited" || profile.entitlementTier === "pro"),
+  );
 }
 
 function canEnableMature(profile: RemoteProfileState): boolean {

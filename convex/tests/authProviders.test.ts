@@ -1,10 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   buildMagicLinkPlugin,
   buildSocialProviders,
   configuredSocialProviderIds,
+  deliverMagicLink,
+  isGmailConfigured,
   isMagicLinkConfigured,
+  isResendConfigured,
+  resolveGmailFrom,
+  selectMagicLinkTransport,
 } from "../betterAuth/providers";
 
 describe("buildSocialProviders", () => {
@@ -88,5 +93,79 @@ describe("magic link", () => {
     const plugin = buildMagicLinkPlugin(env);
     expect(plugin).not.toBeNull();
     expect(plugin?.id).toBe("magic-link");
+  });
+
+  it("is configured (and builds a plugin) with Gmail SMTP alone", () => {
+    const env = { GMAIL_USER: "bot@gmail.com", GMAIL_APP_PASSWORD: "abcd efgh ijkl mnop" };
+    expect(isGmailConfigured(env)).toBe(true);
+    expect(isResendConfigured(env)).toBe(false);
+    expect(isMagicLinkConfigured(env)).toBe(true);
+    expect(buildMagicLinkPlugin(env)?.id).toBe("magic-link");
+  });
+
+  it("builds a plugin for the dev-log fallback with no real provider", () => {
+    expect(buildMagicLinkPlugin({ CYOA_DEV_LOG_MAGIC_LINK: "1" })?.id).toBe("magic-link");
+  });
+});
+
+describe("selectMagicLinkTransport", () => {
+  const gmail = { GMAIL_USER: "bot@gmail.com", GMAIL_APP_PASSWORD: "pw" };
+  const resend = { RESEND_API_KEY: "key", AUTH_EMAIL_FROM: "a@b.com" };
+
+  it("prefers gmail, then resend, then dev-log, then none", () => {
+    expect(selectMagicLinkTransport({ ...gmail, ...resend, CYOA_DEV_LOG_MAGIC_LINK: "1" })).toBe("gmail");
+    expect(selectMagicLinkTransport({ ...resend, CYOA_DEV_LOG_MAGIC_LINK: "1" })).toBe("resend");
+    expect(selectMagicLinkTransport({ CYOA_DEV_LOG_MAGIC_LINK: "1" })).toBe("dev-log");
+    expect(selectMagicLinkTransport({})).toBe("none");
+  });
+
+  it("resolves the gmail From address (AUTH_EMAIL_FROM then GMAIL_USER)", () => {
+    expect(resolveGmailFrom({ GMAIL_USER: "bot@gmail.com" })).toBe("bot@gmail.com");
+    expect(resolveGmailFrom({ GMAIL_USER: "bot@gmail.com", AUTH_EMAIL_FROM: "hi@x.com" })).toBe("hi@x.com");
+    expect(resolveGmailFrom({})).toBeUndefined();
+  });
+});
+
+describe("deliverMagicLink", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("schedules the gmail send when gmail is the transport", async () => {
+    const schedule = vi.fn().mockResolvedValue(undefined);
+    await deliverMagicLink(
+      { GMAIL_USER: "bot@gmail.com", GMAIL_APP_PASSWORD: "pw" },
+      { email: "reader@x.com", url: "https://x/verify" },
+      schedule,
+    );
+    expect(schedule).toHaveBeenCalledWith({ email: "reader@x.com", url: "https://x/verify" });
+  });
+
+  it("dev-logs when only the dev flag is set", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await deliverMagicLink({ CYOA_DEV_LOG_MAGIC_LINK: "1" }, { email: "r@x.com", url: "https://x/v" });
+    expect(log).toHaveBeenCalledWith("[dev-magic-link] r@x.com -> https://x/v");
+  });
+
+  it("never rethrows when the gmail scheduler fails", async () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const schedule = vi.fn().mockRejectedValue(new Error("scheduler_down"));
+    await expect(
+      deliverMagicLink(
+        { GMAIL_USER: "bot@gmail.com", GMAIL_APP_PASSWORD: "pw" },
+        { email: "r@x.com", url: "https://x/v" },
+        schedule,
+      ),
+    ).resolves.toBeUndefined();
+    expect(err).toHaveBeenCalled();
+  });
+
+  it("falls back to resend when gmail is selected but no scheduler is wired", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => "" });
+    vi.stubGlobal("fetch", fetchMock);
+    await deliverMagicLink(
+      { GMAIL_USER: "bot@gmail.com", GMAIL_APP_PASSWORD: "pw", RESEND_API_KEY: "key", AUTH_EMAIL_FROM: "a@b.com" },
+      { email: "r@x.com", url: "https://x/v" },
+    );
+    expect(fetchMock).toHaveBeenCalledWith("https://api.resend.com/emails", expect.objectContaining({ method: "POST" }));
+    vi.unstubAllGlobals();
   });
 });
