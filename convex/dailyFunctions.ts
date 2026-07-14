@@ -33,15 +33,19 @@ import {
 import type { ContentPolicyContext } from "@cyoa/shared";
 
 import {
+  advanceDailyStreak,
   anonymousReaderName,
   buildDailyPremise,
   buildDailyResultRow,
   computeDistribution,
   dailyQuestionTeaser,
+  emptyStreak,
   endingLabelResolver,
   isoDateFromMillis,
   type DailyDistributionRow,
+  type StreakState,
 } from "./daily";
+import { streakKeepsake, KEEPSAKE_GRANTED, type Keepsake } from "./keepsakes";
 import { evaluateTextPolicy } from "./contentPolicy";
 import { AppError } from "./lib/errors";
 import { cleanDoc } from "./lib/docs";
@@ -87,8 +91,10 @@ export const getToday = queryGeneric({
     if (!daily) return { daily: null };
 
     let played = false;
+    let streak: StreakState = emptyStreak();
     if (args.accountId) {
       played = await hasPlayedDaily(ctx, String(daily._id), String(args.accountId));
+      streak = await readStreak(ctx, String(args.accountId));
     }
 
     return {
@@ -99,6 +105,10 @@ export const getToday = queryGeneric({
         questionTeaser: dailyQuestionTeaser(daily.storyArc, String(daily.title)),
         played,
       },
+      // Panel-2 W3 retention: the reader's consecutive-day Daily streak. Always
+      // present (zeroed when the reader has no record / no identity) so the card
+      // can render an ember count without a null-guard dance.
+      streak,
     };
   },
 });
@@ -178,6 +188,7 @@ export const getResults = queryGeneric({
   ): Promise<{
     yours: { endingId: string; label: string } | null;
     distribution: DailyDistributionRow[];
+    streak: StreakState;
   }> => {
     await loadAndAuthorizeAccount(ctx, args.accountId, args.guestTokenHash);
 
@@ -202,7 +213,34 @@ export const getResults = queryGeneric({
       ? { endingId: String(mine.endingId), label: labelFor(String(mine.endingId)) }
       : null;
 
-    return { yours, distribution };
+    const streak = await readStreak(ctx, String(args.accountId));
+
+    return { yours, distribution, streak };
+  },
+});
+
+// ---------------------------------------------------------------------------
+// getStreak (query) — Panel-2 W3 retention.
+//   {accountId, guestTokenHash?} → {streak: {current, longest, lastDate},
+//                                   keepsakes: [{id,label,description}]}
+//
+// The reader's consecutive-day Daily streak plus the milestone keepsakes it has
+// minted (7/14/… day Embers). Keepsakes are account-scoped and survive
+// guest→account claim in place (R13.4). Zeroed streak + empty keepsakes when no
+// record exists.
+// ---------------------------------------------------------------------------
+export const getStreak = queryGeneric({
+  args: { accountId, guestTokenHash },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ streak: StreakState; keepsakes: Keepsake[] }> => {
+    await loadAndAuthorizeAccount(ctx, args.accountId, args.guestTokenHash);
+    const record = await loadStreakRecord(ctx, String(args.accountId));
+    return {
+      streak: record ? streakStateFromRow(record) : emptyStreak(),
+      keepsakes: record ? readStreakKeepsakes(record) : [],
+    };
   },
 });
 
@@ -386,7 +424,7 @@ export const insertDailyTaleRow = internalMutationGeneric({
 // directly. Emits `daily.finished` analytics fire-and-forget.
 // ---------------------------------------------------------------------------
 export async function insertDailyResultIfAbsent(
-  ctx: {
+  ctx: StreakCtx & {
     db: {
       query: (table: string) => any;
       insert: (table: string, doc: any) => Promise<any>;
@@ -399,7 +437,7 @@ export async function insertDailyResultIfAbsent(
     turnCount: number;
     finishedAt: number;
   },
-): Promise<{ inserted: boolean; resultId?: string }> {
+): Promise<{ inserted: boolean; resultId?: string; streakMintedKeepsakeId?: string }> {
   const existing = await ctx.db
     .query("daily_results")
     .withIndex("by_daily_account", (q: any) =>
@@ -418,7 +456,171 @@ export async function insertDailyResultIfAbsent(
     now: input.finishedAt,
   });
 
-  return { inserted: true, resultId: String(resultId) };
+  // Panel-2 W3: advance the consecutive-day streak and mint a milestone keepsake
+  // (7/14/… days). Runs only on a fresh result insert, so it is exactly-once per
+  // (account, daily) — the same choke point as the result row itself.
+  const streakOutcome = await advanceStreakForCompletion(ctx, {
+    accountId: input.accountId,
+    dailyId: input.dailyId,
+    finishedAt: input.finishedAt,
+  });
+
+  return {
+    inserted: true,
+    resultId: String(resultId),
+    ...(streakOutcome.mintedKeepsake ? { streakMintedKeepsakeId: streakOutcome.mintedKeepsake.id } : {}),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Streak persistence (Panel-2 W3). The `daily_streaks` table is one row per
+// account (by_account index). All shape/date logic lives in the pure `daily.ts`
+// helpers; this layer is just the DB read/write + keepsake dedupe + analytics.
+// The row is account-scoped, so guest→account claim (an in-place account
+// upgrade — same _id) carries the streak and its keepsakes across for free
+// (R13.4); no reassignment step is needed.
+// ---------------------------------------------------------------------------
+
+/** The db surface the streak helpers need — a superset of the result-insert ctx. */
+type StreakCtx = {
+  db: {
+    query: (table: string) => any;
+    insert: (table: string, doc: any) => Promise<any>;
+    patch?: (id: any, doc: any) => Promise<any>;
+    get?: (id: any) => Promise<any>;
+  };
+};
+
+type StreakRow = {
+  _id: string;
+  accountId: string;
+  current: number;
+  longest: number;
+  lastDate: string;
+  keepsakes?: Keepsake[];
+  updatedAt?: number;
+};
+
+/** Project the mutable streak fields off a raw row (defensive number coercion). */
+function streakStateFromRow(row: StreakRow): StreakState {
+  return {
+    current: Number.isFinite(row.current) ? row.current : 0,
+    longest: Number.isFinite(row.longest) ? row.longest : 0,
+    lastDate: typeof row.lastDate === "string" ? row.lastDate : "",
+  };
+}
+
+/** The milestone keepsakes minted onto a streak row (never null). */
+function readStreakKeepsakes(row: StreakRow): Keepsake[] {
+  return Array.isArray(row.keepsakes) ? row.keepsakes : [];
+}
+
+/** Load the account's single `daily_streaks` row (or null). */
+async function loadStreakRecord(
+  ctx: { db: { query: (table: string) => any } },
+  accountIdValue: string,
+): Promise<StreakRow | null> {
+  const row = await ctx.db
+    .query("daily_streaks")
+    .withIndex("by_account", (q: any) => q.eq("accountId", accountIdValue))
+    .first();
+  return (row as StreakRow | null) ?? null;
+}
+
+/** Read the account's streak as a zeroed-when-absent projection. */
+async function readStreak(
+  ctx: { db: { query: (table: string) => any } },
+  accountIdValue: string,
+): Promise<StreakState> {
+  const row = await loadStreakRecord(ctx, accountIdValue);
+  return row ? streakStateFromRow(row) : emptyStreak();
+}
+
+/**
+ * Fold a completion into the account's streak row: read prior state, advance it
+ * (pure), mint a milestone keepsake when a new day pushes current to a 7-day
+ * multiple, then upsert. The completion's day is the Daily's own `date` when the
+ * daily_tales row is reachable, else the UTC day of `finishedAt` — both are the
+ * calendar day the reader finished on.
+ */
+async function advanceStreakForCompletion(
+  ctx: StreakCtx,
+  params: { accountId: string; dailyId: string; finishedAt: number },
+): Promise<{ mintedKeepsake?: Keepsake }> {
+  const date = await resolveCompletionDate(ctx, params.dailyId, params.finishedAt);
+
+  const existing = await loadStreakRecord(ctx, params.accountId);
+  const prev: StreakState | null = existing ? streakStateFromRow(existing) : null;
+  const advance = advanceDailyStreak(prev, date);
+  if (!advance.changed) return {};
+
+  const ownedKeepsakes = existing ? readStreakKeepsakes(existing) : [];
+  const candidate = advance.incremented ? streakKeepsake(advance.state.current) : null;
+  let keepsakes = ownedKeepsakes;
+  let mintedKeepsake: Keepsake | undefined;
+  if (candidate && !ownedKeepsakes.some((k) => k.id === candidate.id)) {
+    keepsakes = [...ownedKeepsakes, candidate];
+    mintedKeepsake = candidate;
+  }
+
+  const doc = {
+    accountId: params.accountId,
+    current: advance.state.current,
+    longest: advance.state.longest,
+    lastDate: advance.state.lastDate,
+    keepsakes,
+    updatedAt: params.finishedAt,
+  };
+
+  if (existing && ctx.db.patch) {
+    await ctx.db.patch(existing._id, cleanDoc(doc));
+  } else if (!existing) {
+    await ctx.db.insert("daily_streaks", cleanDoc(doc));
+  }
+
+  await insertDailyAnalytics(ctx as any, {
+    eventName: "daily.streak_advanced",
+    accountId: params.accountId,
+    payload: {
+      dailyId: params.dailyId,
+      current: advance.state.current,
+      longest: advance.state.longest,
+    },
+    now: params.finishedAt,
+  });
+
+  if (mintedKeepsake) {
+    await insertDailyAnalytics(ctx as any, {
+      eventName: KEEPSAKE_GRANTED,
+      accountId: params.accountId,
+      payload: {
+        source: "daily_streak",
+        keepsakeId: mintedKeepsake.id,
+        streak: advance.state.current,
+      },
+      now: params.finishedAt,
+    });
+  }
+
+  return mintedKeepsake ? { mintedKeepsake } : {};
+}
+
+/** The Daily's `date` (canonical streak day), falling back to the finish day. */
+async function resolveCompletionDate(
+  ctx: StreakCtx,
+  dailyId: string,
+  finishedAt: number,
+): Promise<string> {
+  if (ctx.db.get) {
+    try {
+      const daily = await ctx.db.get(dailyId);
+      const date = daily?.date;
+      if (typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date)) return date;
+    } catch {
+      // fall through to the finish-time derivation
+    }
+  }
+  return isoDateFromMillis(finishedAt);
 }
 
 // ---------------------------------------------------------------------------

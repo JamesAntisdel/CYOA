@@ -4,6 +4,7 @@ import { ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Button, Chip, Divider, Stamp, Surface, Text } from "../../../components/primitives";
+import { ReportButton } from "../../../components/moderation";
 import { CinematicMoment } from "../../../components/media/CinematicMoment";
 import type { RemoteCinematicView } from "../../../lib/cinematicApi";
 import {
@@ -132,6 +133,16 @@ export default function TaleReadAlongRoute() {
                 ))
               ) : null}
               {status ? <Text accessibilityLabel="Tale status" muted>{status}</Text> : null}
+              <Divider />
+              {/* UGC report path (Apple 1.2 / Play UGC). Present on every
+                  published tale so a reader can always flag it for review. */}
+              {taleId ? (
+                <ReportButton
+                  targetType="tale"
+                  targetId={taleId}
+                  targetLabel={tale?.title ?? "this tale"}
+                />
+              ) : null}
             </View>
           </Surface>
         </View>

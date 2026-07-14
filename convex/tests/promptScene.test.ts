@@ -757,6 +757,34 @@ describe("story-bible digest section (SB-S4, R3.1/R3.2/R3.5)", () => {
     expect(prompt).not.toContain("TWISTS held back:");
     expect(prompt).not.toContain("OUTSTANDING KEYS:");
   });
+
+  // FACTIONS (Panel-2 W3) — hidden rep:<id> stats surfaced as a plan section.
+  it("renders a FACTIONS block with rep:<id> keys + gating guidance", () => {
+    const prompt = buildScenePrompt(
+      llmRequest({
+        pursuit: pursuitFixture(),
+        storyBible: bibleDigestFixture({
+          factions: [
+            { id: "iron-court", label: "The Iron Court", standingHints: "favor buys writs; scorn earns the noose" },
+            { id: "ferryman-guild", label: "the Ferryman's Guild", standingHints: "pay fares honestly to rise" },
+          ],
+        }),
+      }),
+    );
+    expect(prompt).toContain("FACTIONS (standing is a HIDDEN stat rep:<id>");
+    expect(prompt).toContain('- rep:iron-court "The Iron Court"');
+    expect(prompt).toContain('- rep:ferryman-guild "the Ferryman\'s Guild"');
+    expect(prompt).toContain("stat_at_least`/`stat_at_most` on `rep:<id>`");
+    // BC10: the rep number / id never reaches the reader — the model is told so.
+    expect(prompt).toContain("NEVER name the rep stat, its id, or a number");
+  });
+
+  it("omits the FACTIONS block entirely when the digest has none (byte-identical, BC9)", () => {
+    const prompt = buildScenePrompt(
+      llmRequest({ pursuit: pursuitFixture(), storyBible: bibleDigestFixture() }),
+    );
+    expect(prompt).not.toContain("FACTIONS (standing");
+  });
 });
 
 describe("story-bible PROTAGONIST identity lock (character-consistency §1.7)", () => {

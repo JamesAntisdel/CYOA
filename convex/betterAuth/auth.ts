@@ -32,7 +32,22 @@ export function createAuth(ctx: GenericCtx<DataModel>) {
     plugins: [
       convex({
         authConfig,
+        // Static JWKS is a VERIFICATION-side optimization only: it must be the
+        // PUBLIC half of a keypair whose PRIVATE half the component already
+        // persisted (via `npx convex run` key generation). When `JWKS` is set
+        // but the private key is missing (e.g. the local backend's DB was reset
+        // after JWKS was pinned), the plugin's `createJwk` throws
+        // "Not implemented" and `/api/auth/convex/token` returns that error, so
+        // no session JWT is ever minted. Leaving `JWKS` UNSET (the default, and
+        // what scripts/dev/convex-local-dev.sh enforces by stripping the `[]`
+        // placeholder) makes the component manage the keypair in its own DB —
+        // signing AND verification both work with no external coordination.
         ...(process.env.JWKS ? { jwks: process.env.JWKS } : {}),
+        // Self-heal token generation when the signing key's alg no longer
+        // matches a stored key (e.g. after a BETTER_AUTH_SECRET rotation): roll
+        // the DB keys and retry once instead of hard-failing the token endpoint.
+        // Only active on the DB-managed (non-static-JWKS) path.
+        ...(process.env.JWKS ? {} : { jwksRotateOnTokenGenerationError: true }),
         options: { basePath },
       }),
       ...(magicLinkPlugin ? [magicLinkPlugin] : []),

@@ -4,6 +4,7 @@ import { ScrollView, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Button, Chip, Divider, Stamp, Surface, Text } from "../../../components/primitives";
+import { LegalFooter } from "../../../components/legal/LegalFooter";
 import {
   publishRemoteTale,
   type TaleForkPolicy,
@@ -168,6 +169,14 @@ export default function PublishSaveRoute() {
                 <Chip variant="muted">Friends-only requires sign-in to read</Chip>
               ) : null}
               <Text accessibilityLabel="Publish status" muted>{status}</Text>
+              <Divider />
+              <LegalFooter
+                prefix="Publishing binds this tale to our"
+                links={[
+                  { href: "/content-policy", label: "Content Policy" },
+                  { href: "/terms", label: "Terms" },
+                ]}
+              />
             </View>
           </Surface>
         </View>

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Pressable, View } from "react-native";
 
 import { Button, Stamp, Surface, Text } from "../primitives";
+import { LegalFooter } from "../legal/LegalFooter";
 import { useAppTheme } from "../../theme";
 import type { AgeSelection } from "../../hooks/useGuestSession";
 import { useUnder13Block } from "../../hooks/useMatureOptIn";
@@ -129,6 +130,15 @@ export function AgeGate({
       >
         Continue
       </Button>
+
+      <LegalFooter
+        prefix="By continuing you agree to our"
+        links={[
+          { href: "/terms", label: "Terms" },
+          { href: "/privacy", label: "Privacy" },
+          { href: "/content-policy", label: "Content Policy" },
+        ]}
+      />
     </Surface>
   );
 }

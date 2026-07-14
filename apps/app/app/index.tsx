@@ -6,7 +6,12 @@ import type { StorySummary } from "@cyoa/stories";
 import { AgeGate } from "../components/account/AgeGate";
 import { DailyCard } from "../components/daily";
 import { AppNav } from "../components/navigation";
-import { Button, Text } from "../components/primitives";
+import { Button, Chip, Text } from "../components/primitives";
+import { useAccountProfile } from "../hooks/useAccountProfile";
+import {
+  librarianRankChipLabel,
+  librarianRankProgressLine,
+} from "../lib/storyEngagementW3";
 import { brandAssets, getStoryCoverSource } from "../lib/designAssets";
 import {
   getRemoteDailyToday,
@@ -33,6 +38,11 @@ export default function IndexRoute() {
   const router = useRouter();
   const guest = useGuestSession();
   const library = useLibrary(guest.session);
+  // Panel-2 Wave 2 — returning-reader home. When the reader has a save in
+  // progress we lead with their story (continue + daily + rank) and demote the
+  // acquisition hero below the fold; first-visit readers keep the original
+  // Chapter-Zero-hero-first layout untouched.
+  const { librarianRank } = useAccountProfile();
   const { tokens } = useAppTheme();
   // Responsive breakpoints: phone (<520) stacks every multi-column row.
   // Hero cover and starter-tale story cards both branch off `isPhone`.
@@ -113,6 +123,182 @@ export default function IndexRoute() {
     );
   }
 
+  const continueSave = library.continueSave;
+  const returning = Boolean(continueSave);
+
+  const dailyCardBlock = (
+    <DailyCard
+      daily={dailyToday}
+      onOpenReader={openSave}
+      onOpenResults={(dailyId) => router.push(`/daily/${dailyId}`)}
+      onStart={() =>
+        accountId
+          ? startRemoteDaily({ accountId, ...guestAuthArgs() })
+          : Promise.resolve(null)
+      }
+    />
+  );
+
+  // Chapter-Zero acquisition hero. Leads for first-visit readers; demoted below
+  // the fold (rendered after the starter shelf) once the reader is returning.
+  const heroBlock = (
+    <View
+      accessibilityLabel="The Unwritten story cover"
+      style={{
+        alignItems: "center",
+        backgroundColor: tokens.colors.text,
+        borderRadius: tokens.radii.sm,
+        // Mobile: don't pin a tall fixed height — the OG image keeps a
+        // 1200x630 aspect ratio so the panel naturally sizes itself to
+        // image + overlay copy. Desktop keeps the original framed look.
+        minHeight: isPhone ? 280 : 420,
+        overflow: "hidden",
+        padding: tokens.spacing.md,
+        paddingBottom: isPhone ? tokens.spacing.xxl : tokens.spacing.md,
+        position: "relative",
+      }}
+    >
+      <Image
+        accessibilityIgnoresInvertColors
+        resizeMode="contain"
+        source={brandAssets.ogCard}
+        style={{
+          aspectRatio: 1200 / 630,
+          // Phone: let the image fluid-size up to the viewport so the
+          // 1200x630 art stays readable. Desktop retains the 294 fixed
+          // height and 560 maxWidth that read well in the framed look.
+          height: isPhone ? undefined : 294,
+          maxWidth: isPhone ? Math.min(viewportWidth - 32, 480) : 560,
+          opacity: 0.92,
+          width: "100%",
+        }}
+      />
+      <View
+        style={{
+          backgroundColor: tokens.colors.overlay,
+          bottom: 0,
+          gap: tokens.spacing.sm,
+          left: 0,
+          paddingHorizontal: tokens.spacing.xl,
+          paddingVertical: tokens.spacing.md,
+          position: "absolute",
+          right: 0,
+          width: "100%",
+        }}
+      >
+        <Text
+          style={{
+            color: tokens.colors.accent,
+            fontFamily: tokens.typography.families.mono,
+            fontWeight: "800",
+            letterSpacing: 1,
+            textTransform: "uppercase",
+          }}
+          variant="caption"
+        >
+          Chapter Zero
+        </Text>
+        <Text
+          style={{
+            color: tokens.colors.background,
+            fontWeight: "800",
+            maxWidth: 640,
+          }}
+          variant="title"
+        >
+          A living book waits at the threshold.
+        </Text>
+        <Text
+          style={{ color: tokens.colors.background, maxWidth: 540 }}
+          variant="body"
+        >
+          Start as a guest. Sign up can wait until the tale is worth keeping.
+        </Text>
+      </View>
+    </View>
+  );
+
+  const startRow = (
+    <View
+      style={{
+        // Phone: stack vertically so Continue {long-title} doesn't wrap
+        // awkwardly next to Start. Tablet/desktop keeps the side-by-side
+        // row with flex-wrap as a safety net.
+        alignItems: isPhone ? "stretch" : "flex-start",
+        flexDirection: isPhone ? "column" : "row",
+        flexWrap: "wrap",
+        gap: tokens.spacing.sm,
+      }}
+    >
+      <Button
+        accessibilityLabel={tutorialStory ? `Start ${tutorialStory.title}` : "Start Tutorial"}
+        onPress={launchTutorial}
+        variant="primary"
+      >
+        {tutorialStory ? `Start ${tutorialStory.title}` : "Start Tutorial"}
+      </Button>
+      {/* No Continue button here: first-visit readers have no save, and
+          returning readers get the prominent Continue LEAD card above — a
+          duplicate secondary button would only add noise. */}
+    </View>
+  );
+
+  // Returning-reader lead: the reader's story-so-far anchors the page —
+  // Continue card, then their Librarian Rank — instead of re-selling the app to
+  // someone already reading it (panel-review-2 LOW: "home treats every visit as
+  // a first visit").
+  const continueLead = continueSave ? (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`Continue ${continueSave.title}`}
+      onPress={() => openSave(continueSave.saveId)}
+      style={{
+        backgroundColor: tokens.colors.surface,
+        borderColor: tokens.colors.accent,
+        borderRadius: tokens.radii.sm,
+        borderWidth: tokens.borderWidths.hairline,
+        gap: tokens.spacing.xs,
+        padding: tokens.spacing.lg,
+      }}
+    >
+      <Text
+        muted
+        style={{
+          fontFamily: tokens.typography.families.mono,
+          fontWeight: "800",
+          letterSpacing: 1,
+          textTransform: "uppercase",
+        }}
+        variant="caption"
+      >
+        Pick up where you left off
+      </Text>
+      <Text style={{ fontWeight: "800" }} variant="title">
+        {continueSave.title}
+      </Text>
+      <Text tone="accent" style={{ fontWeight: "800" }} variant="bodySmall">
+        Continue reading →
+      </Text>
+      {librarianRank ? (
+        <View
+          accessibilityLabel={`Librarian rank: ${librarianRankChipLabel(librarianRank)}. ${librarianRankProgressLine(librarianRank)}.`}
+          style={{
+            alignItems: "center",
+            flexDirection: "row",
+            flexWrap: "wrap",
+            gap: tokens.spacing.sm,
+            marginTop: tokens.spacing.xs,
+          }}
+        >
+          <Chip variant="accent">{`▣ ${librarianRankChipLabel(librarianRank)}`}</Chip>
+          <Text muted variant="caption">
+            {librarianRankProgressLine(librarianRank)}
+          </Text>
+        </View>
+      ) : null}
+    </Pressable>
+  ) : null;
+
   return (
     <ScrollView
       contentContainerStyle={{
@@ -128,120 +314,15 @@ export default function IndexRoute() {
             misleading. */}
         <AppNav />
 
-        <DailyCard
-          daily={dailyToday}
-          onOpenReader={openSave}
-          onOpenResults={(dailyId) => router.push(`/daily/${dailyId}`)}
-          onStart={() =>
-            accountId
-              ? startRemoteDaily({ accountId, ...guestAuthArgs() })
-              : Promise.resolve(null)
-          }
-        />
+        {/* Returning readers lead with their story (continue + rank); first-
+            visit readers keep the original hero-first order untouched. */}
+        {returning ? continueLead : null}
 
-        <View
-          accessibilityLabel="The Unwritten story cover"
-          style={{
-            alignItems: "center",
-            backgroundColor: tokens.colors.text,
-            borderRadius: tokens.radii.sm,
-            // Mobile: don't pin a tall fixed height — the OG image keeps a
-            // 1200x630 aspect ratio so the panel naturally sizes itself to
-            // image + overlay copy. Desktop keeps the original framed look.
-            minHeight: isPhone ? 280 : 420,
-            overflow: "hidden",
-            padding: tokens.spacing.md,
-            paddingBottom: isPhone ? tokens.spacing.xxl : tokens.spacing.md,
-            position: "relative",
-          }}
-        >
-          <Image
-            accessibilityIgnoresInvertColors
-            resizeMode="contain"
-            source={brandAssets.ogCard}
-            style={{
-              aspectRatio: 1200 / 630,
-              // Phone: let the image fluid-size up to the viewport so the
-              // 1200x630 art stays readable. Desktop retains the 294 fixed
-              // height and 560 maxWidth that read well in the framed look.
-              height: isPhone ? undefined : 294,
-              maxWidth: isPhone ? Math.min(viewportWidth - 32, 480) : 560,
-              opacity: 0.92,
-              width: "100%",
-            }}
-          />
-          <View
-            style={{
-              backgroundColor: tokens.colors.overlay,
-              bottom: 0,
-              gap: tokens.spacing.sm,
-              left: 0,
-              paddingHorizontal: tokens.spacing.xl,
-              paddingVertical: tokens.spacing.md,
-              position: "absolute",
-              right: 0,
-              width: "100%",
-            }}
-          >
-            <Text
-              style={{
-                color: tokens.colors.accent,
-                fontFamily: tokens.typography.families.mono,
-                fontWeight: "800",
-                letterSpacing: 1,
-                textTransform: "uppercase",
-              }}
-              variant="caption"
-            >
-              Chapter Zero
-            </Text>
-            <Text
-              style={{
-                color: tokens.colors.background,
-                fontWeight: "800",
-                maxWidth: 640,
-              }}
-              variant="title"
-            >
-              A living book waits at the threshold.
-            </Text>
-            <Text
-              style={{ color: tokens.colors.background, maxWidth: 540 }}
-              variant="body"
-            >
-              Start as a guest. Sign up can wait until the tale is worth keeping.
-            </Text>
-          </View>
-        </View>
+        {dailyCardBlock}
 
-        <View
-          style={{
-            // Phone: stack vertically so Continue {long-title} doesn't wrap
-            // awkwardly next to Start. Tablet/desktop keeps the side-by-side
-            // row with flex-wrap as a safety net.
-            alignItems: isPhone ? "stretch" : "flex-start",
-            flexDirection: isPhone ? "column" : "row",
-            flexWrap: "wrap",
-            gap: tokens.spacing.sm,
-          }}
-        >
-          <Button
-            accessibilityLabel={tutorialStory ? `Start ${tutorialStory.title}` : "Start Tutorial"}
-            onPress={launchTutorial}
-            variant="primary"
-          >
-            {tutorialStory ? `Start ${tutorialStory.title}` : "Start Tutorial"}
-          </Button>
-          {library.continueSave ? (
-            <Button
-              accessibilityLabel={`Continue ${library.continueSave.title}`}
-              onPress={() => openSave(library.continueSave!.saveId)}
-              variant="secondary"
-            >
-              Continue {library.continueSave.title}
-            </Button>
-          ) : null}
-        </View>
+        {returning ? null : heroBlock}
+
+        {startRow}
       </View>
 
       <View style={{ gap: tokens.spacing.sm, maxWidth: 900, width: "100%" }}>
@@ -340,6 +421,12 @@ export default function IndexRoute() {
           ))}
         </View>
       </View>
+
+      {/* Chapter-Zero acquisition hero, demoted below the fold for returning
+          readers (it led the page for first-visit readers above). */}
+      {returning ? (
+        <View style={{ maxWidth: 900, width: "100%" }}>{heroBlock}</View>
+      ) : null}
     </ScrollView>
   );
 }

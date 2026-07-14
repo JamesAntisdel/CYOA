@@ -5,7 +5,15 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useAppTheme } from "../../theme";
 import { Chip, Stamp, Text } from "../primitives";
 import { AdminGate } from "./AdminGate";
-import { CostBoard, FunnelBoard, LiveBoard, SafetyBoard, StoriesBoard, UsersBoard } from "./boards";
+import {
+  CostBoard,
+  FunnelBoard,
+  LiveBoard,
+  ModerationBoard,
+  SafetyBoard,
+  StoriesBoard,
+  UsersBoard,
+} from "./boards";
 import type { AdminAccount, AdminDashboardData } from "./types";
 
 export type AdminDashboardView =
@@ -15,11 +23,12 @@ export type AdminDashboardView =
   | "safety"
   | "live"
   | "stories"
-  | "users";
+  | "users"
+  | "moderation";
 
-// The content views (stories / users) self-fetch their admin-gated data via
-// the useAdminContent hooks, so they don't consume the passed `dashboard`.
-const CONTENT_VIEWS: readonly AdminDashboardView[] = ["stories", "users"];
+// The content views (stories / users / moderation) self-fetch their admin-gated
+// data via their own hooks, so they don't consume the passed `dashboard`.
+const CONTENT_VIEWS: readonly AdminDashboardView[] = ["stories", "users", "moderation"];
 
 type AdminDashboardScreenProps = {
   account: AdminAccount | null;
@@ -60,6 +69,7 @@ export function AdminDashboardScreen({
 
             {view === "stories" ? <StoriesBoard /> : null}
             {view === "users" ? <UsersBoard /> : null}
+            {view === "moderation" ? <ModerationBoard /> : null}
 
             {view === "overview" || view === "funnel" ? (
               <FunnelBoard dashboard={dashboard} />
@@ -125,6 +135,8 @@ function titleForView(view: AdminDashboardView): string {
       return "Stories · content across accounts";
     case "users":
       return "Users · accounts & admin";
+    case "moderation":
+      return "Moderation · the takedown queue";
     default:
       return "The keeper's desk";
   }
@@ -138,6 +150,7 @@ const NAV_ITEMS: ReadonlyArray<{ view: AdminDashboardView; label: string; href: 
   { view: "live", label: "Live", href: "/admin/live" },
   { view: "stories", label: "Stories", href: "/admin/stories" },
   { view: "users", label: "Users", href: "/admin/users" },
+  { view: "moderation", label: "Moderation", href: "/admin/moderation" },
 ];
 
 /**

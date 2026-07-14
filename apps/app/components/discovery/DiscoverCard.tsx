@@ -1,6 +1,7 @@
 import { Pressable, View } from "react-native";
 
 import { useAppTheme } from "../../theme";
+import { ReportButton } from "../moderation";
 import { Chip, Stamp, Surface, Text } from "../primitives";
 
 export type DiscoverTone = "calm" | "tense" | "wry" | "lyrical" | "grim";
@@ -90,22 +91,26 @@ export function DiscoverCard({ onOpen, onShare, tale }: DiscoverCardProps) {
         )}
       </View>
 
-      {onShare ? (
-        <Pressable
-          accessibilityHint="Share this tale"
-          accessibilityLabel={`Share ${tale.title}`}
-          accessibilityRole="button"
-          onPress={() => onShare(tale.taleId)}
-          style={{
-            alignSelf: "flex-start",
-            paddingVertical: tokens.spacing.xs,
-          }}
-        >
-          <Text style={{ color: tokens.colors.accent, fontWeight: "700" }} variant="bodySmall">
-            Share this tale
-          </Text>
-        </Pressable>
-      ) : null}
+      <View style={{ alignItems: "center", flexDirection: "row", gap: tokens.spacing.md }}>
+        {onShare ? (
+          <Pressable
+            accessibilityHint="Share this tale"
+            accessibilityLabel={`Share ${tale.title}`}
+            accessibilityRole="button"
+            onPress={() => onShare(tale.taleId)}
+            style={{
+              alignSelf: "flex-start",
+              paddingVertical: tokens.spacing.xs,
+            }}
+          >
+            <Text style={{ color: tokens.colors.accent, fontWeight: "700" }} variant="bodySmall">
+              Share this tale
+            </Text>
+          </Pressable>
+        ) : null}
+        {/* UGC report path on the community shelf card (Apple 1.2 / Play UGC). */}
+        <ReportButton targetType="tale" targetId={tale.taleId} targetLabel={tale.title} />
+      </View>
     </Surface>
   );
 }

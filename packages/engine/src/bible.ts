@@ -38,6 +38,8 @@ const CAST_MAX = 5;
 const TWISTS_MAX = 4;
 const ENDING_HINTS_MAX = 4;
 const MOTIFS_MAX = 6;
+/** Factions section cap (Panel-2 W3): 0–4 reader-facing groups. */
+const FACTIONS_MAX = 4;
 
 // --- R4 registry enforcement caps --------------------------------------------
 /** Registry ceiling after adoption (R4.3): 6–12 at generation, ≤16 ever. */
@@ -112,6 +114,19 @@ export type BibleTwist = {
   status: "pending" | "fired" | "retired";
 };
 
+/**
+ * A reader-facing group whose standing the reader can win or lose (Panel-2 W3):
+ * a court, a guild, a gang. The standing itself is NOT stored here — it lives in
+ * player state as a hidden `rep:<id>` stat (see stats.ts) so the existing
+ * near-miss gate UX applies for free. This section only names the id + label +
+ * in-world `standingHints` so the narrator uses consistent `rep:<id>` keys.
+ */
+export type BibleFaction = {
+  id: string; // slug ≤48 — the `rep:<id>` standing stat keys off this
+  label: string; // ≤80
+  standingHints: string; // ≤120 — what earning / losing their favor looks like, in-world
+};
+
 export type BibleEndingHint = {
   endingId: string; // slug ≤48, fuzzy-matched to the arc's candidateEndings
   requires: string; // ≤160
@@ -138,6 +153,13 @@ export type StoryBible = {
   twists: BibleTwist[]; // 2–4
   endingHints: BibleEndingHint[]; // 0–4 after arc fuzzy-match
   motifs: string[]; // 3–6, ≤40 each
+  /**
+   * Reader-facing factions (Panel-2 W3). Optional + additive: legacy stored
+   * bibles and premises with no meaningful groups omit it (BC9). Immutable
+   * across act refresh (like `cast`) — carried through `mergeBibleRefresh`'s
+   * `...current` spread.
+   */
+  factions?: BibleFaction[]; // 0–4
   protagonist?: BibleProtagonist; // optional — legacy stored bibles have none
   source: "llm";
   version: 1;
@@ -337,6 +359,22 @@ export function validateProposedBible(raw: unknown): StoryBible | null {
     motifs.push(motif);
   }
 
+  // -- factions (Panel-2 W3) ------------------------------------------------------
+  const rawFactions = Array.isArray(obj.factions) ? obj.factions : [];
+  const seenFactionIds = new Set<string>();
+  const factions: BibleFaction[] = [];
+  for (const entry of rawFactions) {
+    if (factions.length >= FACTIONS_MAX) break;
+    if (typeof entry !== "object" || entry === null) continue;
+    const faction = entry as Record<string, unknown>;
+    const label = isString(faction.label) ? clampLen(faction.label, 1, LABEL_MAX) : null;
+    if (label === null) continue;
+    const id = entrySlug(faction, label);
+    if (id.length === 0 || seenFactionIds.has(id)) continue;
+    seenFactionIds.add(id);
+    factions.push({ id, label, standingHints: optionalText(faction.standingHints, HINT_MAX) });
+  }
+
   const protagonist = validateProtagonist(obj.protagonist);
   return {
     keyRegistry,
@@ -345,6 +383,9 @@ export function validateProposedBible(raw: unknown): StoryBible | null {
     twists,
     endingHints,
     motifs,
+    // Optional + additive (exactOptionalPropertyTypes): omit when empty so a
+    // faction-less bible stays byte-identical downstream (digest, prompt).
+    ...(factions.length > 0 ? { factions } : {}),
     ...(protagonist ? { protagonist } : {}),
     source: "llm",
     version: 1,
@@ -825,6 +866,13 @@ export type BibleDigest = {
   cast: BibleCast[];
   twists: BibleDigestTwist[]; // ≤2
   outstanding: BibleDigestOutstanding[]; // ≤2
+  /**
+   * Reader-facing factions (Panel-2 W3). No band filtering — a standing is
+   * relevant every turn (the reader can shift it any scene). Optional +
+   * conditionally spread so a faction-less digest stays byte-identical (the
+   * prompt skips the section entirely). ≤4 by construction (validation cap).
+   */
+  factions?: BibleFaction[];
   /** Verbatim identity — no band filtering; due every turn (design §1.4). */
   protagonist?: BibleProtagonist;
 };
@@ -911,12 +959,18 @@ export function buildBibleDigest(bible: StoryBible, turnNumber: number): BibleDi
   }
   const outstanding = [...reoffers, ...promises].slice(0, DIGEST_OUTSTANDING_MAX);
 
+  // Factions ride every turn (a standing can shift any scene) — no band
+  // filtering, just the validation cap. Conditionally spread so a faction-less
+  // digest is byte-identical to today (BC9, snapshot-safe).
+  const factions = (bible.factions ?? []).slice(0, FACTIONS_MAX).map((faction) => ({ ...faction }));
+
   return {
     keys,
     doors,
     cast: bible.cast.map((member) => ({ ...member })),
     twists,
     outstanding,
+    ...(factions.length > 0 ? { factions } : {}),
     // Identity is due EVERY turn — passed through verbatim, no band filtering.
     ...(bible.protagonist
       ? { protagonist: { ...bible.protagonist, appearance: [...bible.protagonist.appearance] } }
