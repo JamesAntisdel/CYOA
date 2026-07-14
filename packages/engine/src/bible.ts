@@ -427,7 +427,37 @@ export type RegistryEvent =
   | { kind: "phantom_unlock"; itemId: string; choiceId: string; turn: number }
   | { kind: "granted"; keyId: string; turn: number }
   | { kind: "door_opened"; doorId: string; turn: number }
-  | { kind: "seeded"; keyId: string; turn: number };
+  | { kind: "seeded"; keyId: string; turn: number }
+  | { kind: "twist_fired"; twistId: string; turn: number };
+
+/**
+ * Resolve a scene's proposed `twistFired` id against the bible's PENDING twists
+ * (mirror of the arc's `beatFired` contract). Slug-tolerant match on id OR
+ * label — the model is asked to echo the id, but a label echo still resolves.
+ * Returns a `twist_fired` RegistryEvent for the first matching pending twist,
+ * else null. Pure + total (BC5): a null bible, a blank/missing id, or an
+ * unknown / already-fired twist all yield null — a stray value can never fail
+ * the turn. The caller folds the event into the bible (status → "fired") in the
+ * SAME mutation as the state write, so `buildBibleDigest`'s pending filter stops
+ * re-surfacing an already-revealed twist automatically (no more forever-nag).
+ */
+export function fireTwistEvent(
+  bible: Pick<StoryBible, "twists"> | null | undefined,
+  twistFired: string | null | undefined,
+  turnNumber: number,
+): RegistryEvent | null {
+  if (!bible || typeof twistFired !== "string") return null;
+  const target = normalizeItemRef(twistFired);
+  if (target.length === 0) return null;
+  const twist = bible.twists.find(
+    (candidate) =>
+      candidate.status === "pending" &&
+      (normalizeItemRef(candidate.id) === target ||
+        normalizeItemRef(candidate.label) === target),
+  );
+  if (!twist) return null;
+  return { kind: "twist_fired", twistId: twist.id, turn: turnNumber };
+}
 
 /**
  * Post-process a scene's locked-choice results against the key registry

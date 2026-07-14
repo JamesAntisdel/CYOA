@@ -7,7 +7,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { RemoteDoorsJournalEntry } from "../gameApi";
-import { doorJournalLine, doorsNewlyKeyed } from "../storyEngagement";
+import { doorJournalLine, doorsNewlyKeyed, keyArrivalToast } from "../storyEngagement";
 
 function entry(
   label: string,
@@ -62,5 +62,24 @@ describe("doorsNewlyKeyed", () => {
       entry("the under-stair dark", "key-in-hand"),
     ];
     expect(doorsNewlyKeyed(prev, next)).toEqual([]);
+  });
+});
+
+describe("keyArrivalToast", () => {
+  it("names the door (capitalized) and points at the journal pill", () => {
+    expect(keyArrivalToast(["the crypt gate"])).toBe(
+      "A key has turned up — The crypt gate. See the tome above.",
+    );
+  });
+
+  it("names the first door when several keys land at once", () => {
+    expect(keyArrivalToast(["the crypt gate", "the ferry chain"])).toBe(
+      "A key has turned up — The crypt gate. See the tome above.",
+    );
+  });
+
+  it("falls back to a door-less nudge when no usable label is present", () => {
+    expect(keyArrivalToast([])).toBe("A key has turned up — see the tome above.");
+    expect(keyArrivalToast(["   "])).toBe("A key has turned up — see the tome above.");
   });
 });

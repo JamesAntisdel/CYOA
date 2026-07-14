@@ -10,8 +10,12 @@
  */
 export const LOCK_COACH_SEEN_KEY = "cyoa.lockCoachSeen.v1";
 
+// The trailing pointer wires this coach to the doors-journal pill above the
+// prose (panel-review-2 merged doors-journal idea): a reader staring at a
+// locked door now knows the tome above tracks the doors it remembers, closing
+// the teaching loop between the lock and the journal.
 export const LOCK_COACH_COPY =
-  "Locked pages can be opened — the story will show you how.";
+  "Locked pages can be opened — the story will show you how. Watch the doors the tome remembers, in the journal above.";
 
 function webStorage(): Storage | undefined {
   if (typeof globalThis === "undefined") return undefined;

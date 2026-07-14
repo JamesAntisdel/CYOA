@@ -38,6 +38,14 @@ export type ReaderLayoutProps = {
   onSeeMap?: () => void;
   onFork?: () => void;
   /**
+   * "Share this ending" — the peak-emotion publish/share affordance on the
+   * terminal ending panel (panel-review-2 ranked idea 5). ReaderScreen wires
+   * it to the publish flow `/publish/[saveId]`. Optional: legacy hosts that
+   * don't supply it keep the panel's share slot hidden (the slot only renders
+   * when the handler is present).
+   */
+  onShareEnding?: () => void;
+  /**
    * The run's visible-choice history from `useTurn`, newest last. Drives the
    * ConsequenceReel ("your choices echoed") on the terminal ending panel.
    * Optional — layouts render no reel when absent or empty, so scripted /
@@ -177,10 +185,11 @@ type Nav = (() => void) | undefined;
  * fallbacks remain so hosts that only wire the legacy navigation keep
  * working buttons.
  *
- * `onShareEnding` has no current layout source — the share flow lives in a
- * later wave. Required because the panel's prop types live under
- * `exactOptionalPropertyTypes:true`, so we must omit keys whose value would
- * otherwise be `undefined`.
+ * `onShareEnding` is now wired: ReaderScreen supplies it (→ `/publish/
+ * [saveId]`), and it flows straight through here. Kept optional because the
+ * panel's prop types live under `exactOptionalPropertyTypes:true`, so we omit
+ * the key (rather than pass `undefined`) when no host supplies it — legacy
+ * hosts keep the share slot hidden.
  */
 export function endingPanelHandlers(props: {
   onOpenEndings?: Nav;
@@ -188,6 +197,7 @@ export function endingPanelHandlers(props: {
   onReturnHome?: Nav;
   onBeginAgain?: Nav;
   onSeeMap?: Nav;
+  onShareEnding?: Nav;
 }): {
   onBeginAgain?: () => void;
   onSeeMap?: () => void;
@@ -204,6 +214,7 @@ export function endingPanelHandlers(props: {
   const seeMap = props.onSeeMap ?? props.onOpenEndings;
   if (beginAgain) handlers.onBeginAgain = beginAgain;
   if (seeMap) handlers.onSeeMap = seeMap;
+  if (props.onShareEnding) handlers.onShareEnding = props.onShareEnding;
   if (props.onOpenLibrary) handlers.onClose = props.onOpenLibrary;
   return handlers;
 }

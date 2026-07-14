@@ -314,13 +314,19 @@ export function buildStoryBibleSection(digest: BibleDigest): string {
     }
   }
   if (digest.twists.length > 0) {
+    // The twist precondition is intentionally NOT rendered here: the R3.4
+    // ≤600-token digest budget has ~no headroom, and the load-bearing signals
+    // are (a) which twists are still held back and (b) HOW to fire one. The
+    // precondition stays server-side planning gravity, like cast bondHint.
     const twists = digest.twists
-      .map((twist) => {
-        const pre = clipBibleText(twist.precondition, BIBLE_LINE_HINT_MAX);
-        return `${clipBibleText(twist.label, BIBLE_LINE_LABEL_MAX)}${pre ? ` (needs: ${pre})` : ""}`;
-      })
+      .map((twist) => clipBibleText(twist.label, BIBLE_LINE_LABEL_MAX))
       .join("; ");
     lines.push(`TWISTS held back: ${twists}`);
+    // Consumption loop (mirror of the beatFired instruction): when a held-back
+    // twist actually lands in THIS scene's prose, report it so the engine marks
+    // it fired and the digest stops re-demanding it. Match is label-tolerant
+    // (fireTwistEvent normalizes), so echoing the twist's title resolves.
+    lines.push('When THIS scene reveals a held-back twist, set "twistFired" to its title.');
   }
   for (const entry of digest.outstanding) {
     if (entry.state === "promised") {

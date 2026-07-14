@@ -240,6 +240,28 @@ describe("foldRegistryEvents (SB4)", () => {
     const bible = bibleFixture();
     expect(foldRegistryEvents(bible, [])).toBe(bible);
   });
+
+  it("folds twist_fired: flips a pending twist to fired (so the digest stops nagging)", () => {
+    const bible = bibleFixture();
+    const folded = foldRegistryEvents(bible, [
+      { kind: "twist_fired", twistId: "drowned-bell", turn: 6 },
+    ]);
+    expect(folded.twists.find((t) => t.id === "drowned-bell")?.status).toBe("fired");
+    // Input untouched (pure).
+    expect(bible.twists.find((t) => t.id === "drowned-bell")?.status).toBe("pending");
+  });
+
+  it("folds twist_fired idempotently and ignores an unknown twist id", () => {
+    const bible = bibleFixture();
+    const once = foldRegistryEvents(bible, [
+      { kind: "twist_fired", twistId: "drowned-bell", turn: 6 },
+    ]);
+    const again = foldRegistryEvents(once, [
+      { kind: "twist_fired", twistId: "drowned-bell", turn: 9 },
+      { kind: "twist_fired", twistId: "no-such-twist", turn: 9 },
+    ]);
+    expect(again.twists.filter((t) => t.status === "fired")).toHaveLength(1);
+  });
 });
 
 // ---------------------------------------------------------------------------

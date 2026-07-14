@@ -5,6 +5,7 @@ import { v } from "convex/values";
 import { lintStoryGates } from "@cyoa/stories";
 
 import { canEnableMatureContent, type AccountRecord } from "./account";
+import { buildAnalyticsEvent, type AnalyticsMetricName } from "./analytics";
 import { evaluateTextPolicy } from "./contentPolicy";
 // updateDraft / validateSeed import their pure logic straight from ./creator
 // (liveCore only wraps the original create/publish/archive plans).
@@ -35,6 +36,41 @@ import {
 const accountId = v.id("accounts");
 const seedId = v.id("authored_seeds");
 const guestTokenHash = v.optional(v.string());
+
+/**
+ * Fire-and-forget `analytics_events` insert for the creator funnel (panel-2 —
+ * creatorFunctions previously fired ZERO events, leaving steering's creator-loop
+ * metrics unanswerable). Same discipline as game.ts's `insertStoryAnalytics` /
+ * storyBible's `insertBibleAnalytics`: never throws out of the caller, never
+ * blocks or fails the mutation. Event names are format-validated by
+ * `buildAnalyticsEvent` (dotted lowercase), not enum-restricted at runtime.
+ */
+async function insertCreatorAnalytics(
+  ctx: { db: { insert: (table: string, doc: any) => Promise<any> } },
+  input: {
+    eventName: string;
+    accountId?: string | undefined;
+    payload?: Record<string, unknown>;
+    now: number;
+  },
+): Promise<void> {
+  try {
+    await ctx.db.insert(
+      "analytics_events",
+      buildAnalyticsEvent({
+        eventName: input.eventName as AnalyticsMetricName,
+        ...(input.accountId ? { accountId: input.accountId } : {}),
+        payload: input.payload ?? {},
+        createdAt: input.now,
+      }),
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[creator] analytics insert failed event=${input.eventName} error=${message.slice(0, 200)}`,
+    );
+  }
+}
 
 export const listMine = queryGeneric({
   args: { accountId, guestTokenHash },
@@ -81,6 +117,12 @@ export const createDraft = mutationGeneric({
       now: Date.now(),
     });
     const id = await ctx.db.insert("authored_seeds", cleanDoc(draft));
+    await insertCreatorAnalytics(ctx, {
+      eventName: "creator.draft_created",
+      accountId: String(args.accountId),
+      payload: { seedId: String(id) },
+      now: Date.now(),
+    });
     return { seedId: id, seed: { ...draft, _id: id } };
   },
 });
@@ -232,6 +274,18 @@ export const publish = mutationGeneric({
       metadata,
     });
     await ctx.db.patch(args.seedId, cleanDoc(published));
+    await insertCreatorAnalytics(ctx, {
+      eventName: "creator.seed_published",
+      accountId: ownerRecord._id,
+      payload: {
+        seedId: String(args.seedId),
+        visibility: seedVisibility(published),
+        forkPolicy: seedForkPolicy(published),
+        remixed:
+          (seedFromDoc(seed) as { remixOfSeedId?: unknown }).remixOfSeedId !== undefined,
+      },
+      now: Date.now(),
+    });
     return { seedId: args.seedId, seed: { ...published, _id: args.seedId } };
   },
 });
@@ -385,6 +439,12 @@ export const remix = mutationGeneric({
       remixOfTitle: source.title,
     };
     const id = await ctx.db.insert("authored_seeds", cleanDoc(credited));
+    await insertCreatorAnalytics(ctx, {
+      eventName: "creator.seed_remixed",
+      accountId: String(args.accountId),
+      payload: { seedId: String(id), sourceSeedId: String(args.seedId), isOwner },
+      now,
+    });
     return { seedId: id, seed: { ...credited, _id: id } };
   },
 });

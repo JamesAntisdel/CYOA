@@ -57,6 +57,45 @@ test("ReaderScreen wires Begin again to a fresh same-story save with a cover fal
   assert.match(src, /onBeginAgain=\{\(\) => void beginAgain\(\)\}/, "the layout must receive onBeginAgain");
 });
 
+test("Begin again prefers PANEL-SERVER's restartRun before the client createSave fallback", () => {
+  const src = read("components/reading/ReaderScreen.tsx");
+  assert.match(
+    src,
+    /import \{ hasRemoteGameApi, restartRemoteRun \} from "\.\.\/\.\.\/lib\/gameApi";/,
+    "ReaderScreen must import the restartRun adapter",
+  );
+  // The server restart is attempted first (it copies seed identity off the
+  // ended save, fixing seeded / community runs); createSave is the fallback.
+  const restartAt = src.indexOf("restartRemoteRun({");
+  const createAt = src.indexOf("library.createSave(storyId");
+  assert.ok(restartAt > -1, "beginAgain must call restartRemoteRun");
+  assert.ok(createAt > -1 && restartAt < createAt, "restartRun must be attempted before the createSave fallback");
+  assert.match(
+    src,
+    /if \(restarted\?\.saveId\) \{\s*router\.push\(`\/read\/\$\{restarted\.saveId\}`\);/,
+    "a successful restart must open the new save's reader",
+  );
+
+  const api = read("lib/gameApi.ts");
+  assert.match(api, /"game:restartRun"/, "the adapter must call the game:restartRun mutation path");
+});
+
+test("the ending panel's Share slot is wired to the publish flow", () => {
+  const src = read("components/reading/ReaderScreen.tsx");
+  assert.match(
+    src,
+    /onShareEnding=\{\(\) => router\.push\(`\/publish\/\$\{saveId\}`\)\}/,
+    "Share this ending must route to /publish/[saveId]",
+  );
+  // The handler flows through the layout builder to every EndingPanel variant.
+  const types = read("components/reading/layouts/types.ts");
+  assert.match(
+    types,
+    /if \(props\.onShareEnding\) handlers\.onShareEnding = props\.onShareEnding;/,
+    "endingPanelHandlers must forward onShareEnding when a host supplies it",
+  );
+});
+
 test("ReaderScreen wires See-map to the per-save path map and Fork to run history", () => {
   const src = read("components/reading/ReaderScreen.tsx");
   assert.match(

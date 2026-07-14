@@ -13,9 +13,16 @@
  *     no externally visible UI, so they don't need to lift any state.
  *
  * Behavior mirrors `useLayerPlayback` for the bits we still need:
- *   - Web-only via `Platform.OS === 'web'` + `typeof Audio !== 'undefined'`.
- *     Native is a no-op; the returned state stays at `{ isPlaying: false,
- *     currentTime: 0, duration: 0, seek: noop }`.
+ *   - WEB: `Platform.OS === 'web'` + `typeof Audio !== 'undefined'` — owns an
+ *     HTMLAudio element (this file's original path, unchanged).
+ *   - NATIVE: routes through `expo-audio` (the same module AudioMix/nativeAudio
+ *     use) so narration keeps playing when the screen locks / the app
+ *     backgrounds — the core native win. The background-capable audio session
+ *     is installed by `configureNativeAudioMode()` (shared with AudioMix), and
+ *     the scrub bar's currentTime/duration/isPlaying flow up from the player's
+ *     `playbackStatusUpdate` events. seek → `seekTo`, pause/stop → `pause`,
+ *     cleanup → `remove`. Both platforms use separate refs; only one branch is
+ *     live per runtime, both Platform.OS-guarded.
  *   - Re-creates the `Audio` element when `uri` changes (scene transitions),
  *     and re-asserts play() in the same effect — the bug we fixed in
  *     AudioMix.tsx where the deps array missed `uri` cannot recur here
@@ -30,6 +37,13 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Platform } from "react-native";
+
+import {
+  configureNativeAudioMode,
+  createNativePlayer,
+  type NativeAudioPlayer,
+  type NativeAudioSubscription,
+} from "../components/media/nativeAudio";
 
 export type NarratorPlaybackInput = {
   /** Narrator clip URI. Absent → playback is idle. */
@@ -51,21 +65,14 @@ export type NarratorPlaybackInput = {
 };
 
 export type NarratorPlaybackState = {
-  /** True while the underlying element reports `!paused && !ended`. */
+  /** True while the underlying element/player reports it is playing. */
   isPlaying: boolean;
-  /** Current playback offset in seconds. Always 0 on native. */
+  /** Current playback offset in seconds. */
   currentTime: number;
-  /** Clip duration in seconds. 0 until `loadedmetadata` fires. Always 0 on native. */
+  /** Clip duration in seconds. 0 until metadata/status reports it. */
   duration: number;
-  /** Seek to a specific time (seconds). No-op on native or when no element. */
+  /** Seek to a specific time (seconds). No-op when no element/player. */
   seek: (time: number) => void;
-};
-
-const NOOP_STATE: NarratorPlaybackState = {
-  isPlaying: false,
-  currentTime: 0,
-  duration: 0,
-  seek: () => undefined,
 };
 
 export function useNarratorPlayback(input: NarratorPlaybackInput): NarratorPlaybackState {
@@ -74,6 +81,12 @@ export function useNarratorPlayback(input: NarratorPlaybackInput): NarratorPlayb
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const currentUriRef = useRef<string | null>(null);
+
+  // Native (expo-audio) refs. Separate from the web refs above; only one
+  // branch is ever live per runtime (guarded by Platform.OS in every effect).
+  const nativeRef = useRef<NativeAudioPlayer | null>(null);
+  const nativeUriRef = useRef<string | null>(null);
+  const nativeSubRef = useRef<NativeAudioSubscription | null>(null);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -208,26 +221,169 @@ export function useNarratorPlayback(input: NarratorPlaybackInput): NarratorPlayb
     }
   }, [paused, muted, volume, playbackRate]);
 
+  // Native Effect 1: create / tear down the expo-audio narrator player when
+  // uri changes. Mirrors web Effect 1. No-op on web. The player is created via
+  // the shared `createNativePlayer` helper (non-looping) so narration reuses
+  // the exact same expo-audio session AudioMix's layers do — meaning it keeps
+  // playing when the screen locks / the app backgrounds (the native win).
+  useEffect(() => {
+    if (Platform.OS === "web") return;
+    // Ensure the background-capable audio session exists before we play.
+    configureNativeAudioMode();
+
+    if (!uri || uri.length === 0) {
+      teardownNative(nativeRef, nativeUriRef, nativeSubRef);
+      setIsPlaying(false);
+      setCurrentTime(0);
+      setDuration(0);
+      return;
+    }
+    if (nativeUriRef.current === uri && nativeRef.current) return;
+
+    // Tear down the previous clip before mounting the new one.
+    teardownNative(nativeRef, nativeUriRef, nativeSubRef);
+
+    const player = createNativePlayer(uri, false, muted ? 0 : clamp01(volume));
+    nativeRef.current = player;
+    nativeUriRef.current = uri;
+
+    // Reset transport state; the status listener refills it as the clip loads.
+    setIsPlaying(false);
+    setCurrentTime(0);
+    setDuration(0);
+
+    if (player) {
+      // Apply the requested speed up front so the first playthrough is at the
+      // user's chosen rate rather than 1x followed by a step-change.
+      try {
+        player.setPlaybackRate(playbackRate);
+      } catch {
+        player.playbackRate = playbackRate;
+      }
+
+      // The status stream drives the scrub bar (currentTime/duration) and the
+      // isPlaying flag. It also reconciles state after an interruption (an
+      // incoming call pauses the session → `playing: false` arrives here) and
+      // after the clip finishes.
+      nativeSubRef.current = player.addListener("playbackStatusUpdate", (status) => {
+        if (typeof status.duration === "number" && Number.isFinite(status.duration)) {
+          setDuration(status.duration > 0 ? status.duration : 0);
+        }
+        if (typeof status.currentTime === "number" && Number.isFinite(status.currentTime)) {
+          setCurrentTime(status.currentTime);
+        }
+        if (status.didJustFinish) {
+          setIsPlaying(false);
+        } else if (typeof status.playing === "boolean") {
+          setIsPlaying(status.playing);
+        }
+      });
+
+      // Auto-play unless explicitly paused or muted — same gate as web.
+      if (!paused && !muted) {
+        player.play();
+      }
+    }
+
+    return () => {
+      teardownNative(nativeRef, nativeUriRef, nativeSubRef, player);
+    };
+    // `paused` / `muted` / `volume` are captured at creation; later changes
+    // flow through Native Effect 2 without recreating the player.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uri]);
+
+  // Native Effect 2: apply pause / mute / volume / rate changes without
+  // recreating the player. Mirrors web Effect 2. No-op on web.
+  useEffect(() => {
+    if (Platform.OS === "web") return;
+    const player = nativeRef.current;
+    if (!player) return;
+
+    player.volume = muted ? 0 : clamp01(volume);
+
+    if (player.playbackRate !== playbackRate) {
+      try {
+        player.setPlaybackRate(playbackRate);
+      } catch {
+        player.playbackRate = playbackRate;
+      }
+    }
+
+    if (paused || muted) {
+      player.pause();
+    } else {
+      player.play();
+    }
+  }, [paused, muted, volume, playbackRate]);
+
   const seek = useCallback((time: number) => {
-    if (Platform.OS !== "web") return;
-    const audio = audioRef.current;
-    if (!audio) return;
     if (!Number.isFinite(time)) return;
-    const d = Number.isFinite(audio.duration) ? audio.duration : 0;
+
+    if (Platform.OS === "web") {
+      const audio = audioRef.current;
+      if (!audio) return;
+      const d = Number.isFinite(audio.duration) ? audio.duration : 0;
+      const clamped = Math.max(0, Math.min(d > 0 ? d : time, time));
+      try {
+        audio.currentTime = clamped;
+      } catch {
+        // Some browsers throw when seeking before metadata is loaded;
+        // swallow — the next timeupdate will reconcile state.
+        return;
+      }
+      setCurrentTime(clamped);
+      return;
+    }
+
+    // Native: seek through expo-audio. `seekTo` returns a promise that can
+    // reject if the item isn't seekable yet — swallow; the next status update
+    // reconciles currentTime.
+    const player = nativeRef.current;
+    if (!player) return;
+    const d = Number.isFinite(player.duration) ? player.duration : 0;
     const clamped = Math.max(0, Math.min(d > 0 ? d : time, time));
     try {
-      audio.currentTime = clamped;
+      void player.seekTo(clamped)?.catch?.(() => undefined);
     } catch {
-      // Some browsers throw when seeking before metadata is loaded;
-      // swallow — the next timeupdate will reconcile state.
       return;
     }
     setCurrentTime(clamped);
   }, []);
 
-  if (Platform.OS !== "web") return NOOP_STATE;
-
   return { isPlaying, currentTime, duration, seek };
+}
+
+/**
+ * Tear down the native player, its status subscription, and the uri ref.
+ * When `only` is supplied, the refs are cleared only if they still point at
+ * that player (guards against a stale cleanup racing a newer clip).
+ */
+function teardownNative(
+  playerRef: { current: NativeAudioPlayer | null },
+  uriRef: { current: string | null },
+  subRef: { current: NativeAudioSubscription | null },
+  only?: NativeAudioPlayer | null,
+): void {
+  const player = only ?? playerRef.current;
+  if (only && playerRef.current !== only) {
+    // A newer clip already replaced this player; just stop the old instance.
+    if (player) {
+      player.pause();
+      player.remove();
+    }
+    return;
+  }
+  if (subRef.current) {
+    subRef.current.remove();
+    subRef.current = null;
+  }
+  if (player) {
+    player.pause();
+    player.remove();
+  }
+  playerRef.current = null;
+  uriRef.current = null;
 }
 
 function clamp01(v: number): number {

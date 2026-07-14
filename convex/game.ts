@@ -13,6 +13,7 @@ import {
   evaluateLlmSceneChoices,
   evaluateLlmSceneChoicesWithRegistry,
   findArcBeat,
+  fireTwistEvent,
   getStat,
   hasItemTolerant,
   keySeedingPlan,
@@ -43,6 +44,7 @@ import {
   type UnlockedEnding,
 } from "@cyoa/engine";
 import { mutationGeneric, queryGeneric } from "convex/server";
+import type { GenericId } from "convex/values";
 import { v } from "convex/values";
 
 import type { ContentPolicyContext, ContentPolicySummary } from "@cyoa/shared";
@@ -257,7 +259,33 @@ export const createSave = mutationGeneric({
     // generation is skipped. Set by `dailyFunctions:startDaily`.
     dailyId: v.optional(v.string()),
   },
-  handler: async (ctx, args) => {
+  handler: async (ctx, args) => createSaveHandler(ctx, args),
+});
+
+type CreateSaveHandlerArgs = {
+  accountId: GenericId<"accounts">;
+  guestTokenHash?: string | undefined;
+  storyId: string;
+  mode: "story" | "hardcore";
+  rngSeed?: string | undefined;
+  voiceId?: string | undefined;
+  seedPremise?: string | undefined;
+  seedTitle?: string | undefined;
+  seedTone?: string | undefined;
+  seedNpcs?: Array<{ name: string; role: NpcRole; description: string }> | undefined;
+  keepsakeId?: string | undefined;
+  dailyId?: string | undefined;
+};
+
+/**
+ * Core createSave logic, shared by the public `createSave` mutation and
+ * `restartRun` (which rebuilds these args from an ended save). Extracted as a
+ * plain async function because a Convex mutation cannot call another mutation —
+ * "Begin again" must reproduce every side effect createSave has (bible
+ * schedule, seed policy gates, opening scene record) so a restarted seeded run
+ * is indistinguishable from a fresh launch.
+ */
+export async function createSaveHandler(ctx: any, args: CreateSaveHandlerArgs) {
     const account = await loadAndAuthorizeAccount(ctx, args.accountId, args.guestTokenHash);
 
     // H1 abuse fix: cap save creation per account BEFORE the turn-0 bible
@@ -509,6 +537,32 @@ export const createSave = mutationGeneric({
       };
     }
     const newSaveId = await ctx.db.insert("saves", cleanDoc(save));
+    // Creator funnel (Req 22.4): a community-shelf launch fires `seed.launched`
+    // so publish→launch conversion is answerable. Fire-and-forget; `external`
+    // separates other readers from owner self-play (mirrors the play-time
+    // attribution `selfPlay` flag). Non-seed launches (starters, open canvas)
+    // never parse an id and skip this.
+    const launchedSeedId = parseAuthoredSeedStoryId(args.storyId);
+    if (launchedSeedId) {
+      let external = true;
+      try {
+        const seedDoc = await ctx.db.get(launchedSeedId as any);
+        const ownerAccountId = seedDoc
+          ? String((seedDoc as { ownerAccountId?: unknown }).ownerAccountId ?? "")
+          : "";
+        external = ownerAccountId.length > 0 && ownerAccountId !== String(args.accountId);
+      } catch {
+        // tolerant — a missing/garbage seed row still lets the launch proceed
+      }
+      await insertStoryAnalytics(ctx, {
+        eventName: "seed.launched",
+        accountId: String(args.accountId),
+        saveId: newSaveId,
+        storyId: args.storyId,
+        payload: { seedId: launchedSeedId, external },
+        now,
+      });
+    }
     // Story Bible (story-bible R1.1/R1.6): schedule the dedicated background
     // bible call for llm-driven saves only — it races turn 1 behind the
     // opening cinematic and NEVER delays this mutation or any reader-facing
@@ -610,6 +664,91 @@ export const createSave = mutationGeneric({
       sceneId,
       scene: projectCurrentScene({ ...save, _id: newSaveId, currentSceneId: sceneId }, story),
     };
+}
+
+/**
+ * Reconstruct the reader-authored seed cast from an ended open-canvas premise
+ * save so "Begin again" re-seeds the SAME cast. The seedNpcs arg is never
+ * persisted as a save field (schema is integrator-reserved), only baked into
+ * `state.npcs` at creation with `knownFacts: [description]` and NO `description`
+ * field — LLM-spawned NPCs get the inverse (a `description` field, `knownFacts`
+ * starts empty). We reconstruct only NPCs matching the createSave shape, and
+ * ONLY for premise runs (community `authored_seed:<id>` runs re-derive their
+ * authored cast from the seed doc on reload, so they pass none). Every entry is
+ * pre-filtered to the exact validation `createSaveHandler` will re-apply
+ * (name allowlist, description 8–200, unique slug) so the restart can never
+ * throw on a reconstructed cast — anything that wouldn't pass is dropped.
+ */
+export function reconstructSeedNpcs(
+  state: PlayerState,
+): Array<{ name: string; role: NpcRole; description: string }> {
+  const npcs = state.npcs ?? {};
+  const out: Array<{ name: string; role: NpcRole; description: string }> = [];
+  const seenSlugs = new Set<string>();
+  for (const npc of Object.values(npcs)) {
+    if (!npc || typeof npc !== "object") continue;
+    // Skip LLM-spawned NPCs — they carry a `description` field; seed-cast NPCs
+    // do not (their description lives as knownFacts[0]).
+    if ((npc as { description?: unknown }).description !== undefined) continue;
+    const name = typeof npc.name === "string" ? npc.name.trim() : "";
+    if (name.length === 0 || name.length > 40) continue;
+    if (!/^[\p{L}\p{N} '\-]{1,40}$/u.test(name)) continue;
+    const description = Array.isArray(npc.knownFacts)
+      ? (npc.knownFacts.find((f) => typeof f === "string" && f.trim().length >= 8) ?? "")
+      : "";
+    const trimmedDesc = description.trim();
+    if (trimmedDesc.length < 8 || trimmedDesc.length > 200) continue;
+    const slug = slugifyNpcName(name);
+    if (seenSlugs.has(slug)) continue;
+    seenSlugs.add(slug);
+    out.push({ name, role: npc.role, description: trimmedDesc });
+    if (out.length >= 8) break;
+  }
+  return out;
+}
+
+/**
+ * "Begin again" (panel-2 ranked idea 1). Server-side restart that copies an
+ * ended save's SEED IDENTITY onto a fresh save with the same storyId, so a
+ * community-seed run (storyId `authored_seed:<id>`) and a SeedStoryFlow premise
+ * run both restart as the SAME story — fixing the client dead-ends where the
+ * old restart resolved the title via `listStarterStories()` (which excludes
+ * `authored_seed:<id>` and the open-canvas shell).
+ *
+ * Wire shape (BC2 — PANEL-CLIENT consumes this):
+ *   args:   { accountId, saveId, guestTokenHash? }
+ *   return: { saveId, sceneId, scene }   // identical shape to game:createSave —
+ *           the client navigates to the new saveId exactly as after createSave.
+ *
+ * Copies: storyId, mode, voiceId, seedPremise/seedTitle/seedTone (persisted
+ * fields) + the reconstructed seed cast (premise runs only). Does NOT carry the
+ * keepsake or dailyId — a restart is a fresh run of the same premise, not a new
+ * keepsake carry or a second daily attempt (the daily one-per-day guard owns
+ * that). Ownership is enforced by `assertCanAccessSave` + the shared
+ * `createSaveHandler`'s own authorization.
+ */
+export const restartRun = mutationGeneric({
+  args: { accountId, saveId, guestTokenHash },
+  handler: async (ctx, args) => {
+    const saveDoc = await ctx.db.get(args.saveId);
+    if (!saveDoc) throw new AppError("save_not_found");
+    const ended = saveFromDoc(saveDoc);
+    assertCanAccessSave(args.accountId, ended);
+    const seedNpcs =
+      typeof ended.seedPremise === "string" && ended.seedPremise.length > 0
+        ? reconstructSeedNpcs(ended.state)
+        : [];
+    return createSaveHandler(ctx, {
+      accountId: args.accountId,
+      ...(args.guestTokenHash !== undefined ? { guestTokenHash: args.guestTokenHash } : {}),
+      storyId: ended.storyId,
+      mode: ended.mode,
+      ...(ended.voiceId !== undefined ? { voiceId: ended.voiceId } : {}),
+      ...(ended.seedPremise !== undefined ? { seedPremise: ended.seedPremise } : {}),
+      ...(ended.seedTitle !== undefined ? { seedTitle: ended.seedTitle } : {}),
+      ...(ended.seedTone !== undefined ? { seedTone: ended.seedTone } : {}),
+      ...(seedNpcs.length > 0 ? { seedNpcs } : {}),
+    });
   },
 });
 
@@ -3511,6 +3650,16 @@ export async function applyBibleTurnIntegration(
       : { results: [] as LlmSceneChoiceVisibility[], registryEvents: [] as RegistryEvent[] };
     const registryEvents = [...evaluated.registryEvents];
 
+    // 1b. Twist firing (story-bible twist loop): the model sets `twistFired`
+    //     when a PENDING twist lands in this scene's prose. Slug-match it
+    //     against the bible's pending twists and fold a `twist_fired` event so
+    //     the digest stops re-demanding an already-revealed twist. Tolerant
+    //     (BC5): bible-less save / unknown / already-fired id → no event.
+    if (bible && input.proposal) {
+      const twistEvent = fireTwistEvent(bible, input.proposal.twistFired, input.turnNumber);
+      if (twistEvent) registryEvents.push(twistEvent);
+    }
+
     // 2. Promise keeping (R5.1): a promised key ungranted ≥3 completed turns
     //    after its promise seeds deterministically through the existing
     //    delayed-thread store — the key arrives narrated as a fired-thread
@@ -3580,7 +3729,12 @@ export async function applyBibleTurnIntegration(
                     eventName: "bible.gate_phantom_unlocked",
                     payload: { itemId: event.itemId, turn: event.turn },
                   }
-                : null;
+                : event.kind === "twist_fired"
+                  ? {
+                      eventName: "bible.twist_fired",
+                      payload: { twistId: event.twistId, turn: event.turn },
+                    }
+                  : null;
       if (!mapped) continue; // granted / door_opened fold silently (no §6 event)
       await insertStoryAnalytics(ctx, {
         eventName: mapped.eventName,

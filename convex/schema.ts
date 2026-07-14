@@ -640,6 +640,21 @@ export default defineSchema({
     updatedAt: v.number(),
   }).index("by_key", ["key"]),
 
+  // Expo push tokens for the "candle re-lights" re-entry nudge (SERVER half in
+  // convex/pushNotifications.ts). One row per device token; a token re-points to
+  // whichever account last registered it. Absent for readers who never opted
+  // into push. Never reaches the client. Pruned when Expo reports
+  // DeviceNotRegistered.
+  push_tokens: defineTable({
+    accountId: v.id("accounts"),
+    token: v.string(),
+    platform: v.optional(v.union(v.literal("ios"), v.literal("android"))),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_account", ["accountId"])
+    .index("by_token", ["token"]),
+
   media_credits_ledger: defineTable({
     accountId: v.id("accounts"),
     delta: v.number(),

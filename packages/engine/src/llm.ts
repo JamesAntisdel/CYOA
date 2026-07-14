@@ -347,6 +347,15 @@ export const llmSceneOutputSchema = z
      */
     beatFired: clampedString({ min: 1, max: 48 }).optional(),
     /**
+     * Twist id the model claims this scene fired (story-bible twist loop —
+     * exact mirror of `beatFired`). The convex turn integration slug-matches it
+     * against the bible's PENDING twists and folds a `twist_fired` event so the
+     * digest stops re-demanding an already-revealed twist. Clamped + tolerant:
+     * an unknown / already-fired id is simply never matched (BC5). Ignored on
+     * bible-less saves.
+     */
+    twistFired: clampedString({ min: 1, max: 48 }).optional(),
+    /**
      * Keepsake earned at this ending (Requirement 12.1, W3). Honored ONLY on
      * terminal scenes — the transform below strips it when `terminal` is
      * absent/null so a non-terminal scene can never mint a keepsake (the engine
