@@ -1,5 +1,6 @@
 import { ScrollView, View } from "react-native";
 
+import { AppNav } from "../../components/navigation";
 import { ProfileArchetypes } from "../../components/auth/ProfileArchetypes";
 import { Chip, Stamp, Surface, Text } from "../../components/primitives";
 import { useAccountProfile } from "../../hooks/useAccountProfile";
@@ -34,6 +35,12 @@ export default function ProfileRoute() {
         padding: isPhone ? tokens.spacing.md : tokens.spacing.lg,
       }}
     >
+      {/* Nav (incl. the candle-glyph home button) — /profile is the magic-link
+          landing page, so without this a signed-in reader has no way back. */}
+      <View style={{ maxWidth: 900, width: "100%" }}>
+        <AppNav />
+      </View>
+
       <Surface padded style={{ gap: tokens.spacing.sm, maxWidth: 640, width: "100%" }}>
         <Stamp>Profile</Stamp>
         <Text variant="title">{profile ? "Your reader" : "Guest reader"}</Text>
