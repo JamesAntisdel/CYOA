@@ -328,6 +328,24 @@ export function buildStoryBibleSection(digest: BibleDigest): string {
     // (fireTwistEvent normalizes), so echoing the twist's title resolves.
     lines.push('When THIS scene reveals a held-back twist, set "twistFired" to its title.');
   }
+  // FACTIONS (Panel-2 W3). Standing is a HIDDEN `rep:<id>` stat (stats.ts) so
+  // the whole faction-gating UX rides the existing near-miss / humanized-hint
+  // path — this block only names the ids + in-world hints and how to move /
+  // gate on them. Absent on faction-less digests → byte-identical (BC9). The
+  // rep NUMBER and thresholds NEVER reach the reader (BC10): the model is told
+  // to gate with `stat_at_least`/`stat_at_most` + an in-world `lockedHint`.
+  if (digest.factions && digest.factions.length > 0) {
+    lines.push("FACTIONS (standing is a HIDDEN stat rep:<id>, range -10..+10, 0 = neutral):");
+    for (const faction of digest.factions) {
+      const hint = clipBibleText(faction.standingHints, BIBLE_LINE_HINT_MAX);
+      lines.push(
+        `- rep:${faction.id} "${clipBibleText(faction.label, BIBLE_LINE_LABEL_MAX)}"${hint ? ` — ${hint}` : ""}`,
+      );
+    }
+    lines.push(
+      "Shift a standing with a `stat` effect on `rep:<id>` (±, and narrate the cause). Gate or color a choice on standing with `stat_at_least`/`stat_at_most` on `rep:<id>` plus an in-world `lockedHint` — NEVER name the rep stat, its id, or a number in the reader-facing text.",
+    );
+  }
   for (const entry of digest.outstanding) {
     if (entry.state === "promised") {
       lines.push(

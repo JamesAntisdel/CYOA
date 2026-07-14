@@ -42,6 +42,7 @@ import {
   mergeBibleRefresh,
   validateProposedBible,
   type BibleCast,
+  type BibleFaction,
   type BibleProtagonist,
   type BibleDoor,
   type BibleKey,
@@ -110,6 +111,7 @@ export function buildStoryBiblePrompt(input: StoryBiblePromptInput): string {
     '- "lockPlan": 2-5 entries { "id": kebab-slug (≤48), "label": string (≤80, the door/obstacle), "keyId": MUST be one of the keyRegistry ids, "gateBand": "mid" | "late", "note": string (≤120) }. Every door\'s key must surface in an earlier-or-equal band than its gate.',
     '- "cast": 2-5 entries { "id": kebab-slug (≤48), "label": string (≤80, name + role), "want": string (≤120), "secret": string (≤120), "bondHint": string (≤120, how the reader might earn or break their trust), "appearance": string (≤120, what the reader SEES — build, hair, dress, age-look) }.',
     '- "twists": 2-4 entries { "id": kebab-slug (≤48), "label": string (≤80), "precondition": string (≤120, what must be true before this twist can fire) }.',
+    '- "factions": 0-4 entries { "id": kebab-slug (≤48), "label": string (≤80, the group name), "standingHints": string (≤120, what earning or losing their favor looks like in-world) }. Groups the reader can win over or antagonize — a court, a guild, a gang, a crew. Standing becomes a hidden score the narrator can gate choices on. Omit (empty array) if this premise has no meaningful factions.',
     '- "endingHints": 2-4 entries { "endingId": kebab-slug (≤48, a likely ending), "requires": string (≤160, sketch of what reaching it takes) }.',
     '- "motifs": 3-6 strings (≤40 each) — imagery and tone anchors.',
     "",
@@ -261,6 +263,11 @@ export function sanitizeBibleStrings(
     label: safeLabel(twist.label, twist.id),
     precondition: policySafe(twist.precondition, context),
   }));
+  const factions: BibleFaction[] | undefined = bible.factions?.map((faction) => ({
+    ...faction,
+    label: safeLabel(faction.label, faction.id),
+    standingHints: policySafe(faction.standingHints, context),
+  }));
   const endingHints = bible.endingHints.map((hint) => ({
     ...hint,
     requires: policySafe(hint.requires, context),
@@ -268,7 +275,18 @@ export function sanitizeBibleStrings(
   const motifs = bible.motifs
     .map((motif) => policySafe(motif, context))
     .filter((motif) => motif.length > 0);
-  return { ...bible, keyRegistry, lockPlan, cast, twists, endingHints, motifs };
+  return {
+    ...bible,
+    keyRegistry,
+    lockPlan,
+    cast,
+    twists,
+    endingHints,
+    motifs,
+    // Only re-attach factions when the source bible carried them (BC9 —
+    // exactOptionalPropertyTypes: never widen a faction-less bible to []).
+    ...(factions ? { factions } : {}),
+  };
 }
 
 /**
@@ -303,6 +321,12 @@ export function readStoryBible(raw: unknown): StoryBible | null {
       ? (obj.endingHints as StoryBible["endingHints"])
       : [],
     motifs: Array.isArray(obj.motifs) ? (obj.motifs as string[]) : [],
+    // Factions (Panel-2 W3): opaque round-trip — validateProposedBible already
+    // clamped them at generation. Absent on legacy rows → field omitted
+    // (exactOptionalPropertyTypes; faction-less behavior, BC9).
+    ...(Array.isArray(obj.factions) && obj.factions.length > 0
+      ? { factions: obj.factions as BibleFaction[] }
+      : {}),
     ...(protagonist ? { protagonist } : {}),
     source: "llm",
     version: 1,

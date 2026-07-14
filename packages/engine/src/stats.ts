@@ -56,6 +56,104 @@ function clamp(value: number, min?: number, max?: number): number {
 }
 
 // =============================================================================
+// Faction reputation (Panel-2 Wave 3). A lightweight CONVENTION over the
+// existing hidden-stat system — NO new engine state. A faction standing is an
+// attribute keyed `rep:<factionId>`, held HIDDEN (never in the HUD) with a
+// signed range so the reader can fall out of favor as well as climb. The bible
+// `factions` section names the ids + in-world standingHints; the scene prompt
+// tells the model to shift a standing with a plain `stat` effect on `rep:<id>`
+// and to gate/color choices with `stat_at_least`/`stat_at_most` on `rep:<id>` —
+// so the whole faction-gating UX rides the EXISTING near-miss / humanized-hint
+// path (phrase-only, BC10) for free.
+//
+// The generic llm-path `ensureLlmStatAttribute` would register a first-seen
+// `rep:*` stat VISIBLE with 0..5 bounds — which both leaks the standing into
+// the HUD and clips the negative half. `ensureFactionRepAttributes`
+// pre-registers the correct hidden/signed bounds BEFORE the delta applies, and
+// `normalizeFactionReps` is the after-the-fact safety net (covers reps first
+// seen via a fired thread). Both are pure-ish (mutate state), idempotent, and
+// emit no diff — a visibility/bounds correction is not a reader-facing change.
+// =============================================================================
+
+/** Attribute-id prefix marking a hidden faction-standing stat. */
+export const FACTION_REP_PREFIX = "rep:";
+/** Signed standing range: −10 (sworn enemy) … +10 (sworn ally); 0 = neutral. */
+export const FACTION_REP_MIN = -10;
+export const FACTION_REP_MAX = 10;
+
+/** True when `statId` is a `rep:<factionId>` faction-standing stat (non-empty id). */
+export function isFactionRepStat(statId: string): boolean {
+  return (
+    statId.startsWith(FACTION_REP_PREFIX) && statId.length > FACTION_REP_PREFIX.length
+  );
+}
+
+/** The `rep:<factionId>` attribute id for a bible faction id. */
+export function factionRepStatId(factionId: string): string {
+  return `${FACTION_REP_PREFIX}${factionId}`;
+}
+
+/**
+ * Pre-register any `rep:*` faction stat referenced by this turn's `stat`
+ * effects as a HIDDEN attribute with the signed faction bounds, so the delta
+ * that follows clamps into [−10, 10] (not the generic 0..5) and never surfaces
+ * in the HUD. Accepts a loose effect shape so both engine `Effect`s and parsed
+ * llm effects fit. No-op for already-registered stats.
+ */
+export function ensureFactionRepAttributes(
+  state: PlayerState,
+  effects: ReadonlyArray<{ kind: string; statId?: string }>,
+): void {
+  for (const effect of effects) {
+    if (effect.kind !== "stat" || typeof effect.statId !== "string") continue;
+    if (!isFactionRepStat(effect.statId)) continue;
+    if (state.attributes[effect.statId]) continue;
+    state.attributes[effect.statId] = {
+      id: effect.statId,
+      label: humanizeFactionRepLabel(effect.statId),
+      value: 0,
+      visibility: "hidden",
+      min: FACTION_REP_MIN,
+      max: FACTION_REP_MAX,
+    };
+  }
+}
+
+/**
+ * Re-flag every `rep:*` attribute as hidden with the signed faction bounds and
+ * re-clamp its value into range — the safety net for reps first created by the
+ * generic stat path (VISIBLE 0..5) before `ensureFactionRepAttributes` ran
+ * (e.g. a thread-fired rep delta). Idempotent; only rewrites attributes that
+ * are actually out of spec.
+ */
+export function normalizeFactionReps(state: PlayerState): void {
+  for (const [id, attribute] of Object.entries(state.attributes)) {
+    if (!isFactionRepStat(id)) continue;
+    const outOfSpec =
+      attribute.visibility !== "hidden" ||
+      attribute.min !== FACTION_REP_MIN ||
+      attribute.max !== FACTION_REP_MAX;
+    if (!outOfSpec) continue;
+    state.attributes[id] = {
+      ...attribute,
+      visibility: "hidden",
+      min: FACTION_REP_MIN,
+      max: FACTION_REP_MAX,
+      value: clamp(attribute.value, FACTION_REP_MIN, FACTION_REP_MAX),
+    };
+  }
+}
+
+function humanizeFactionRepLabel(statId: string): string {
+  const raw = statId.slice(FACTION_REP_PREFIX.length).replace(/[_-]+/g, " ").trim();
+  if (raw.length === 0) return statId;
+  return raw
+    .split(/\s+/u)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(" ");
+}
+
+// =============================================================================
 // skill_check resolution (Requirement 31.5).
 //
 // `skill_check` is a declarative effect — it does not mutate state directly.

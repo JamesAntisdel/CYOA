@@ -83,6 +83,36 @@ export function validateKeepsake(raw: unknown): Keepsake | null {
 }
 
 /**
+ * Streak-milestone interval (days). Panel-2 Wave 3: a Daily streak mints a
+ * keepsake every 7 unbroken days (7, 14, 21 …) — 7 is the headline reward, and
+ * the recurring cadence keeps the loop rewarding for long-streak readers.
+ */
+export const STREAK_KEEPSAKE_INTERVAL = 7;
+
+/**
+ * The reward keepsake for reaching a Daily streak of `streakCount` days, or null
+ * when `streakCount` is not a positive multiple of `STREAK_KEEPSAKE_INTERVAL`.
+ * Pure + deterministic + reward-shaped: the id is unique per milestone so a
+ * 7-day and a 14-day keepsake both persist (dedupe keys off id). The reward IS
+ * gameplay — the keepsake is carriable into a future run like any other
+ * ("story first"). All copy is all-ages. Length clamps mirror the schema.
+ */
+export function streakKeepsake(streakCount: number): Keepsake | null {
+  if (!Number.isFinite(streakCount)) return null;
+  const n = Math.floor(streakCount);
+  if (n < STREAK_KEEPSAKE_INTERVAL || n % STREAK_KEEPSAKE_INTERVAL !== 0) return null;
+  const weeks = n / STREAK_KEEPSAKE_INTERVAL;
+  const id = clampLen(slugify(`daily-streak-${n}`) || `daily-streak-${n}`, ID_MAX);
+  const label = clampLen(`${n}-Day Ember`, LABEL_MAX);
+  const weekNote = weeks > 1 ? ` — ${weeks} weeks unbroken` : "";
+  const description = clampLen(
+    `A steady flame you kept lit ${n} days running${weekNote}. Carry it, and the dark keeps its distance a while longer.`,
+    DESCRIPTION_MAX,
+  );
+  return { id, label, description };
+}
+
+/**
  * Dedupe a list of keepsakes by id (Requirement 12.1 — account-scoped, dedup by
  * id). First occurrence wins; input order is otherwise preserved. Skips
  * entries missing an id defensively.

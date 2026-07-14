@@ -3,8 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   KEEPSAKE_CARRIED,
   KEEPSAKE_GRANTED,
+  STREAK_KEEPSAKE_INTERVAL,
   deriveDefaultKeepsake,
   dedupeKeepsakes,
+  streakKeepsake,
   validateKeepsake,
 } from "../keepsakes";
 
@@ -80,5 +82,39 @@ describe("analytics event constants (R16.1)", () => {
   it("expose the granted / carried event names", () => {
     expect(KEEPSAKE_GRANTED).toBe("keepsake.granted");
     expect(KEEPSAKE_CARRIED).toBe("keepsake.carried");
+  });
+});
+
+describe("streakKeepsake (Panel-2 W3 daily streak reward)", () => {
+  it("mints nothing below the first milestone", () => {
+    for (const n of [0, 1, 3, 6]) expect(streakKeepsake(n)).toBeNull();
+  });
+
+  it("mints the headline 7-day keepsake at a 7-day streak", () => {
+    const k = streakKeepsake(7);
+    expect(k).not.toBeNull();
+    expect(k!.id).toBe("daily-streak-7");
+    expect(k!.label).toBe("7-Day Ember");
+    expect(k!.description.length).toBeGreaterThan(0);
+    expect(k!.description.length).toBeLessThanOrEqual(160);
+  });
+
+  it("mints a distinct keepsake at each further weekly milestone", () => {
+    const seven = streakKeepsake(7)!;
+    const fourteen = streakKeepsake(14)!;
+    expect(fourteen.id).toBe("daily-streak-14");
+    expect(fourteen.id).not.toBe(seven.id);
+    expect(fourteen.description).toContain("2 weeks");
+  });
+
+  it("returns null between milestones and on non-finite input", () => {
+    expect(streakKeepsake(8)).toBeNull();
+    expect(streakKeepsake(13)).toBeNull();
+    expect(streakKeepsake(NaN)).toBeNull();
+    expect(streakKeepsake(-7)).toBeNull();
+  });
+
+  it("uses a 7-day interval", () => {
+    expect(STREAK_KEEPSAKE_INTERVAL).toBe(7);
   });
 });

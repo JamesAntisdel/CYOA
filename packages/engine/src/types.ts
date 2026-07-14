@@ -78,6 +78,15 @@ export type NpcState = {
   flags: NpcFlagMap;
   /** Optional reference to a generated portrait asset (the image-gen agent populates this). */
   portraitAssetId?: string;
+  /**
+   * Slug of the linked story-bible cast member (Panel-2 Wave 3). The bible's
+   * `cast` sheet (want/secret/bondHint/appearance) and the live `npcs` roster
+   * are disjoint namespaces; `linkCastIds` (npcs.ts) stamps this once, by slug,
+   * so the two can be paired downstream (prompt/media). Optional + additive:
+   * legacy rosters and unlinked NPCs omit it entirely (BC9) — no migration,
+   * no schema bump (the save state is an opaque blob).
+   */
+  castId?: string;
 };
 
 export const NPC_DISPOSITION_MIN = -100;

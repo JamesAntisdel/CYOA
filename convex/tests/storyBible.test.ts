@@ -69,6 +69,8 @@ describe("buildStoryBiblePrompt", () => {
     expect(prompt).toContain('"lockPlan": 2-5 entries');
     expect(prompt).toContain('"cast": 2-5 entries');
     expect(prompt).toContain('"twists": 2-4 entries');
+    expect(prompt).toContain('"factions": 0-4 entries');
+    expect(prompt).toContain('"standingHints": string (≤120');
     // Character-consistency §1/§2: the model must fix a protagonist identity
     // and give each cast member a visible appearance descriptor.
     expect(prompt).toContain('"protagonist"');
@@ -143,6 +145,19 @@ describe("sanitizeBibleStrings (R2.3)", () => {
     expect(out.keyRegistry[1]?.opensHint).toBe("passage across");
     expect(bible.keyRegistry[0]?.opensHint).toBe("there is no hope beyond this door");
   });
+
+  it("neutralizes faction standingHints and falls faction labels back to ids (Panel-2 W3)", () => {
+    const bible = bibleFixture({
+      factions: [
+        { id: "iron-court", label: "The Iron Court", standingHints: "there is no hope beyond this door" },
+        { id: "guild", label: "Ferryman's Guild", standingHints: "pay fares honestly to rise" },
+      ],
+    });
+    const out = sanitizeBibleStrings(bible);
+    expect(out.factions?.[0]?.standingHints).toBe("");
+    expect(out.factions?.[0]?.label).toBe("The Iron Court");
+    expect(out.factions?.[1]?.standingHints).toBe("pay fares honestly to rise");
+  });
 });
 
 describe("readStoryBible", () => {
@@ -183,6 +198,15 @@ describe("readStoryBible", () => {
     const read = readStoryBible(legacy);
     expect(read).not.toBeNull();
     expect(read?.protagonist).toBeUndefined();
+  });
+
+  it("round-trips factions, and omits them on a legacy row (Panel-2 W3)", () => {
+    const factions = [
+      { id: "iron-court", label: "The Iron Court", standingHints: "favor buys writs" },
+    ];
+    expect(readStoryBible(bibleFixture({ factions }))?.factions).toEqual(factions);
+    // A stored row with no factions reads back with the field omitted (BC9).
+    expect(readStoryBible({ keyRegistry: bibleFixture().keyRegistry })?.factions).toBeUndefined();
   });
 });
 

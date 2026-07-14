@@ -18,8 +18,14 @@ import { popDueDelayedEffects, scheduleThread } from "./delayed";
 import { unlockCurrentEnding } from "./endings";
 import { getFlag, setFlag, unsetFlag } from "./flags";
 import { addItem, hasItem, hasItemTolerant, recordEverGranted, removeItem } from "./inventory";
+import { fireBondCrossings } from "./npcs";
 import { cloneState } from "./state";
-import { applyStatDelta, getStat } from "./stats";
+import {
+  applyStatDelta,
+  ensureFactionRepAttributes,
+  getStat,
+  normalizeFactionReps,
+} from "./stats";
 import type {
   Effect,
   EngineContext,
@@ -568,7 +574,14 @@ export function advanceLlmTurnCursor(input: {
     // delayNodes=1 fires now, and its fired effects clamp identically to direct
     // effects.
     tickDelayedThreads(next, diffs, events);
-    if (applyChoiceEffects) applyEffects(next, choice.effects ?? [], diffs);
+    if (applyChoiceEffects) {
+      // Faction reputation (Panel-2 W3): pre-register any `rep:<factionId>`
+      // stat this choice touches as a HIDDEN signed attribute BEFORE the delta
+      // applies, so it clamps into [−10, 10] and never leaks into the HUD (the
+      // generic ensureLlmStatAttribute would register it VISIBLE 0..5).
+      ensureFactionRepAttributes(next, choice.effects ?? []);
+      applyEffects(next, choice.effects ?? [], diffs);
+    }
     events.push({ kind: "choice_applied", choiceId });
     appliedChoiceId = choiceId;
     next.turnNumber += 1;
@@ -581,6 +594,19 @@ export function advanceLlmTurnCursor(input: {
     events.push({ kind: "choice_applied", choiceId });
     appliedChoiceId = choiceId;
     next.turnNumber += 1;
+  }
+
+  // Depth mechanics settle once per COMPLETED turn (Panel-2 W3), after every
+  // effect + fired thread has landed this turn's disposition / stat changes:
+  //   - normalizeFactionReps re-flags any `rep:*` stat first seen via a fired
+  //     thread (which routes through the generic VISIBLE 0..5 path) back to the
+  //     hidden signed bounds — the safety net for the pre-registration above.
+  //   - fireBondCrossings fires the one-shot loyalty/betrayal crossing for any
+  //     NPC whose disposition just reached +75 / −60, surfacing the payoff
+  //     through the existing roster (knownFacts) + `fact_learned` diff channels.
+  if (appliedChoiceId !== null) {
+    normalizeFactionReps(next);
+    fireBondCrossings(next, diffs);
   }
 
   // W2 clock (Requirement 9). A completed turn deterministically ticks the

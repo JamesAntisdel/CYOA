@@ -514,15 +514,18 @@ describe("creatorDashboard — game.ts wiring drift-guard", () => {
     expect(src).toMatch(/import \{ insertCreatorPlayTimeAttribution \} from "\.\/creatorDashboard";/);
   });
 
-  it("fires attribution in all three turn-completion paths", () => {
-    // submitChoice (authored non-streaming), beginStreamingChoice (authored
-    // deterministic step), completeSceneStream (authored streamed prose).
+  it("fires attribution in both mutation turn-completion paths", () => {
+    // beginStreamingChoice (authored deterministic step) + completeSceneStream
+    // (authored streamed prose). The non-streaming submitChoice is now an ACTION
+    // that delegates to these two mutations (fetch-in-mutation fix), so it no
+    // longer carries its own inline attribution call — the credit still fires,
+    // via the mutations it runs.
     const calls = src.match(/await insertCreatorPlayTimeAttribution\(ctx, \{/g) ?? [];
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(2);
     // Every call anchors on the PRE-patch save (readerAccountId + now ride along).
     const anchored = src.match(
       /await insertCreatorPlayTimeAttribution\(ctx, \{\s*save,\s*readerAccountId: args\.accountId,\s*now,\s*\}\);/g,
     ) ?? [];
-    expect(anchored).toHaveLength(3);
+    expect(anchored).toHaveLength(2);
   });
 });

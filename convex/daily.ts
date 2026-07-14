@@ -312,3 +312,73 @@ export function anonymousReaderName(accountId: string): string {
   const tail = accountId.replace(/[^a-zA-Z0-9]/g, "").slice(-4).toUpperCase();
   return tail.length > 0 ? `Reader ${tail}` : "A reader";
 }
+
+// -- daily streak (pure) -----------------------------------------------------
+// Panel-2 Wave 3 (retention). A per-account consecutive-day Daily-completion
+// counter. The record is account-scoped (survives guest→account claim, which
+// upgrades the account in place — same _id — so no data move is needed, R13.4).
+// All date math is the pure `epochDayFromISO` above; the caller passes the
+// completion's UTC day string, so this is deterministic + clock-free (BC6).
+
+/**
+ * Persisted streak state (the mutable fields of a `daily_streaks` row).
+ *   current  — length of the current unbroken run (days).
+ *   longest  — best run ever reached (never decreases).
+ *   lastDate — yyyy-mm-dd of the most recent counted completion.
+ */
+export type StreakState = {
+  current: number;
+  longest: number;
+  lastDate: string;
+};
+
+/** Result of folding one completion date into the prior streak state. */
+export type StreakAdvance = {
+  state: StreakState;
+  /** false when `date` was already counted (idempotent no-op) or is stale. */
+  changed: boolean;
+  /** true when `current` moved up (a first day, or a fresh consecutive day). */
+  incremented: boolean;
+};
+
+/** The empty/zero streak projection for a reader who has no record yet. */
+export function emptyStreak(): StreakState {
+  return { current: 0, longest: 0, lastDate: "" };
+}
+
+/**
+ * Fold a Daily completion on `date` (yyyy-mm-dd) into the prior streak state.
+ * Pure + total:
+ *   - no prior            → current 1 (a fresh streak begins).
+ *   - same day as last    → no-op (idempotent; the result insert is already
+ *                            once-per-(account,daily), this is belt-and-braces).
+ *   - exactly next day    → current + 1 (the run continues).
+ *   - a gap of ≥2 days    → current resets to 1 (the run broke; today restarts).
+ *   - a date BEFORE last  → no-op (defensive: out-of-order/backfilled results
+ *                            never rewind a live streak).
+ * `longest` is monotonic (max of prior longest and the new current).
+ */
+export function advanceDailyStreak(
+  prev: StreakState | null | undefined,
+  date: string,
+): StreakAdvance {
+  const day = date.trim();
+  if (!prev || !prev.lastDate) {
+    const state = { current: 1, longest: Math.max(1, prev?.longest ?? 0), lastDate: day };
+    return { state, changed: true, incremented: true };
+  }
+
+  const diff = epochDayFromISO(day) - epochDayFromISO(prev.lastDate);
+  if (diff <= 0) {
+    // Same day (0) or an older/backfilled date (<0): leave the streak untouched.
+    return { state: { ...prev }, changed: false, incremented: false };
+  }
+
+  const current = diff === 1 ? prev.current + 1 : 1;
+  const state = {
+    current,
+    longest: Math.max(prev.longest, current),
+    lastDate: day,
+  };
+  return { state, changed: true, incremented: true };
+}

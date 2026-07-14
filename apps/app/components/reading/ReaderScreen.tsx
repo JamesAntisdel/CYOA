@@ -4,6 +4,7 @@ import { Pressable, ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { AppNav } from "../navigation";
+import { AiSceneFlag } from "../moderation";
 import { Text } from "../primitives";
 import { useAccountProfile } from "../../hooks/useAccountProfile";
 import { useLibrary } from "../../hooks/useLibrary";
@@ -27,10 +28,22 @@ import { ChapterEnd } from "./ChapterEnd";
 import { DoorsJournal } from "./DoorsJournal";
 import { QuestLine } from "./QuestLine";
 import { ThreadsPill } from "./ThreadsPill";
+import { CandleBurnMeter, CandleGutterInterstitial } from "./CandleGutter";
+import { SoftSignupRibbon } from "./SoftSignupRibbon";
+import {
+  hasDismissedSoftSignup,
+  markSoftSignupDismissed,
+  SOFT_SIGNUP_TURN,
+} from "./softSignup";
 import { READER_LAYOUTS } from "./layouts";
 import { liveMediaMatchesScene, mergeLiveMediaIntoProjection } from "./mergeLiveMedia";
 import { ReaderSettingsDrawer } from "./ReaderSettingsDrawer";
 import { actStampFromDiffs } from "../../lib/storyEngagement";
+import {
+  candleBurnModel,
+  getRemoteDailyTurnState,
+  type RemoteDailyTurnState,
+} from "../../lib/dailyTurnApi";
 
 /**
  * Storage key the user explicitly chose a non-default layout. Set as a side
@@ -185,6 +198,41 @@ function useSaveCinematics(
 }
 
 /**
+ * Panel-2 Wave 2 — the reader's daily turn-budget state (drives the in-reader
+ * burn meter + the candle-gutter interstitial). Turn state is per-ACCOUNT (not
+ * per-save), so we fetch by accountId and refetch whenever the reader advances a
+ * turn (`turnNumber`) — that's exactly when the spent count changes. Inert
+ * without a remote session (local/tutorial saves) OR when the server query
+ * isn't deployed yet: both return null and the caller renders neither surface
+ * (fail-open — our UI never phantom-gates a reader).
+ */
+function useDailyTurnState(
+  auth: { accountId: string; guestTokenHash?: string } | undefined,
+  turnNumber: number,
+): RemoteDailyTurnState | null {
+  const [state, setState] = useState<RemoteDailyTurnState | null>(null);
+  const accountId = auth?.accountId;
+  const guestTokenHash = auth?.guestTokenHash;
+  useEffect(() => {
+    if (!accountId) {
+      setState(null);
+      return;
+    }
+    let cancelled = false;
+    void getRemoteDailyTurnState({
+      accountId,
+      ...(guestTokenHash ? { guestTokenHash } : {}),
+    }).then((next) => {
+      if (!cancelled) setState(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [accountId, guestTokenHash, turnNumber]);
+  return state;
+}
+
+/**
  * The single opening/chapter cinematic to surface inline right now: the NEWEST
  * one that is fully ready and hasn't been acknowledged yet. Views are newest-
  * first, so `find` returns the most recent unseen clip — this is what stops an
@@ -286,7 +334,7 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
   //  - isFirstFind: TODO(Wave E) — real lookup against `endings_unlocked`.
   //    Until then pass `true` so eligible tier+asset reads can still fire
   //    Cinematic in QA without re-playing on the wrong account.
-  const { profile } = useAccountProfile();
+  const { profile, claimWithEmail } = useAccountProfile();
   const endingTier = profile
     ? resolvePatronTier({
         entitlement: profile.entitlementTier,
@@ -419,6 +467,41 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
   const activeLayout = resolveActiveLayout(settings.layout, isPhone);
   const Layout = READER_LAYOUTS[activeLayout] ?? READER_LAYOUTS.book;
 
+  // Panel-2 Wave 2 — daily turn budget → in-reader candle surfaces. The turn
+  // number rides on the scene projection; a new scene means the reader spent a
+  // turn, so `useDailyTurnState` refetches. `nowTs` ticks only while the candle
+  // has guttered so the re-light countdown stays live without a permanent timer.
+  const turnNumber = projection.turnNumber ?? 0;
+  const dailyTurnState = useDailyTurnState(remoteAuth, turnNumber);
+  const [nowTs, setNowTs] = useState(() => Date.now());
+  const burn = candleBurnModel(dailyTurnState, nowTs);
+  useEffect(() => {
+    if (!burn.guttered) return;
+    const id = setInterval(() => setNowTs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [burn.guttered]);
+
+  // Turn-3 soft-signup ribbon (guest → account). One-shot dismissible; the
+  // dismissal persists in localStorage exactly like the first-lock coach. The
+  // ribbon self-retires the moment the guest claims (profile.kind flips off
+  // "guest") so it never lingers after a successful bind. `claimWithEmail` is
+  // destructured from the single useAccountProfile() call above.
+  const [softSignupDismissed, setSoftSignupDismissed] = useState(() => hasDismissedSoftSignup());
+  const dismissSoftSignup = useCallback(() => {
+    markSoftSignupDismissed();
+    setSoftSignupDismissed(true);
+  }, []);
+  const isTerminalView = Boolean(projection.ending) || Boolean(chapterBoundary);
+  const showSoftSignupRibbon =
+    !isTerminalView &&
+    !softSignupDismissed &&
+    profile?.kind === "guest" &&
+    turnNumber >= SOFT_SIGNUP_TURN;
+  // Never gate already-generated prose: the interstitial frames the NEXT turn's
+  // cap, so it hides on terminal panels (the reader has already reached an end).
+  const showCandleGutter = !isTerminalView && burn.guttered;
+  const showCandleMeter = !isTerminalView && burn.showMeter && Boolean(dailyTurnState);
+
   return (
     <SafeAreaView style={{ backgroundColor: tokens.colors.background, flex: 1 }}>
       <ScrollView
@@ -458,9 +541,41 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
             sceneId={projection.scene.id}
             {...(remoteAuth ? { auth: remoteAuth } : {})}
           />
+          {/* Panel-2 Wave 2 — the day's candle meter. Appears only once the
+              reader has burned >= 50% of today's turns (Principle 7: no
+              surprise cap) and self-hides for unlimited tiers / local saves. */}
+          {showCandleMeter && dailyTurnState ? (
+            <CandleBurnMeter
+              turnsUsed={dailyTurnState.turnsUsed}
+              turnsAllowed={dailyTurnState.turnsAllowed}
+            />
+          ) : null}
         </View>
 
         <ReaderSaveActions saveId={saveId} />
+
+        {/* Panel-2 Wave 2 — the candle-gutter interstitial. The daily cap as a
+            narrative event, not an error string (Principle 8). Rendered ABOVE
+            the still-readable scene so it never gates already-generated prose;
+            its primary door returns home until the candle re-lights, its
+            secondary door leads to the daily-limit paywall. */}
+        {showCandleGutter ? (
+          <View style={{ alignSelf: "stretch" }}>
+            <CandleGutterInterstitial
+              turnsUsed={dailyTurnState?.turnsUsed ?? 0}
+              resetsInLabel={burn.resetsInLabel}
+              onReturn={() => router.push("/")}
+              onSubscribe={() => router.push("/paywall?reason=daily_limit")}
+            />
+          </View>
+        ) : null}
+
+        {/* Panel-2 Wave 2 — turn-3 soft-signup ribbon (guest → account). */}
+        {showSoftSignupRibbon ? (
+          <View style={{ alignSelf: "stretch" }}>
+            <SoftSignupRibbon onClaim={claimWithEmail} onDismiss={dismissSoftSignup} />
+          </View>
+        ) : null}
 
         {/* Opening title + chapter-stinger cinematic (Omni) — the newest ready
             one, shown ONCE inline then retired by asset id (see markCinematicSeen).
@@ -638,6 +753,7 @@ function ReaderSaveActions({ saveId }: { saveId: string }) {
     <View
       accessibilityLabel="Save actions"
       style={{
+        alignItems: "center",
         alignSelf: "stretch",
         flexDirection: "row",
         flexWrap: "wrap",
@@ -645,6 +761,11 @@ function ReaderSaveActions({ saveId }: { saveId: string }) {
         justifyContent: "flex-end",
       }}
     >
+      {/* AI-generated disclosure + per-scene report flag (Play GenAI + UGC
+          policy). Left-aligned via marginRight:auto so it leads the chrome row. */}
+      <View style={{ marginRight: "auto" }}>
+        <AiSceneFlag saveId={saveId} />
+      </View>
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Reader settings"

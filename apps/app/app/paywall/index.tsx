@@ -1,4 +1,5 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useLocalSearchParams } from "expo-router";
 import { Platform, Pressable, ScrollView, View } from "react-native";
 
 import { AppNav, BackToSceneButton } from "../../components/navigation";
@@ -15,8 +16,24 @@ import {
   type PatronTierId,
 } from "../../lib/billingConfig";
 import { useAccountProfile } from "../../hooks/useAccountProfile";
+import { guestAuthArgs, useGuestSession } from "../../hooks/useGuestSession";
 import { createRemoteCheckoutSession } from "../../lib/gameApi";
+import {
+  candleBurnModel,
+  getRemoteDailyTurnState,
+  type RemoteDailyTurnState,
+} from "../../lib/dailyTurnApi";
 import { useBreakpoint } from "../../lib/responsive";
+
+/** The paywall reasons that can arrive as a `?reason=` deep-link query. */
+const PAYWALL_REASONS: readonly PaywallReason[] = ["daily_limit", "pro_media", "credits"];
+
+function parseReasonParam(raw: string | string[] | undefined): PaywallReason | null {
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return value && (PAYWALL_REASONS as readonly string[]).includes(value)
+    ? (value as PaywallReason)
+    : null;
+}
 
 /**
  * Paywall route. Composes:
@@ -49,12 +66,53 @@ export default function PaywallRoute() {
     [profile?.entitlementTier, profile?.kind],
   );
 
-  const [reason, setReason] = useState<PaywallReason>("daily_limit");
-  const [candle, setCandle] = useState<CandleState>(() => ({
-    turnsUsed: currentTier.turnsPerDay ?? 0,
-    turnsAllowed: currentTier.turnsPerDay,
-    resetsInLabel: "7h 22m",
-  }));
+  // Deep-link reason (?reason=daily_limit) — the candle-gutter interstitial and
+  // any future in-app CTA arrive with an explicit reason. When present we honor
+  // it as the initial variant AND hide the design-review reason selector so the
+  // production paywall never ships the demo toggle (panel-review-2 MEDIUM).
+  const params = useLocalSearchParams<{ reason?: string }>();
+  const reasonParam = parseReasonParam(params.reason);
+  const [reason, setReason] = useState<PaywallReason>(reasonParam ?? "daily_limit");
+
+  // Real candle state (panel-review-2 MEDIUM: "the paywall shows a fake candle").
+  // Fetched from WAVE2-SERVER's daily turn-state query; when it lands, the
+  // candle shows the reader's TRUE spent/allowed turns and a live reset label.
+  // Until it lands (or on unlimited tiers / no session) we fall back to the tier
+  // config WITHOUT the old hardcoded reset label — an omitted label reads as
+  // "unknown" rather than a wrong countdown.
+  const guest = useGuestSession();
+  const accountId = guest.session?.accountId;
+  const [turnState, setTurnState] = useState<RemoteDailyTurnState | null>(null);
+  useEffect(() => {
+    if (!accountId) {
+      setTurnState(null);
+      return;
+    }
+    let cancelled = false;
+    void getRemoteDailyTurnState({ accountId, ...guestAuthArgs() }).then((next) => {
+      if (!cancelled) setTurnState(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [accountId]);
+
+  const candle: CandleState = useMemo(() => {
+    if (turnState && !turnState.unlimited) {
+      const model = candleBurnModel(turnState, Date.now());
+      return {
+        turnsUsed: turnState.turnsUsed,
+        turnsAllowed: turnState.turnsAllowed,
+        ...(model.resetsInLabel ? { resetsInLabel: model.resetsInLabel } : {}),
+      };
+    }
+    // No real state yet — show the tier's allowance as a static reference.
+    return {
+      turnsUsed: currentTier.turnsPerDay ?? 0,
+      turnsAllowed: currentTier.turnsPerDay,
+    };
+  }, [turnState, currentTier.turnsPerDay]);
+
   const [preview, setPreview] = useState(
     "Choose a tier to preview server-confirmed pricing.",
   );
@@ -169,48 +227,34 @@ export default function PaywallRoute() {
         accessibilityLabel="Back to account"
       />
 
-      <View
-        accessibilityLabel="Paywall reason selector"
-        style={{
-          flexDirection: "row",
-          flexWrap: "wrap",
-          gap: tokens.spacing.sm,
-        }}
-      >
-        {([
-          { id: "daily_limit", label: "Daily limit" },
-          { id: "pro_media", label: "Pro media" },
-          { id: "credits", label: "Credits" },
-        ] as { id: PaywallReason; label: string }[]).map((option) => (
-          <ReasonChip
-            key={option.id}
-            active={reason === option.id}
-            label={option.label}
-            onPress={() => {
-              setReason(option.id);
-              if (option.id === "daily_limit") {
-                setCandle((current) => ({
-                  ...current,
-                  turnsUsed: current.turnsAllowed ?? 5,
-                }));
-              } else if (option.id === "pro_media") {
-                setCandle((current) => ({
-                  ...current,
-                  turnsUsed: Math.max(
-                    0,
-                    (current.turnsAllowed ?? 5) - 1,
-                  ),
-                }));
-              } else {
-                setCandle((current) => ({
-                  ...current,
-                  turnsUsed: Math.max(0, (current.turnsAllowed ?? 5) - 2),
-                }));
-              }
-            }}
-          />
-        ))}
-      </View>
+      {/* Design-review reason selector — lets QA flip through the Soft /
+          Inline / TopBar variants. Hidden on real arrivals (a `?reason=` deep
+          link, e.g. from the candle-gutter interstitial) so users never see the
+          demo toggle (panel-review-2 MEDIUM). The candle shown is real
+          turn-state, so flipping reason no longer fabricates a burn count. */}
+      {!reasonParam ? (
+        <View
+          accessibilityLabel="Paywall reason selector"
+          style={{
+            flexDirection: "row",
+            flexWrap: "wrap",
+            gap: tokens.spacing.sm,
+          }}
+        >
+          {([
+            { id: "daily_limit", label: "Daily limit" },
+            { id: "pro_media", label: "Pro media" },
+            { id: "credits", label: "Credits" },
+          ] as { id: PaywallReason; label: string }[]).map((option) => (
+            <ReasonChip
+              key={option.id}
+              active={reason === option.id}
+              label={option.label}
+              onPress={() => setReason(option.id)}
+            />
+          ))}
+        </View>
+      ) : null}
 
       <PaywallPanel
         candle={candle}

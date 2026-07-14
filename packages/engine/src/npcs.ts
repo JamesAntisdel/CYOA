@@ -1,3 +1,4 @@
+import { slugify } from "./arc";
 import { cloneNpc } from "./state";
 import type {
   EngineDiff,
@@ -209,3 +210,112 @@ function clampAttribute(value: number, min?: number, max?: number): number {
 // of the stat machinery because it operates on the player's own attribute
 // total — companion contributions are an additive layer, not a separate
 // system. Keep this module focused on the NPC reducer surface.
+
+// =============================================================================
+// NPC loyalty / betrayal threshold arcs (Panel-2 Wave 3). Disposition already
+// drifts ±15/turn on the llm path but nothing DRAMATIC ever happened when it
+// crossed a threshold. These one-shot "bond" crossings give it a payoff: the
+// first turn an NPC's disposition reaches +75 a loyalty bond CRYSTALLIZES, and
+// the first turn it drops to −60 the bond BREAKS. Each fires exactly once per
+// direction, stamped on the NPC so a re-cross doesn't re-fire (mirrors the arc
+// `beat.status` one-shot). Surfacing is deliberately through EXISTING channels
+// (no new diff/event kind): the crossing pushes a `fact_learned` diff (the same
+// reader-visible echo an `npc_learn_fact` produces) and FRONT-INSERTS a payoff
+// line into the NPC's `knownFacts` so the NEXT turn's NPC sheet (which renders
+// the top-3 facts) carries it into the prompt for the narrator to pay off.
+// Pure + total (no console/Date.now) — safe for the engine package.
+// =============================================================================
+
+/** Disposition at/above which a loyalty bond crystallizes (one-shot). */
+export const BOND_CRYSTALLIZE_AT = 75;
+/** Disposition at/below which a bond breaks (one-shot). */
+export const BOND_BREAK_AT = -60;
+/**
+ * Reserved numeric NPC flag stamping the last-fired bond direction so a crossing
+ * fires once: `1` after crystallize, `-1` after break, absent before either.
+ * A break after a crystallize (or vice-versa) is a genuine transition and DOES
+ * re-fire — only re-crossing the SAME threshold without leaving is suppressed.
+ * Lives in `flags` (hidden — `projectNpcSheet` never surfaces NPC flags) so it
+ * never leaks into the prompt or the client.
+ */
+export const BOND_STATE_FLAG = "__bondState";
+/** Keep the bond payoff line inside a sane per-NPC fact budget (mirrors llm.ts). */
+const BOND_FACT_CAP = 12;
+
+/**
+ * Scan the roster and fire any pending one-shot bond crossing (Panel-2 W3).
+ * Called from the llm turn firing point AFTER this turn's disposition deltas
+ * have applied. Mutates `state.npcs[*]` (stamps `BOND_STATE_FLAG`, front-inserts
+ * a payoff `knownFact`) and appends a `fact_learned` diff per crossing. Pure +
+ * deterministic; idempotent once stamped. Returns nothing — the diffs carry the
+ * reader-visible echo and the fact carries the next-scene payoff.
+ */
+export function fireBondCrossings(state: PlayerState, diffs: EngineDiff[]): void {
+  for (const npc of Object.values(state.npcs)) {
+    const disposition = npc.disposition;
+    if (typeof disposition !== "number" || !Number.isFinite(disposition)) continue;
+    const stamped = npc.flags[BOND_STATE_FLAG];
+    if (disposition >= BOND_CRYSTALLIZE_AT && stamped !== 1) {
+      npc.flags = { ...npc.flags, [BOND_STATE_FLAG]: 1 };
+      pushBondFact(npc, `trusts you completely now — a loyalty just forged`);
+      diffs.push({ kind: "fact_learned", target: npc.id, visibility: "visible" });
+    } else if (disposition <= BOND_BREAK_AT && stamped !== -1) {
+      npc.flags = { ...npc.flags, [BOND_STATE_FLAG]: -1 };
+      pushBondFact(npc, `no longer trusts you — a bond just broken`);
+      diffs.push({ kind: "fact_learned", target: npc.id, visibility: "visible" });
+    }
+  }
+}
+
+/**
+ * Front-insert a bond payoff line so the NPC sheet's top-3 `knownFacts` window
+ * surfaces it next turn. Deduped (a re-fire in the same direction is already
+ * suppressed by the flag, but guard anyway) and capped to the per-NPC budget.
+ */
+function pushBondFact(npc: NpcState, fact: string): void {
+  const trimmed = fact.slice(0, NPC_FACT_MAX_LENGTH);
+  const without = npc.knownFacts.filter((existing) => existing !== trimmed);
+  npc.knownFacts = [trimmed, ...without].slice(0, BOND_FACT_CAP);
+}
+
+// =============================================================================
+// Cast ↔ roster linking (Panel-2 W3). The bible's `cast` sheet and the live
+// `npcs` roster are disjoint namespaces (SB4: the engine cannot read the bible
+// at spawn time, so the link cannot be stamped inside `npc_spawn`). The
+// integrator calls `linkCastIds` each turn with the bible's cast ids after
+// reading the row; it stamps `castId` by slug once so the pairing is durable
+// even if a later scene mis-spells the spawn id. Pure + total; idempotent
+// (already-linked NPCs are skipped).
+// =============================================================================
+
+/**
+ * Resolve the cast slug an NPC belongs to (Panel-2 W3): a direct id match
+ * first (the prompt asks the model to reuse cast ids when spawning), then a
+ * slug-of-name match as a fallback. Returns undefined when nothing matches.
+ */
+export function matchCastId(
+  npc: Pick<NpcState, "id" | "name">,
+  castIds: ReadonlyArray<string>,
+): string | undefined {
+  if (castIds.includes(npc.id)) return npc.id;
+  const nameSlug = slugify(npc.name);
+  if (nameSlug.length > 0 && castIds.includes(nameSlug)) return nameSlug;
+  return undefined;
+}
+
+/**
+ * Stamp `castId` on every unlinked NPC that resolves to a bible cast member
+ * (Panel-2 W3). Mutates `npcs` in place; a no-op when `castIds` is empty
+ * (bible-less save) or every NPC is already linked.
+ */
+export function linkCastIds(
+  npcs: Record<string, NpcState>,
+  castIds: ReadonlyArray<string>,
+): void {
+  if (castIds.length === 0) return;
+  for (const npc of Object.values(npcs)) {
+    if (npc.castId !== undefined) continue;
+    const match = matchCastId(npc, castIds);
+    if (match !== undefined) npc.castId = match;
+  }
+}

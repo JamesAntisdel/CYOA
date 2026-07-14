@@ -43,7 +43,7 @@ import {
   type TerminalDirective,
   type UnlockedEnding,
 } from "@cyoa/engine";
-import { mutationGeneric, queryGeneric } from "convex/server";
+import { actionGeneric, makeFunctionReference, mutationGeneric, queryGeneric } from "convex/server";
 import type { GenericId } from "convex/values";
 import { v } from "convex/values";
 
@@ -1219,7 +1219,57 @@ export const rewindSaveTurns = mutationGeneric({
   },
 });
 
-export const submitChoice = mutationGeneric({
+/**
+ * Fetch the canonical resolved scene for the just-completed submit turn, in
+ * `submitChoice`'s legacy return shape. `sceneId` is the pending scene id
+ * `beginStreamingChoice` created and `completeSceneStream` finalises in place
+ * (the streaming path patches the scene, never re-inserts), so it is also the
+ * final scene id. The projection is read through the same `getCurrentScene`
+ * query the reader UI uses, so the non-streaming path can never disagree with
+ * the streamed path on what the scene looks like.
+ */
+async function resolveSubmitScene(
+  ctx: { runQuery: (ref: any, args: any) => Promise<any> },
+  args: { accountId: string; saveId: string },
+  sceneId: string,
+  guestArg: { guestTokenHash?: string },
+): Promise<{ saveId: string; sceneId: string; scene: unknown }> {
+  const scene = await ctx.runQuery(
+    makeFunctionReference<"query">("game:getCurrentScene"),
+    { accountId: args.accountId, saveId: args.saveId, ...guestArg },
+  );
+  return { saveId: args.saveId, sceneId, scene };
+}
+
+/**
+ * Non-streaming turn submission.
+ *
+ * FETCH-IN-MUTATION fix (product-readiness defect): this used to be a MUTATION
+ * whose handler called the LLM router (`submitTurn` / `runLlmDrivenSubmitChoice`
+ * → `router.generateScene` → httpClient `fetch`) inline. On a real provider a
+ * Convex mutation that fetches crashes with "Can't use fetch in a mutation", so
+ * every non-streaming turn died the moment deterministic-only mode was left.
+ *
+ * It is now an ACTION that reuses the exact machinery the streaming path already
+ * proves out — a mutation NEVER fetches:
+ *   1. `beginStreamingChoice` (mutation) reserves the turn, advances phase-A
+ *      engine state, writes a pending scene, and resolves terminal/no-LLM turns
+ *      inline (returns `stream:false`). It also owns auth, idempotent replay,
+ *      the daily budget, and locked-choice gating — so those semantics are
+ *      preserved unchanged and its AppErrors still propagate to the caller.
+ *   2. The LLM call runs HERE, in the action, where `fetch` is legal.
+ *   3. `completeSceneStream` (mutation) persists phase-B exactly as the SSE
+ *      handler does, so the two paths cannot drift.
+ *
+ * Net behaviour is identical to the old synchronous submit (a resolved scene is
+ * returned in the same `{ saveId, sceneId, scene, prose }` shape) except the LLM
+ * call no longer runs inside a transaction. NOTE for the integrator/client: this
+ * is now an ACTION, so `apps/app/lib/gameApi.ts:submitRemoteChoice` must call it
+ * via `convexHttp("action", "game:submitChoice", ...)` instead of `"mutation"`
+ * (the live reader uses `beginStreamingChoice`, not this path, so nothing on the
+ * hot path breaks in the meantime).
+ */
+export const submitChoice = actionGeneric({
   args: {
     accountId,
     guestTokenHash,
@@ -1228,194 +1278,94 @@ export const submitChoice = mutationGeneric({
     requestId: v.string(),
   },
   handler: async (ctx, args) => {
-    const save = await loadAndMigrateSave(ctx, args.saveId);
-    if (!save) throw new AppError("save_not_found");
-    assertCanAccessSave(args.accountId, save);
-    const account = await loadAndAuthorizeAccount(ctx, args.accountId, args.guestTokenHash);
+    const guestArg = args.guestTokenHash !== undefined ? { guestTokenHash: args.guestTokenHash } : {};
 
-    const now = Date.now();
-    // Idempotent replay: a duplicate requestId within the TTL returns the
-    // original result without re-running the turn or re-consuming the budget.
-    const cachedSubmit = await readIdempotentTurnResult(
-      ctx,
-      "submitChoice",
-      args.requestId,
-      args.accountId,
-      args.saveId,
-      now,
-    );
-    if (cachedSubmit) return cachedSubmit;
-    const dayKey = makeDayKey(new Date(now));
-    const dailyCounterDoc = await ctx.db
-      .query("daily_turn_counter")
-      .withIndex("by_account_day", (q) => q.eq("accountId", args.accountId))
-      .filter((q) => q.eq(q.field("dayKey"), dayKey))
-      .first();
-    const entitlement =
-      (await ctx.db
-        .query("entitlements")
-        .withIndex("by_accountId", (q) => q.eq("accountId", args.accountId))
-        .first()) ?? buildDefaultEntitlement(args.accountId, now);
-
-    const story = await loadStory(ctx, save.storyId, args.accountId);
-    const storyMode = resolveStoryMode(save.storyId);
-
-    const submitAccount = accountFromDoc(account);
-    const contentContext = matureContextForAccount({
-      account: submitAccount,
-      entitlement,
-      surface: "generation",
-    });
-    // Provider-routing tier (design §1.2) + Unlimited soft cap (§2.4) for the
-    // non-streaming submit path. Shared by both the llm-driven and authored
-    // (submitTurn) branches below.
-    const routingTier = await resolveRoutingTier(
-      ctx,
-      args.accountId,
-      submitAccount.kind,
-      contentContext.entitlementTier,
-      now,
-    );
-
-    if (storyMode === "llm-driven") {
-      const llmResult = await runLlmDrivenSubmitChoice(ctx, {
-        save,
-        story,
+    // Phase A — reserve the turn + advance engine state via the proven mutation.
+    // Terminal / no-LLM turns come back fully resolved with `stream:false`.
+    const begin = await ctx.runMutation(
+      makeFunctionReference<"mutation">("game:beginStreamingChoice"),
+      {
+        accountId: args.accountId,
+        saveId: args.saveId,
         choiceId: args.choiceId,
         requestId: args.requestId,
-        accountId: args.accountId,
-        saveIdValue: args.saveId,
-        now,
-        dailyCounterDoc,
-        dailyAllowanceCount: dailyAllowance(entitlement),
-        dayKey,
-        contentContext,
-        entitlementTier: contentContext.entitlementTier,
-        routingTier,
-      });
-      // Req 14.4: record for idempotent replay (the cache read above covers
-      // llm-driven too; without this record only authored turns were guarded).
-      await recordIdempotentTurnResult(ctx, {
-        scope: "submitChoice",
-        requestId: args.requestId,
-        accountId: args.accountId,
-        saveId: args.saveId,
-        result: llmResult,
-        now,
-      });
-      return llmResult;
-    }
-
-    // Req 11.1: classify the memory window (which includes the appended seed)
-    // before it is threaded into the prompt via submitTurn.
-    const memory = guardMemoryBeats(
-      await loadMemoryWindow(ctx, args.saveId, story.nodes[save.currentNodeId]?.seed ?? ""),
-      contentContext,
+        ...guestArg,
+      },
     );
-    const result = await submitTurn({
-      save,
-      story,
-      choiceId: args.choiceId,
-      requestId: args.requestId,
-      accountId: args.accountId,
-      now,
-      dailyCounter: dailyCounterDoc ? dailyCounterFromDoc(dailyCounterDoc) : null,
-      dailyAllowance: dailyAllowance(entitlement),
-      dayKey,
-      resetAt: nextUtcMidnight(now),
-      contentContext,
-      memory,
-      entitlementTier: contentContext.entitlementTier,
-      tier: routingTier,
-    });
-    const plan = buildTurnPersistencePlan({ result, saveId: args.saveId, now });
-
-    await ctx.db.patch(args.saveId, cleanDoc(plan.savePatch));
-    if (dailyCounterDoc) {
-      await ctx.db.patch(dailyCounterDoc._id, cleanDoc(plan.dailyCounter));
-    } else {
-      await ctx.db.insert("daily_turn_counter", cleanDoc(plan.dailyCounter));
+    if (!begin.stream) {
+      return {
+        saveId: begin.saveId,
+        sceneId: begin.sceneId,
+        scene: begin.scene,
+        prose: begin.scene?.prose ?? "",
+      };
     }
-    await ctx.db.insert("turn_history", cleanDoc(plan.history));
-    const sceneId = await ctx.db.insert("scenes", cleanDoc(plan.scene));
-    await ctx.db.patch(args.saveId, { currentSceneId: sceneId });
 
-    // Queue Pro media for the just-resolved scene. submitChoice is the
-    // non-streaming path (deterministic engine returns prose inline), so
-    // this is the only place media gets queued for those reads. The
-    // helper swallows queue failures; we also wrap in try/catch so a
-    // raised error here cannot break the choice resolution.
-    const choiceProse = (result.prose && result.prose.length > 0)
-      ? result.prose
-      : (result.scene.prose ?? plan.scene.nodeId ?? "scene");
-    const choicePrompt = choiceProse.slice(0, 480);
+    // Phase B — build the generation request (claims the streaming lock), then
+    // run the LLM in this action. `getAuthorizedSceneStreamRequest` throws when
+    // the turn is no longer pending — an idempotent replay whose first delivery
+    // already completed, a concurrent stream that finished it, or a turn that
+    // needs no stream. In those cases return the canonical resolved scene
+    // instead of regenerating (which would double-charge / double-persist).
+    let sceneRequest: any;
     try {
-      await queueSceneMediaForSave(ctx, {
-        accountId: args.accountId,
-        saveId: args.saveId,
-        sceneId,
-        nodeId: result.save.currentNodeId,
-        prompt: choicePrompt,
-        prose: choiceProse,
-        ...(result.save.voiceId ? { voiceId: result.save.voiceId } : {}),
-        alt: `Scene illustration for ${result.save.currentNodeId}`,
-      });
-    } catch {
-      // non-fatal — Pro media is a tier, text is the contract
+      sceneRequest = await ctx.runMutation(
+        makeFunctionReference<"mutation">("game:getAuthorizedSceneStreamRequest"),
+        { accountId: args.accountId, saveId: args.saveId, ...guestArg },
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (
+        message.includes("scene_stream_not_pending") ||
+        message.includes("scene_stream_in_progress") ||
+        message.includes("scene_stream_not_required")
+      ) {
+        return await resolveSubmitScene(ctx, args, begin.sceneId, guestArg);
+      }
+      throw error;
     }
 
-    // Turn-completion analytics (Req 15.2 / 27.2-27.5) for the authored
-    // non-streaming path — real provider + token usage + per-stage latency
-    // from submitTurn's inline engine + LLM step.
-    {
-      const tokenUsage = result.history.tokenUsage ?? estimateTokenUsage("", result.prose);
-      await insertTurnCompletedAnalytics(ctx, {
-        accountId: args.accountId,
-        saveId: args.saveId,
-        storyId: save.storyId,
-        turnNumber: result.save.turnNumber,
-        provider: normalizeProviderName(result.provider),
-        inputTokens: tokenUsage.input,
-        outputTokens: tokenUsage.output,
-        estimatedCostCents: result.modelId ? costCentsForUsage(result.modelId, tokenUsage) : 0,
-        engineMs: result.history.latency.engineMs,
-        llmMs: result.history.latency.llmMs,
-        totalMs: result.history.latency.engineMs + result.history.latency.llmMs,
-        fallback: false,
-        createdAt: now,
-      });
-    }
-    // Creator play-time attribution (Req 22.4/22.5): authored-seed saves
-    // credit this turn's wall-clock slice (previous completion → now, via the
-    // PRE-patch save.updatedAt) to the seed's creator. No-op for every other
-    // storyId; fire-and-forget like insertStoryAnalytics.
-    await insertCreatorPlayTimeAttribution(ctx, {
-      save,
-      readerAccountId: args.accountId,
-      now,
-    });
-    // Authored terminal (death / success via node endingId) → record the
-    // ending unlock (Req 8.1 / 19.1). Engine state already carries the
-    // UnlockedEnding via applyChoiceAndEnterNode's unlockCurrentEnding.
-    const submittedTerminal = resolveTerminal(result.save.state, story);
-    if (submittedTerminal) {
-      await recordEndingUnlock(ctx, {
-        accountId: args.accountId,
-        unlock: unlockedEndingForTerminal(result.save, result.save.state, submittedTerminal),
-        safetyEnding: false,
-      });
+    const { LlmRouter } = await import("./llm/router");
+    const router = new LlmRouter();
+    let generated;
+    try {
+      generated = await router.generateScene(sceneRequest);
+    } catch (error) {
+      // The router already handles per-provider failover to the deterministic
+      // provider internally, so reaching here is a hard/abort failure. Mark the
+      // scene failed like the SSE handler's onError so it stays retry-eligible,
+      // then surface the current (pending/failed) scene.
+      await ctx.runMutation(
+        makeFunctionReference<"mutation">("game:failSceneStream"),
+        { accountId: args.accountId, saveId: args.saveId, ...guestArg },
+      );
+      return await resolveSubmitScene(ctx, args, begin.sceneId, guestArg);
     }
 
-    const submitResponse = { saveId: args.saveId, sceneId, scene: result.scene, prose: result.prose };
-    await recordIdempotentTurnResult(ctx, {
-      scope: "submitChoice",
-      requestId: args.requestId,
-      accountId: args.accountId,
-      saveId: args.saveId,
-      result: submitResponse,
-      now,
-    });
-    return submitResponse;
+    // Same mapping the SSE handler (convex/http.ts) applies before calling
+    // completeSceneStream, so persistence is byte-for-byte the streaming path.
+    const proposal = generated.parsed.proposal ?? null;
+    const terminal = (proposal as { terminal?: unknown } | null)?.terminal ?? null;
+    const tokenUsage = generated.generation.tokenUsage;
+    const modelId = generated.generation.modelId;
+    await ctx.runMutation(
+      makeFunctionReference<"mutation">("game:completeSceneStream"),
+      {
+        accountId: args.accountId,
+        saveId: args.saveId,
+        prose: generated.parsed.prose,
+        provider: generated.generation.provider,
+        ...guestArg,
+        ...(proposal ? { proposal } : {}),
+        ...(terminal ? { terminal } : {}),
+        ...(generated.generation.isFallback === true ? { isFallback: true } : {}),
+        ...(tokenUsage ? { tokenUsage } : {}),
+        ...(modelId ? { modelId } : {}),
+      },
+    );
+
+    const resolved = await resolveSubmitScene(ctx, args, begin.sceneId, guestArg);
+    return { ...resolved, prose: generated.parsed.prose };
   },
 });
 
@@ -4468,6 +4418,15 @@ type RunLlmDrivenSubmitChoiceInput = {
   routingTier: "guest" | "free" | "unlimited" | "pro";
 };
 
+/**
+ * @deprecated DEAD CODE — do not re-wire. This helper calls `router.generateScene`
+ * (httpClient `fetch`) after DB writes; running it inside a mutation crashes real
+ * providers with "Can't use fetch in a mutation". The `submitChoice` ACTION now
+ * routes the non-streaming llm-driven turn through the same
+ * beginStreamingChoice → getAuthorizedSceneStreamRequest → generateScene (in the
+ * action) → completeSceneStream flow the SSE path uses. Kept only to avoid a
+ * wide unused-import churn; safe to delete in a dedicated cleanup.
+ */
 async function runLlmDrivenSubmitChoice(
   ctx: {
     db: any;

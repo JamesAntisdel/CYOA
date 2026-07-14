@@ -672,4 +672,40 @@ export default defineSchema({
   })
     .index("by_account", ["accountId"])
     .index("by_idem", ["idempotencyKey"]),
+
+  // Panel-2 Wave 3 (retention). One row per account: the consecutive-day Daily
+  // streak plus the milestone keepsakes it has minted. Account-scoped so it
+  // survives guest→account claim in place (R13.4). Written by
+  // convex/dailyFunctions.ts:advanceStreakForCompletion. Every field beyond the
+  // counters is optional + legacy-tolerant (readStreakRecord degrades a partial
+  // row to safe defaults).
+  daily_streaks: defineTable({
+    accountId,
+    current: v.number(),
+    longest: v.number(),
+    lastDate: v.string(), // yyyy-mm-dd of the most recent counted completion
+    keepsakes: v.optional(
+      v.array(v.object({ id: v.string(), label: v.string(), description: v.string() })),
+    ),
+    updatedAt: v.optional(v.number()),
+  }).index("by_account", ["accountId"]),
+
+  // Product-readiness launch blocker (Apple 1.2 / Play UGC + GenAI policy).
+  // User-generated-content reports: any reader can report a tale/scene/save/seed
+  // and operators triage them (open → resolved | dismissed). Written by
+  // convex/moderation.ts. reporterAccountId / resolvedByAccountId are stored as
+  // opaque strings (String(_id)) so the projection never depends on id validity;
+  // resolve fields are optional (absent until an admin acts).
+  reports: defineTable({
+    reporterAccountId: v.string(),
+    targetType: v.string(),
+    targetId: v.string(),
+    reason: v.string(),
+    details: v.optional(v.string()),
+    status: v.string(), // "open" | "resolved" | "dismissed"
+    resolvedByAccountId: v.optional(v.string()),
+    resolvedAt: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  }).index("by_status", ["status"]),
 });

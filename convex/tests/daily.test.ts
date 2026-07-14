@@ -12,18 +12,22 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  advanceDailyStreak,
   anonymousReaderName,
   buildDailyPremise,
   buildDailyResultRow,
   computeDistribution,
   DAILY_PREMISE_BANK,
   DAILY_TONE_ROTATION,
+  emptyStreak,
   epochDayFromISO,
   isoDateFromMillis,
 } from "../daily";
 import {
   authorDailyStoryArc,
   getResults,
+  getStreak,
+  getToday,
   insertDailyResultIfAbsent,
   insertDailyTaleRow,
   startDaily,
@@ -281,6 +285,15 @@ function makeCtx(seed: { tables?: Record<string, Row[]>; guestTokenHash?: string
         inserted.push({ table, doc: row });
         return _id;
       },
+      async patch(id: any, doc: Row) {
+        for (const rows of Object.values(tables)) {
+          const hit = rows.find((r) => String(r._id) === String(id));
+          if (hit) {
+            Object.assign(hit, doc);
+            return;
+          }
+        }
+      },
     },
     auth: {
       async getUserIdentity() {
@@ -454,5 +467,229 @@ describe("insertDailyResultIfAbsent (R13.3 terminal hook)", () => {
     expect(second.inserted).toBe(false);
     expect(tables.daily_results).toHaveLength(1);
     expect(tables.daily_results![0]).toMatchObject({ dailyId: "daily_1", accountId: "acct_1", endingId: "safe-harbor", turnCount: 8 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PURE: advanceDailyStreak (Panel-2 W3 daily streak)
+// ---------------------------------------------------------------------------
+
+describe("advanceDailyStreak (consecutive-day streak math)", () => {
+  it("starts a fresh streak at 1 when there is no prior state", () => {
+    const out = advanceDailyStreak(null, "2026-07-10");
+    expect(out).toEqual({
+      state: { current: 1, longest: 1, lastDate: "2026-07-10" },
+      changed: true,
+      incremented: true,
+    });
+  });
+
+  it("increments on the very next calendar day", () => {
+    const prev = { current: 3, longest: 3, lastDate: "2026-07-10" };
+    const out = advanceDailyStreak(prev, "2026-07-11");
+    expect(out.state).toEqual({ current: 4, longest: 4, lastDate: "2026-07-11" });
+    expect(out.incremented).toBe(true);
+  });
+
+  it("is an idempotent no-op when the same day is folded in twice", () => {
+    const prev = { current: 4, longest: 6, lastDate: "2026-07-11" };
+    const out = advanceDailyStreak(prev, "2026-07-11");
+    expect(out.changed).toBe(false);
+    expect(out.incremented).toBe(false);
+    expect(out.state).toEqual(prev);
+  });
+
+  it("resets current to 1 on a gap of two or more days, keeping longest", () => {
+    const prev = { current: 5, longest: 5, lastDate: "2026-07-10" };
+    const out = advanceDailyStreak(prev, "2026-07-13");
+    expect(out.state).toEqual({ current: 1, longest: 5, lastDate: "2026-07-13" });
+    expect(out.changed).toBe(true);
+  });
+
+  it("never rewinds on an out-of-order/backfilled older date", () => {
+    const prev = { current: 5, longest: 5, lastDate: "2026-07-10" };
+    const out = advanceDailyStreak(prev, "2026-07-08");
+    expect(out.changed).toBe(false);
+    expect(out.state).toEqual(prev);
+  });
+
+  it("keeps longest monotonic across a break-then-rebuild", () => {
+    let s = advanceDailyStreak(null, "2026-07-01").state;
+    s = advanceDailyStreak(s, "2026-07-02").state;
+    s = advanceDailyStreak(s, "2026-07-03").state; // current 3, longest 3
+    s = advanceDailyStreak(s, "2026-07-10").state; // gap → current 1
+    expect(s.current).toBe(1);
+    expect(s.longest).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Streak wiring: insertDailyResultIfAbsent advances daily_streaks + mints the
+// 7-day keepsake; getToday / getStreak expose it. (Panel-2 W3)
+// ---------------------------------------------------------------------------
+
+/** A daily_tales row on a chosen date, id derived from the date for clarity. */
+function dailyOn(date: string): Row {
+  return { ...dailyRow(`daily_${date}`, date) };
+}
+
+/** Play (finish) the account's Daily for `date`; returns the hook outcome. */
+async function finishDailyOn(
+  ctx: any,
+  date: string,
+  accountId = "acct_1",
+  finishedAt = epochDayFromISO(date) * 86_400_000 + 1000,
+) {
+  return insertDailyResultIfAbsent(ctx, {
+    dailyId: `daily_${date}`,
+    accountId,
+    endingId: "safe-harbor",
+    turnCount: 6,
+    finishedAt,
+  });
+}
+
+describe("daily streak wiring (Panel-2 W3)", () => {
+  it("increments the account streak across consecutive Daily completions", async () => {
+    const dates = ["2026-07-10", "2026-07-11", "2026-07-12"];
+    const { ctx, tables } = makeCtx({
+      tables: {
+        daily_tales: dates.map(dailyOn),
+        daily_results: [],
+        daily_streaks: [],
+        analytics_events: [],
+      },
+    });
+    for (const d of dates) await finishDailyOn(ctx, d);
+    expect(tables.daily_streaks).toHaveLength(1);
+    expect(tables.daily_streaks![0]).toMatchObject({
+      accountId: "acct_1",
+      current: 3,
+      longest: 3,
+      lastDate: "2026-07-12",
+    });
+  });
+
+  it("resets the streak after a missed day", async () => {
+    const { ctx, tables } = makeCtx({
+      tables: {
+        daily_tales: ["2026-07-10", "2026-07-11", "2026-07-14"].map(dailyOn),
+        daily_results: [],
+        daily_streaks: [],
+        analytics_events: [],
+      },
+    });
+    await finishDailyOn(ctx, "2026-07-10");
+    await finishDailyOn(ctx, "2026-07-11");
+    await finishDailyOn(ctx, "2026-07-14");
+    expect(tables.daily_streaks![0]).toMatchObject({ current: 1, longest: 2, lastDate: "2026-07-14" });
+  });
+
+  it("mints a 7-day Ember keepsake exactly at a 7-day streak", async () => {
+    const dates = Array.from({ length: 7 }, (_, i) => `2026-07-${String(10 + i).padStart(2, "0")}`);
+    const { ctx, tables } = makeCtx({
+      tables: {
+        daily_tales: dates.map(dailyOn),
+        daily_results: [],
+        daily_streaks: [],
+        analytics_events: [],
+      },
+    });
+    let last: any;
+    for (const d of dates) last = await finishDailyOn(ctx, d);
+
+    // The 7th completion returns the minted keepsake id.
+    expect(last.streakMintedKeepsakeId).toBe("daily-streak-7");
+    const row = tables.daily_streaks![0]!;
+    expect(row.current).toBe(7);
+    expect(row.keepsakes).toHaveLength(1);
+    expect(row.keepsakes[0]).toMatchObject({ id: "daily-streak-7", label: "7-Day Ember" });
+
+    // Only the milestone day mints — days 1–6 grant nothing.
+    const granted = (tables.analytics_events ?? []).filter(
+      (e: Row) => e.eventName === "keepsake.granted",
+    );
+    expect(granted).toHaveLength(1);
+  });
+
+  it("gives a guest the same account-scoped streak + keepsake (attach-on-claim, R13.4)", async () => {
+    // Guests play under an accounts row; claim upgrades that SAME account in
+    // place, so the streak keyed by accountId already belongs to the claimant.
+    const dates = Array.from({ length: 7 }, (_, i) => `2026-07-${String(10 + i).padStart(2, "0")}`);
+    const { ctx, tables } = makeCtx({
+      tables: {
+        accounts: [guestAccount("guest_acct")],
+        daily_tales: dates.map(dailyOn),
+        daily_results: [],
+        daily_streaks: [],
+        analytics_events: [],
+      },
+    });
+    for (const d of dates) await finishDailyOn(ctx, d, "guest_acct");
+    const row = tables.daily_streaks!.find((r: Row) => r.accountId === "guest_acct");
+    expect(row).toBeTruthy();
+    expect(row!.current).toBe(7);
+    expect(row!.keepsakes[0]).toMatchObject({ id: "daily-streak-7" });
+  });
+
+  it("is idempotent — replaying the same day never double-counts the streak", async () => {
+    const { ctx, tables } = makeCtx({
+      tables: {
+        daily_tales: [dailyOn("2026-07-10")],
+        daily_results: [],
+        daily_streaks: [],
+        analytics_events: [],
+      },
+    });
+    await finishDailyOn(ctx, "2026-07-10");
+    await finishDailyOn(ctx, "2026-07-10");
+    expect(tables.daily_streaks![0]).toMatchObject({ current: 1, longest: 1 });
+    expect(tables.daily_results).toHaveLength(1);
+  });
+});
+
+describe("getToday / getStreak expose the streak (Panel-2 W3)", () => {
+  it("getToday returns a zeroed streak when the reader has none", async () => {
+    const { ctx } = makeCtx({
+      tables: { accounts: [guestAccount()], daily_tales: [dailyRow()], daily_streaks: [] },
+    });
+    const out = await (getToday as any)._handler(ctx, { accountId: "acct_1", guestTokenHash: "guest_hash" });
+    expect(out.streak).toEqual(emptyStreak());
+  });
+
+  it("getToday reflects an existing streak record", async () => {
+    const { ctx } = makeCtx({
+      tables: {
+        accounts: [guestAccount()],
+        daily_tales: [dailyRow()],
+        daily_streaks: [
+          { accountId: "acct_1", current: 4, longest: 9, lastDate: "2026-07-11", keepsakes: [], updatedAt: 1 },
+        ],
+      },
+    });
+    const out = await (getToday as any)._handler(ctx, { accountId: "acct_1", guestTokenHash: "guest_hash" });
+    expect(out.streak).toEqual({ current: 4, longest: 9, lastDate: "2026-07-11" });
+  });
+
+  it("getStreak returns the streak plus its minted keepsakes", async () => {
+    const { ctx } = makeCtx({
+      tables: {
+        accounts: [guestAccount()],
+        daily_streaks: [
+          {
+            accountId: "acct_1",
+            current: 7,
+            longest: 7,
+            lastDate: "2026-07-16",
+            keepsakes: [{ id: "daily-streak-7", label: "7-Day Ember", description: "A steady flame." }],
+            updatedAt: 1,
+          },
+        ],
+      },
+    });
+    const out = await (getStreak as any)._handler(ctx, { accountId: "acct_1", guestTokenHash: "guest_hash" });
+    expect(out.streak).toEqual({ current: 7, longest: 7, lastDate: "2026-07-16" });
+    expect(out.keepsakes).toHaveLength(1);
+    expect(out.keepsakes[0].id).toBe("daily-streak-7");
   });
 });

@@ -9,7 +9,15 @@ export {
   redactionPlaceholders,
 } from "./RedactionGuard";
 export type { RedactionKind } from "./RedactionGuard";
-export { CostBoard, FunnelBoard, LiveBoard, SafetyBoard, StoriesBoard, UsersBoard } from "./boards";
+export {
+  CostBoard,
+  FunnelBoard,
+  LiveBoard,
+  ModerationBoard,
+  SafetyBoard,
+  StoriesBoard,
+  UsersBoard,
+} from "./boards";
 export type {
   AdminAccount,
   AdminCostMetric,
