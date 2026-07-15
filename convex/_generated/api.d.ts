@@ -17,6 +17,7 @@ import type * as analyticsEvents from "../analyticsEvents.js";
 import type * as assets from "../assets.js";
 import type * as betterAuth_accountLink from "../betterAuth/accountLink.js";
 import type * as betterAuth_auth from "../betterAuth/auth.js";
+import type * as betterAuth_emailNode from "../betterAuth/emailNode.js";
 import type * as betterAuth_providers from "../betterAuth/providers.js";
 import type * as billing_apple from "../billing/apple.js";
 import type * as billing_config from "../billing/config.js";
@@ -118,6 +119,7 @@ declare const fullApi: ApiFromModules<{
   assets: typeof assets;
   "betterAuth/accountLink": typeof betterAuth_accountLink;
   "betterAuth/auth": typeof betterAuth_auth;
+  "betterAuth/emailNode": typeof betterAuth_emailNode;
   "betterAuth/providers": typeof betterAuth_providers;
   "billing/apple": typeof billing_apple;
   "billing/config": typeof billing_config;
