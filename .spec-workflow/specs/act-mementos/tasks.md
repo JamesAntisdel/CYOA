@@ -17,7 +17,7 @@ are integrator-owned (BC7/AM1).
 
 ## Agent AM-ENGINE — owns `packages/engine/src/rank.ts` + engine tests
 
-- [ ] 1.1 `rankProgress` helper (R3.1)
+- [x] 1.1 `rankProgress` helper (R3.1)
   Add the `RankProgress` type and pure `rankProgress` per design §1.3: next
   tier above the current in `TIERS` order, zero-floored per-metric deficits
   against that tier's own thresholds, null at the top tier. `TIERS` stays
@@ -30,7 +30,7 @@ are integrator-owned (BC7/AM1).
 
 ## Agent AM-PURE — owns `convex/mementos.ts` (new) + its vitest suite
 
-- [ ] 2.1 `deriveActMemento` + mint helper (R1.1–R1.5, R2.1)
+- [x] 2.1 `deriveActMemento` + mint helper (R1.1–R1.5, R2.1)
   Create `convex/mementos.ts` mirroring the `keepsakes.ts` layout: the
   `Memento` type, `deriveActMemento` (total; actLabel/beatLabel fallbacks per
   AM2; clamps label ≤80 / description ≤160; roman numerals matching
@@ -47,7 +47,7 @@ are integrator-owned (BC7/AM1).
 
 ## Agent AM-SERVER — owns `convex/accountFunctions.ts` + its tests
 
-- [ ] 3.1 Profile projection: `rankProgress` + `mementos` (R2.3, R2.4, R3.2)
+- [x] 3.1 Profile projection: `rankProgress` + `mementos` (R2.3, R2.4, R3.2)
   Widen `getProfile` per design §3: compute `rankProgress` from the SAME
   `librarianRank` result `buildProfileMetaAdditions` already produces (AM3),
   read the newest 12 mementos via `by_accountId` plus a total count, and
@@ -61,50 +61,55 @@ are integrator-owned (BC7/AM1).
 
 ## Agent AM-CLIENT — owns `apps/app/lib/storyEngagementW3.ts`, `apps/app/hooks/useAccountProfile.ts`, `apps/app/components/account/MementoShelf.tsx` (new), `apps/app/app/profile/index.tsx`, `apps/app/components/reading/ChapterEnd.tsx` + ReaderScreen prop wiring, client tests
 
-- [ ] 4.1 Adapters + render helpers (R3.3, R4.1)
+- [x] 4.1 Adapters + render helpers (R3.3, R4.1)
   Adapt the two new `getProfile` fields in `useAccountProfile` (null →
-  optional, beside `adaptLibrarianRank`, `useAccountProfile.ts:328`) and add
+  optional, beside `adaptLibrarianRank` — `useAccountProfile.ts` grep
+  `adaptLibrarianRank(remoteProfile?.librarianRank)` ≈ :371) and add
   the pure `rankTickerLine` / `mementoStampLine` helpers to
   `storyEngagementW3.ts` per design §3. Tests: adapter tolerance for absent
   fields, ticker copy matrix (single metric, multi metric, pluralization).
-  - _Leverage: `apps/app/hooks/useAccountProfile.ts:320-335` (adapter seam), `apps/app/lib/storyEngagementW3.ts:146-161` (rank chip/progress-line helpers + tests)_
+  - _Leverage: `apps/app/hooks/useAccountProfile.ts` grep `adaptLibrarianRank(remoteProfile?.librarianRank)` ≈ :371 (adapter seam), `apps/app/lib/storyEngagementW3.ts:146-161` (rank chip/progress-line helpers + tests)_
   - _Requirements: R3.3, R4.1_
   - _Prompt: Implement the task for spec act-mementos, first run spec-workflow-guide to get the workflow guide then implement the task: Role: client data-layer developer. Task: add the profile adapters and the pure ticker/memento copy helpers per design section 3. Restrictions: pure helpers import nothing from React Native; absent server fields become absent optionals via conditional spread (BC2/BC4); ticker copy lists only non-zero deficits. Success: vitest covers the copy matrix and adapter tolerance. Mark [-] when starting, log-implementation when done, then [x]._
 
-- [ ] 4.2 Profile ticker + Mementos shelf (R3.3, R4)
+- [x] 4.2 Profile ticker + Mementos shelf (R3.3, R4)
   Render the ticker line under the rank chip in `profile/index.tsx` (only
   when `rankProgress` is present; top tier unchanged) and build + mount
   `MementoShelf` BELOW the keepsakes shelf per design §4: quiet cards,
   header with total, null render when empty (R4.2). Keepsakes shelf and
   TrophyCrypt untouched (R4.1). Node/vitest tests for hide states.
-  - _Leverage: `apps/app/app/profile/index.tsx:45-53` (rank block), existing keepsake shelf rendering in the profile screen, `apps/app/components/endings/TrophyCrypt.tsx` (card style reference — do not modify)_
+  - _Leverage: `apps/app/app/profile/index.tsx` grep `librarianRankProgressLine` (rank block ≈ :52-59), existing keepsake shelf rendering in the profile screen, `apps/app/components/endings/TrophyCrypt.tsx` (card style reference — do not modify)_
   - _Requirements: R3.3, R4.1, R4.2, R4.3_
   - _Prompt: Implement the task for spec act-mementos, first run spec-workflow-guide to get the workflow guide then implement the task: Role: React Native client developer on the account surface. Task: mount the rank ticker and the MementoShelf per design section 4. Restrictions: mementos render BELOW keepsakes with smaller visual weight — the hierarchy IS the requirement (R4.1); empty shelf renders nothing (R4.2); no changes to keepsake or crypt components. Success: node/vitest hide-state tests green; profile verified visually with and without mementos. Mark [-] when starting, log-implementation when done, then [x]._
 
-- [ ] 4.3 ChapterEnd act-boundary lines (R3.4)
+- [x] 4.3 ChapterEnd act-boundary lines (R3.4)
   Add optional `mementoLine` / `rankTickerLine` props to `ChapterEnd`
   (rendered under the act `Stamp`, hidden when absent) and build them in
   ReaderScreen ONLY when `actStampFromDiffs` returns a stamp, via a
   conditional-spread builder beside `actStampProps` (AM5), sourcing the
   ticker from the already-fetched profile. Tests: props render only with an
   act stamp; non-act boundaries byte-identical to today.
-  - _Leverage: `apps/app/components/reading/ChapterEnd.tsx:29-30` (optional act props), `apps/app/components/reading/ReaderScreen.tsx:104-109` (actStampProps builder) and `:459-461` (mount), `apps/app/lib/storyEngagement.ts:239` (actStampFromDiffs)_
+  - _Leverage: `apps/app/components/reading/ChapterEnd.tsx` grep `actNumber?: number` ≈ :28-29 (optional act props), `apps/app/components/reading/ReaderScreen.tsx` grep `function actStampProps` ≈ :118-123 (builder) and its mount grep `actStampProps(actStampFromDiffs(` ≈ :611, `apps/app/lib/storyEngagement.ts` grep `export function actStampFromDiffs` ≈ :243_
   - _Requirements: R3.4_
   - _Prompt: Implement the task for spec act-mementos, first run spec-workflow-guide to get the workflow guide then implement the task: Role: React Native client developer on the reading surface. Task: thread the two optional act-boundary lines into ChapterEnd per design section 4. Restrictions: both props are conditional-spread optionals (AM5) — undefined is never passed; the lines appear ONLY alongside an act stamp; no new polling — reuse the profile data the app already fetches. Success: tests prove act boundaries show the lines and plain chapter boundaries render exactly as before. Mark [-] when starting, log-implementation when done, then [x]._
 
 ## INTEGRATOR — owns reserved files (`convex/schema.ts`, `convex/index.ts`, `convex/crons.ts`) + `convex/game.ts` wiring
 
-- [ ] 5.1 Schema + game.ts mint sites + barrel (R1.1, BC7, AM1)
+- [x] 5.1 Schema + game.ts mint site + barrel (R1.1, BC7, AM1)
   Add the `mementos` table per design §1.1 (both indexes) and any barrel
-  exports agents reported. Wire `mintActMementoIfDue` at BOTH
-  turn-application paths — streaming `completeSceneStream` (beside the
-  `act_advanced` chapter-cinematic trigger, `game.ts:2106-2113`) and the
-  non-streaming mirror (`:4421-4427`) — passing the arc, fired-beat label,
-  and story title already in scope. Then: full monorepo typecheck + all
-  suites + dockerized deploy as the merge gate.
-  - _Leverage: `convex/schema.ts:255` (endings_unlocked as the account-scoped template), `convex/game.ts:2106-2113` + `:4421-4427` (AM1 sites), `convex/game.ts` recordEndingUnlock call sites (same-mutation best-effort precedent)_
+  exports agents reported. Wire `mintActMementoIfDue` at the ONE live
+  turn-application path — the streaming `completeSceneStream` mutation, beside
+  the `act_advanced` chapter-cinematic trigger (`convex/game.ts`, grep
+  `maybeScheduleChapterCinematic` with `force: true` ≈ :2329, gated on the
+  `act_advanced` detection ≈ :2326) — passing the arc, fired-beat label, and
+  story title already in scope. Do NOT wire the dead non-streaming
+  `runLlmDrivenSubmitChoice` (grep `@deprecated DEAD CODE` ≈ :4421); per
+  be57970 the `submitChoice` action funnels every llm-driven turn through the
+  streaming flow, so there is exactly one live site. Then: full monorepo
+  typecheck + all suites + dockerized deploy as the merge gate.
+  - _Leverage: `convex/schema.ts` grep `endings_unlocked: defineTable` ≈ :255 (account-scoped template), `convex/game.ts` grep `export const completeSceneStream` ≈ :1896 + the `maybeScheduleChapterCinematic` act trigger ≈ :2329 (the AM1 live site), `convex/game.ts` recordEndingUnlock call sites (same-mutation best-effort precedent)_
   - _Requirements: R1.1, R1.2, R1.4_
-  - _Prompt: Implement the task for spec act-mementos, first run spec-workflow-guide to get the workflow guide then implement the task: Role: integrator with sole ownership of reserved files and game.ts. Task: land the mementos table and wire the mint helper at both AM1 sites per design sections 1 and 2. Restrictions: additive edits only to reserved files; both call sites in the same commit — a single-site wire silently halves minting; the helper call is best-effort and must not reorder or block the existing terminal/cinematic logic. Success: dockerized deploy healthy; typecheck + full suites green. Mark [-] when starting, log-implementation when done, then [x]._
+  - _Prompt: Implement the task for spec act-mementos, first run spec-workflow-guide to get the workflow guide then implement the task: Role: integrator with sole ownership of reserved files and game.ts. Task: land the mementos table and wire the mint helper at the ONE live AM1 site (streaming completeSceneStream) per design sections 1 and 2. Restrictions: additive edits only to reserved files; do NOT re-wire the @deprecated dead non-streaming runLlmDrivenSubmitChoice — there is a single live turn path; the helper call is best-effort and must not reorder or block the existing terminal/cinematic logic. Success: dockerized deploy healthy; typecheck + full suites green. Mark [-] when starting, log-implementation when done, then [x]._
 
 - [ ] 5.2 Live verification (R1, R2, R3)
   On cyoa-local: play a fresh llm save across an act boundary and verify the

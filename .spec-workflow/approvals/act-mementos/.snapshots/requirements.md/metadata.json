@@ -1,0 +1,22 @@
+{
+  "filePath": ".spec-workflow/specs/act-mementos/requirements.md",
+  "currentVersion": 2,
+  "snapshots": [
+    {
+      "version": 1,
+      "filename": "snapshot-001.json",
+      "timestamp": "2026-07-12T00:55:10.398Z",
+      "trigger": "initial",
+      "approvalId": "approval_1783817710376_p15u5frni",
+      "approvalTitle": "Act Mementos — Requirements (durable mid-run collectibles + rank ticker)"
+    },
+    {
+      "version": 2,
+      "filename": "snapshot-002.json",
+      "timestamp": "2026-07-12T00:56:16.270Z",
+      "trigger": "approved",
+      "approvalId": "approval_1783817710376_p15u5frni",
+      "approvalTitle": "Act Mementos — Requirements (durable mid-run collectibles + rank ticker)"
+    }
+  ]
+}

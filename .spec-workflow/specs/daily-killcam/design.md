@@ -9,23 +9,32 @@ below encode what a fresh code audit (2026-07-11) actually found.
 
 ## 0. SPEC-SPECIFIC BUILD CORRECTIONS (authoritative)
 
-- **DK1 — There are FOUR `turn_history` insert sites; llm-driven turns use
-  two of them.** Authored turns write at `convex/game.ts:1112`
-  (`buildTurnPersistencePlan`) and `:1358` (authored streaming begin);
-  llm-driven turns write at `:4027` (streaming begin —
-  `runLlmDrivenBeginStreaming`, the choice is already committed there) and
-  `:4521` (non-streaming `runLlmDrivenSubmitChoice`). Daily saves are
-  llm-driven, so killcam recording rides `:4027` AND `:4521` — miss one and
-  half the runs go uncounted. Follow the established daily precedent:
-  recording is an EXPORTED plain helper in `convex/dailyFunctions.ts`
-  (exactly like `insertDailyResultIfAbsent`, `dailyFunctions.ts:388`, whose
-  header says "The integrator calls this from the game.ts terminal block
-  (RESERVED — do NOT edit game.ts)"). Agents ship the helper + tests; the
-  integrator wires both call sites.
+- **DK1 — There are THREE `turn_history` insert sites, and llm-driven turns
+  have exactly ONE live one.** Grep `ctx.db.insert("turn_history"` in
+  `convex/game.ts` and it lands three times: the deterministic/authored engine
+  path (`provider: "deterministic"`, inside the scripted/free-form turn
+  handler, ~`game.ts:1545`), and two llm-driven paths —
+  `runLlmDrivenBeginStreaming` (the streaming-begin insert, ~`game.ts:4340`,
+  the choice is already committed there) and `runLlmDrivenSubmitChoice`
+  (~`game.ts:4855`). The second llm-driven site is DEAD CODE as of commit
+  `be57970`: its own header reads `@deprecated DEAD CODE — do not re-wire`
+  (`game.ts:4422`) because running `router.generateScene` inside a mutation
+  crashes real providers, so the `submitChoice` action now routes every
+  non-streaming llm-driven turn back through the same streaming flow. The LIVE
+  llm-driven turn path is streaming ONLY. Daily saves are llm-driven, so
+  killcam recording rides the SINGLE live site — `runLlmDrivenBeginStreaming`
+  — and MUST NOT be wired into dead `runLlmDrivenSubmitChoice` (wiring it
+  there is inert today and a landmine when the dead helper is deleted). Follow
+  the established daily precedent: recording is an EXPORTED plain helper in
+  `convex/dailyFunctions.ts` (exactly like `insertDailyResultIfAbsent`,
+  `dailyFunctions.ts:426`, whose header says "The integrator calls this from
+  the game.ts terminal block (RESERVED — do NOT edit game.ts)"). Agents ship
+  the helper + tests; the integrator wires the one live call site (and drops
+  it whenever the dead `runLlmDrivenSubmitChoice` cleanup lands).
 - **DK2 — Convex queries are read-only.** `getChoicePulse` cannot insert
   analytics rows. `daily.choice_recorded` fires from the turn mutation via
   the recording helper (the `insertDailyAnalytics` pattern,
-  `dailyFunctions.ts:459`); there is NO pulse-shown server event.
+  `dailyFunctions.ts:661`); there is NO pulse-shown server event.
 - **DK3 — Attach-on-claim is free; do not build a migration.** `claimGuest`
   (`convex/accountFunctions.ts:134-152`) PATCHES the same account row —
   `accountId` is stable across claim, so rows keyed by it survive
@@ -40,7 +49,7 @@ below encode what a fresh code audit (2026-07-11) actually found.
   math"); the pulse follows suit. The client renders `sharePct` verbatim.
 - **DK6 — One reader, one vote, keyed by account not save.** The upsert key
   is (`dailyId`, `accountId`, `turnNumber`) — `hasPlayedDaily`
-  (`dailyFunctions.ts:433`) guards one STARTED run per day, but forks of a
+  (`dailyFunctions.ts:635`) guards one STARTED run per day, but forks of a
   daily save can carry `dailyId` too. Storing `saveId` on the row and
   refusing to overwrite a row whose `saveId` differs (R1.3) makes fork
   double-votes structurally impossible.
@@ -66,7 +75,12 @@ daily_choice_results: defineTable({
   .index("by_daily_turn", ["dailyId", "turnNumber"])        // aggregation read
   .index("by_daily_account", ["dailyId", "accountId"])       // upsert + reader rows
   .index("by_save", ["saveId"])                              // rewind deletion
+  .index("by_accountId", ["accountId"])                      // deleteAccount purge (§5)
 ```
+
+The `by_daily_account` index leads with `dailyId`, so it cannot front an
+account-only scan; the fourth `by_accountId` index is required for
+`deleteAccount` (§5) and is settled here — not an integrator judgment call.
 
 No `saves.state` changes, no engine changes — this feature is entirely
 convex + client (the engine never sees other readers).
@@ -107,7 +121,7 @@ export function pulsePhrase(sharePct: number, freeForm: boolean): string;
 ## 2. Call flow
 
 ```
-llm-driven turn application (game.ts:4027 streaming-begin AND :4521 non-streaming — DK1)
+llm-driven turn application (runLlmDrivenBeginStreaming — the SINGLE live streaming-begin site, game.ts:4340; DK1)
   └─ integrator calls recordDailyChoiceIfEligible(ctx, {...}) [exported helper]
        ├─ no save.dailyId / turnNumber > KILLCAM_TURN_CAP / no choice ⇒ no-op
        ├─ choiceKeyForLabel(choiceLabel, freeForm)
@@ -117,7 +131,7 @@ llm-driven turn application (game.ts:4027 streaming-begin AND :4521 non-streamin
        │    none ⇒ insert (cleanDoc)
        └─ insertDailyAnalytics "daily.choice_recorded"  (best-effort, DK2)
 
-rewind mutation (game.ts rewind plan, :850-902 — deletes turn_history rows)
+rewind mutation (rewindSaveTurns, game.ts:1086 — turn_history delete loop ~:1148)
   └─ integrator calls deleteDailyChoicesFromTurn(ctx, saveId, fromTurnNumber)
        └─ by_save rows with turnNumber ≥ fromTurnNumber deleted (R1.4)
 
@@ -144,7 +158,9 @@ is needed; keep the `adaptDailyToday` tolerance discipline
 
 Scene projection widening (R3.3): `projectLlmDrivenScene`
 (`convex/saves.ts:592`) adds optional `dailyId?: string` via conditional
-spread; `useTurn`'s `RemoteScene` mirrors it as an optional field. This is a
+spread; the `RemoteScene` type in `apps/app/lib/gameApi.ts` (grep
+`type RemoteScene` ≈ :185; imported by `useTurn.ts` at :31) mirrors it as an
+optional field. This is a
 reader-known fact (they launched the Daily) — BC10-clean. The existing
 projection spoiler test extends to assert NOTHING ELSE new is projected.
 
@@ -180,11 +196,11 @@ export function pulseChipLabel(entry: RemotePulseEntry): string;
 | `daily.choice_recorded` | `dailyId`, `turnNumber`, `choiceKey`, `freeForm` | recording helper inside the turn mutation (DK2) |
 
 Account lifecycle: `deleteAccount` (`accountFunctions.ts:154`) gains one
-`deleteByIndex` line for `daily_choice_results` via `by_daily_account`… note
-that index leads with `dailyId`, so deletion needs an account-scoped path:
-either an additional `by_accountId` index (integrator's call — mirrors
-`daily_results` cleanup posture) or a filtered scan bounded per daily. Decide
-at integration; requirements only demand purge-on-delete (NFR Security).
+`deleteByIndex` line for `daily_choice_results` via the account-scoped
+`by_accountId` index specified in §1.1 (the `by_daily_account` index leads
+with `dailyId`, so it can't front an account-only purge). This mirrors the
+`daily_results` cleanup posture and is settled in §1.1 — not an integrator
+judgment call; requirements demand purge-on-delete (NFR Security).
 `exportAccount` includes the rows in the bundle (same bundle-builder pattern
 as `daily_results`).
 

@@ -1,0 +1,22 @@
+{
+  "filePath": ".spec-workflow/specs/daily-killcam/requirements.md",
+  "currentVersion": 2,
+  "snapshots": [
+    {
+      "version": 1,
+      "filename": "snapshot-001.json",
+      "timestamp": "2026-07-12T00:55:00.110Z",
+      "trigger": "initial",
+      "approvalId": "approval_1783817700095_3r3pcbsdy",
+      "approvalTitle": "Daily Kill-Cam — Requirements (today's readers chose this, opening turns of the Daily)"
+    },
+    {
+      "version": 2,
+      "filename": "snapshot-002.json",
+      "timestamp": "2026-07-12T00:56:07.370Z",
+      "trigger": "approved",
+      "approvalId": "approval_1783817700095_3r3pcbsdy",
+      "approvalTitle": "Daily Kill-Cam — Requirements (today's readers chose this, opening turns of the Daily)"
+    }
+  ]
+}
