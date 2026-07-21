@@ -1,6 +1,6 @@
 import { useRouter } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
-import { ScrollView, View } from "react-native";
+import { Pressable, ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { DiscoverList } from "../../components/discovery/DiscoverList";
@@ -59,6 +59,17 @@ export default function DiscoverRoute() {
   const [shelfNonce, setShelfNonce] = useState(0);
   const [busySeedId, setBusySeedId] = useState<string | null>(null);
   const templates = useMemo(() => listCreatorTemplates(), []);
+  // Reading-modes R4 — let the reader begin a community seed in Novel mode
+  // (linear "turn the page" reading), matching the cover screen
+  // (app/index.tsx chooseReadingMode). Chosen at create (posture A); the server
+  // re-gates on entitlement (dev-force-unlocked locally). Default: branching.
+  // The explanatory caption only appears once the reader CHANGES the selection.
+  const [novelMode, setNovelMode] = useState(false);
+  const [modeCaptionVisible, setModeCaptionVisible] = useState(false);
+  const chooseReadingMode = (novel: boolean) => {
+    setNovelMode(novel);
+    setModeCaptionVisible(true);
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -107,7 +118,14 @@ export default function DiscoverRoute() {
     }
     setBusySeedId(seed.seedId);
     try {
-      const save = await library.createSave(seed.storyId, "story", seed.title);
+      const save = await library.createSave(
+        seed.storyId,
+        "story",
+        seed.title,
+        undefined,
+        undefined,
+        { readingMode: novelMode ? "novel" : "branching" },
+      );
       router.push(`/read/${save.saveId}`);
     } catch (error) {
       push({
@@ -186,6 +204,47 @@ export default function DiscoverRoute() {
               Seeds other creators have shelved for anyone to play. Begin one as a fresh
               run, or remix it into a draft of your own.
             </Text>
+            {/* Reading-mode toggle as a compact segmented control (matches the
+                cover screen). Selected segment = filled (accent) Chip styling;
+                no check-mark glyph (RC5). Applies to the seed you begin next. */}
+            <View
+              accessibilityRole="radiogroup"
+              accessibilityLabel="Reading mode"
+              style={{
+                alignSelf: "flex-start",
+                borderColor: tokens.colors.border,
+                borderRadius: tokens.radii.pill,
+                borderWidth: tokens.borderWidths.hairline,
+                flexDirection: "row",
+                overflow: "hidden",
+              }}
+            >
+              <Pressable
+                accessibilityRole="radio"
+                accessibilityLabel="Branching reading mode: you choose the path"
+                accessibilityState={{ selected: !novelMode }}
+                onPress={() => chooseReadingMode(false)}
+                style={{ alignItems: "center", justifyContent: "center", minHeight: 44 }}
+              >
+                <Chip variant={novelMode ? "muted" : "accent"}>Branching</Chip>
+              </Pressable>
+              <Pressable
+                accessibilityRole="radio"
+                accessibilityLabel="Novel reading mode: one linear story, just turn the page"
+                accessibilityState={{ selected: novelMode }}
+                onPress={() => chooseReadingMode(true)}
+                style={{ alignItems: "center", justifyContent: "center", minHeight: 44 }}
+              >
+                <Chip variant={novelMode ? "accent" : "muted"}>Novel</Chip>
+              </Pressable>
+            </View>
+            {modeCaptionVisible ? (
+              <Text muted variant="caption">
+                {novelMode
+                  ? "Novel: one continuous story — no choices, just turn the page. Applies to the seed you begin next."
+                  : "Branching: you pick the path at every scene. Tap Novel for a linear read instead."}
+              </Text>
+            ) : null}
           </View>
 
           {seeds === undefined ? (

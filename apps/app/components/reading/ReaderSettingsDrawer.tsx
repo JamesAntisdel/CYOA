@@ -39,9 +39,11 @@ import { useAppTheme } from "../../theme";
  * Illustrated-Book Pro-gate + coupling live in the shared module too, so the
  * gate fires identically here and on /settings.
  *
- * Subset (the 8 shared groups — R4.4):
+ * Subset (the shared groups — R4.4; + Candlelight focus, a phase-2 quick-win
+ * offered mid-tale so a reader can flip the chrome dimming off without leaving
+ * the story):
  *   Theme · Text size · Reading layout · Illustrations · Narration & ambient
- *   · Narrator speed · Scene cinematics · Reduce motion
+ *   · Narrator speed · Scene cinematics · Reduce motion · Candlelight focus
  * (Reader HUD, Audio, Cinematic mode, Dialog blocks, Mature content, and the
  * Narrator voice picker stay /settings-only.)
  *
@@ -60,6 +62,7 @@ const DRAWER_HELP: Record<string, string> = {
   imagesEnabled: "The scene image plate above the prose.",
   audioEnabled: "Narrator voice + scene soundscape.",
   videoEnabled: "Short Veo clip below the prose. Image still shows.",
+  focusMode: "Dims the chrome while you read; any input restores it.",
 };
 
 export function ReaderSettingsDrawer({ visible, onClose }: ReaderSettingsDrawerProps) {

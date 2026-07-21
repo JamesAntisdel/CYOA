@@ -52,6 +52,8 @@ const SETTINGS_HELP: Record<string, string> = {
   cinematicMode:
     "How much generated media a run produces. Endpoint cinematics and Illustrated Book need Pro; your plan may cap the effective setting.",
   dialogBlocksEnabled: "Render quoted speech as indented blocks with the speaker's name.",
+  focusMode:
+    "Dims the top bar and story ribbon while you read; any tap, scroll, or key brings them back instantly.",
 };
 
 export default function SettingsRoute() {

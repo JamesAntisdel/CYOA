@@ -448,7 +448,7 @@ function NarratorPlayPill({ uri }: { uri: string }) {
         style={{ color: tokens.colors.background, fontWeight: "800" }}
         variant="bodySmall"
       >
-        {playing ? "▌▌ Narrating" : "▶ Narrate"}
+        {playing ? "Narrating" : "Narrate"}
       </Text>
     </Pressable>
   );

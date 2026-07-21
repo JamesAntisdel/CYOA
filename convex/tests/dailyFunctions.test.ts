@@ -379,6 +379,9 @@ describe("getChoicePulse (daily-killcam R2)", () => {
     });
 
     expect(out.pulses).toHaveLength(1);
+    // 4.3 — the reader's OWN daily save id (anchor of their winning run) rides
+    // alongside the pulses so the results route can fetch their own labels.
+    expect(out.readerSaveId).toBe("my-save");
     const entry = out.pulses[0]!;
     expect(entry.turnNumber).toBe(1);
     expect(entry.totalReaders).toBe(13);
@@ -419,6 +422,37 @@ describe("getChoicePulse (daily-killcam R2)", () => {
       guestTokenHash: "gt-secret",
     });
     expect(out.pulses).toEqual([]);
+    // 4.3 — readerSaveId is independent of the floor: the reader HAS a row, so
+    // their own save id is still returned even though no bucket qualifies.
+    expect(out.readerSaveId).toBe("my-save");
+  });
+
+  it("returns the EARLIEST-turn save id as readerSaveId (winning-run anchor, 4.3)", async () => {
+    // The reader recorded turns 1 and 2 from the same winning run; a later forked
+    // copy could only add rows the first run lacked, so anchoring on the earliest
+    // turn's saveId identifies the run whose history holds the reader's labels.
+    const day = [
+      { _id: "r2", dailyId: DAILY_ID, accountId: "acct-guest", saveId: "winning-run", turnNumber: 2, choiceKey: "k2", freeForm: false, createdAt: 2, updatedAt: 2 },
+      { _id: "r1", dailyId: DAILY_ID, accountId: "acct-guest", saveId: "winning-run", turnNumber: 1, choiceKey: "k1", freeForm: false, createdAt: 1, updatedAt: 1 },
+    ];
+    const { ctx } = makeCtx({ accounts: [GUEST], daily_choice_results: day });
+    const out = await (getChoicePulse as any)._handler(ctx as any, {
+      dailyId: DAILY_ID as any,
+      accountId: "acct-guest" as any,
+      guestTokenHash: "gt-secret",
+    });
+    expect(out.readerSaveId).toBe("winning-run");
+  });
+
+  it("returns readerSaveId=null when the reader has no recorded rows (strip hides)", async () => {
+    const { ctx } = makeCtx({ accounts: [GUEST], daily_choice_results: [] });
+    const out = await (getChoicePulse as any)._handler(ctx as any, {
+      dailyId: DAILY_ID as any,
+      accountId: "acct-guest" as any,
+      guestTokenHash: "gt-secret",
+    });
+    expect(out.pulses).toEqual([]);
+    expect(out.readerSaveId).toBeNull();
   });
 
   it("resolves identically after guest→account claim — rows keyed by stable accountId (DK3)", async () => {

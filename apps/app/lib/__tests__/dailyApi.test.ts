@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   adaptChoicePulse,
+  adaptChoicePulseResult,
   adaptDailyResults,
   adaptDailyToday,
   buildDistributionModel,
@@ -13,6 +14,7 @@ import {
   msUntilNextUtcMidnight,
   newestCommittedPulse,
   nextDailyCountdown,
+  openingChoicesFromRunHistory,
   pulseChipLabel,
   type RemotePulseEntry,
 } from "../dailyApi";
@@ -170,6 +172,76 @@ describe("buildOpeningForkTiles (R3.2 — reader's own label ⋈ pulse, hide-whe
     expect(buildOpeningForkTiles([{ turnNumber: 1, choiceLabel: "x" }], [])).toEqual([]);
     expect(buildOpeningForkTiles([], pulses)).toEqual([]);
     expect(buildOpeningForkTiles([{ turnNumber: 9, choiceLabel: "x" }], pulses)).toEqual([]);
+  });
+});
+
+describe("adaptChoicePulseResult (4.3 — pulses + reader's own save id)", () => {
+  it("maps the pulses and coerces a present readerSaveId", () => {
+    const out = adaptChoicePulseResult({
+      pulses: [{ turnNumber: 1, sharePct: 62, sameCount: 31, totalReaders: 50, phrase: "the well-worn path" }],
+      readerSaveId: "save-abc",
+    });
+    expect(out.readerSaveId).toBe("save-abc");
+    expect(out.pulses).toHaveLength(1);
+    expect(out.pulses[0]!.turnNumber).toBe(1);
+  });
+
+  it("degrades a missing / empty / garbage readerSaveId to null (strip self-skips)", () => {
+    expect(adaptChoicePulseResult({ pulses: null, readerSaveId: null }).readerSaveId).toBeNull();
+    expect(adaptChoicePulseResult({ pulses: [], readerSaveId: "" }).readerSaveId).toBeNull();
+    expect(adaptChoicePulseResult({ pulses: [], readerSaveId: 42 as any }).readerSaveId).toBeNull();
+    expect(adaptChoicePulseResult(null).readerSaveId).toBeNull();
+    expect(adaptChoicePulseResult(undefined).pulses).toEqual([]);
+  });
+});
+
+describe("openingChoicesFromRunHistory (4.3 — reader's OWN labels from history, BC10)", () => {
+  it("projects each turn's inbound choice label to {turnNumber, choiceLabel}", () => {
+    const out = openingChoicesFromRunHistory({
+      turns: [
+        { turnNumber: 1, choice: { choiceLabel: "Answer the signal" } },
+        { turnNumber: 2, choice: { choiceLabel: "Row toward the dark" } },
+        { turnNumber: 3, choice: { choiceLabel: "Wait on the shore" } },
+      ],
+    });
+    expect(out).toEqual([
+      { turnNumber: 1, choiceLabel: "Answer the signal" },
+      { turnNumber: 2, choiceLabel: "Row toward the dark" },
+      { turnNumber: 3, choiceLabel: "Wait on the shore" },
+    ]);
+  });
+
+  it("drops turns with no inbound choice (e.g. the opening) or an empty label", () => {
+    const out = openingChoicesFromRunHistory({
+      turns: [
+        { turnNumber: 0 },
+        { turnNumber: 1, choice: { choiceLabel: "" } },
+        { turnNumber: 2, choice: { choiceLabel: "Kept" } },
+      ],
+    });
+    expect(out).toEqual([{ turnNumber: 2, choiceLabel: "Kept" }]);
+  });
+
+  it("tolerates a missing / malformed history (BC2 → empty list, strip hides)", () => {
+    expect(openingChoicesFromRunHistory(null)).toEqual([]);
+    expect(openingChoicesFromRunHistory(undefined)).toEqual([]);
+    expect(openingChoicesFromRunHistory({})).toEqual([]);
+    expect(openingChoicesFromRunHistory({ turns: "nope" as any })).toEqual([]);
+  });
+
+  it("round-trips through buildOpeningForkTiles to the reader's own tiles", () => {
+    const pulses: RemotePulseEntry[] = [
+      { turnNumber: 1, sharePct: 62, sameCount: 31, totalReaders: 50, phrase: "the well-worn path" },
+    ];
+    const choices = openingChoicesFromRunHistory({
+      turns: [
+        { turnNumber: 0 },
+        { turnNumber: 1, choice: { choiceLabel: "Answer the signal" } },
+      ],
+    });
+    const tiles = buildOpeningForkTiles(choices, pulses);
+    expect(tiles).toHaveLength(1);
+    expect(tiles[0]!.label).toBe("Answer the signal");
   });
 });
 

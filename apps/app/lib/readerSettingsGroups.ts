@@ -211,6 +211,21 @@ export function readerSettingsGroups(input: {
         { label: "Reduce motion", value: true },
       ],
     },
+    {
+      // Candlelight Focus (phase-2 quick-win). Fades the top bar + story ribbon
+      // after ~4s of no input while reading; any input restores them instantly.
+      // Offered on BOTH surfaces so a reader who finds the dimming distracting
+      // can flip it off mid-tale from the drawer without leaving the story.
+      // A plain boolean group — both surfaces' default dispatch
+      // (`updateSettings({ [key]: value })`) handles it with no coupling.
+      key: "focusMode",
+      label: "Candlelight focus",
+      surfaces: BOTH,
+      options: [
+        { label: "On", value: true },
+        { label: "Off", value: false },
+      ],
+    },
 
     // ── settings-only groups (R4.4) ──
     {

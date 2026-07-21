@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Animated, Easing, Pressable, View } from "react-native";
 
-import { Choice, Text } from "../primitives";
+import { Choice, Icon, Text } from "../primitives";
 import { useAppTheme } from "../../theme";
 import type { ChoiceProjection } from "../../hooks/useTurn";
 import { CheckChip } from "./CheckChip";
@@ -112,7 +112,7 @@ export function ChoiceList({
 const SHAKE_OFFSET = 6;
 
 /**
- * A locked/conditional choice (R4). Renders the 🔒 affordance + a muted,
+ * A locked/conditional choice (R4). Renders the key affordance + a muted,
  * dashed card. Pressing it does NOT submit — it shakes and reveals the
  * in-world `lockedHint` so the reader understands what's needed without
  * leaking hidden flags or raw stat thresholds (LockedChoiceCopy enforces the
@@ -197,9 +197,13 @@ function LockedChoiceRow({
             paddingVertical: tokens.spacing.sm,
           })}
         >
-          <Text aria-hidden variant="body">
-            🔒
-          </Text>
+          <Icon
+            aria-hidden
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
+            color={tokens.colors.textMuted}
+            name="key"
+          />
           <View style={{ flex: 1 }}>
             <Text muted>{choice.label}</Text>
           </View>

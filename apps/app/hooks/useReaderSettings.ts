@@ -102,6 +102,17 @@ export type ReaderSettings = {
    * when false so the visual is identical to the pre-feature behavior.
    */
   dialogBlocksEnabled: boolean;
+  /**
+   * "Candlelight Focus" immersion (phase-2 quick-win). When true, the reader
+   * CHROME (top bar + story ribbon) fades to 0 after ~4s of no input while
+   * actively reading; any input restores it instantly. The prose and choices
+   * NEVER fade. Default TRUE: it is immersive and low-risk — any touch/scroll/
+   * key restores the chrome, and every safety context (open sheet, chapter/
+   * ending, candle gutter, soft-signup, streaming) keeps it lit. Reduced-motion
+   * snaps instead of animating. Persisted; tolerant parse defaults a missing
+   * field to enabled (only an explicit `=== false` turns it off).
+   */
+  focusMode: boolean;
 };
 
 export const NARRATOR_PLAYBACK_RATES: readonly number[] = [0.75, 1, 1.25, 1.5] as const;
@@ -122,6 +133,7 @@ const defaultSettings: ReaderSettings = {
   cinematicMode: "endpoint_cinematic",
   narratorPlaybackRate: 1,
   dialogBlocksEnabled: true,
+  focusMode: true,
 };
 
 export function useReaderSettings() {
@@ -206,6 +218,9 @@ function readSettings(): ReaderSettings {
       // Dialog blocks default to on; only an explicit `=== false` flips
       // them off so a missing field reads as enabled.
       dialogBlocksEnabled: parsed.dialogBlocksEnabled !== false,
+      // Candlelight focus defaults to on; only an explicit `=== false` flips
+      // it off so a missing field (legacy blobs) reads as enabled.
+      focusMode: parsed.focusMode !== false,
     };
   } catch {
     return defaultSettings;

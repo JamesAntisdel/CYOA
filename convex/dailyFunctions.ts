@@ -226,7 +226,8 @@ export const getResults = queryGeneric({
 
 // ---------------------------------------------------------------------------
 // getChoicePulse (query) — daily-killcam R2 / design §2.
-//   {dailyId, accountId, guestTokenHash?} → {pulses: PulseEntry[]}
+//   {dailyId, accountId, guestTokenHash?} →
+//     {pulses: PulseEntry[], readerSaveId: string | null}
 //
 // Returns, for each early turn the READER has a recorded row for, ONLY the
 // reader's OWN bucket (turnNumber, sharePct, sameCount, totalReaders, phrase).
@@ -239,6 +240,14 @@ export const getResults = queryGeneric({
 // claim with no migration (DK3). Any read failure (missing table on deploy
 // skew, index race) throws → the client adapter degrades to an empty pulse and
 // the surfaces self-hide (design §6).
+//
+// `readerSaveId` (daily-killcam 4.3) is the reader's OWN daily save — the
+// anchor of their winning first run (DK6), taken from the earliest opening-fork
+// row this account recorded. The Daily results route uses it to fetch the
+// reader's OWN turn-1..3 choice labels (via game:getRunHistory) so the
+// "Opening forks" strip can join each label to its pulse bucket. It is the
+// reader's own id — never a foreign save — so it carries no spoiler (BC10).
+// `null` when the reader has no recorded rows (the strip stays hidden).
 // ---------------------------------------------------------------------------
 export const getChoicePulse = queryGeneric({
   args: {
@@ -246,7 +255,10 @@ export const getChoicePulse = queryGeneric({
     accountId,
     guestTokenHash,
   },
-  handler: async (ctx, args): Promise<{ pulses: PulseEntry[] }> => {
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ pulses: PulseEntry[]; readerSaveId: string | null }> => {
     await loadAndAuthorizeAccount(ctx, args.accountId, args.guestTokenHash);
 
     const dailyId = String(args.dailyId);
@@ -264,7 +276,22 @@ export const getChoicePulse = queryGeneric({
     const readerRows = readerRowDocs.map((row: any) => ({
       turnNumber: Number(row.turnNumber),
       choiceKey: String(row.choiceKey),
+      saveId: String(row.saveId),
     }));
+
+    // The reader's own daily save id: the saveId on their EARLIEST opening-fork
+    // row (min turnNumber). All of an account's killcam rows come from the same
+    // winning first run (DK6 fork guard), so the anchor turn's saveId identifies
+    // the run whose history holds the reader's own turn-1..3 labels. Deterministic
+    // (min turn, then row order) and BC10-safe (the reader's own id).
+    let readerSaveId: string | null = null;
+    let anchorTurn = Number.POSITIVE_INFINITY;
+    for (const row of readerRows) {
+      if (row.saveId.length > 0 && row.turnNumber < anchorTurn) {
+        anchorTurn = row.turnNumber;
+        readerSaveId = row.saveId;
+      }
+    }
 
     // Aggregate only the turns the reader actually has a bucket for (≤ cap
     // bounded `by_daily_turn` reads, each proportional to the day's readers).
@@ -284,7 +311,7 @@ export const getChoicePulse = queryGeneric({
 
     // computeChoicePulse emits ONLY the reader's own bucket per turn (no foreign
     // keys/counts), drops turns under KILLCAM_MIN_READERS, and rounds server-side.
-    return { pulses: computeChoicePulse(readerRows, allRows) };
+    return { pulses: computeChoicePulse(readerRows, allRows), readerSaveId };
   },
 });
 

@@ -1,6 +1,6 @@
 import { useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Platform, ScrollView, View } from "react-native";
+import { Animated, Platform, ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { ReportButton } from "../moderation";
@@ -8,6 +8,7 @@ import { Text } from "../primitives";
 import { useAccountProfile } from "../../hooks/useAccountProfile";
 import { useLibrary } from "../../hooks/useLibrary";
 import { useReaderSettings } from "../../hooks/useReaderSettings";
+import { useCandlelightFocus } from "../../hooks/useCandlelightFocus";
 import { guestAuthArgs, useGuestSession } from "../../hooks/useGuestSession";
 import { hasRemoteGameApi, restartRemoteRun } from "../../lib/gameApi";
 import {
@@ -643,6 +644,27 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
   // every live generated scene — the flag ACTION lives in the Tome (above).
   const showDisclosureFooter = supportsFreeform && !isTerminalView;
 
+  // "Candlelight Focus" immersion (phase-2 quick-win). After ~4s of no input
+  // while actively reading, the CHROME (top bar + story ribbon) fades to 0; any
+  // input restores it instantly. The prose + choices NEVER fade. Every guard
+  // below keeps the chrome lit — an open sheet/drawer, a chapter/ending panel,
+  // the candle gutter, the soft-signup ribbon, or a streaming turn. Reduced-
+  // motion snaps instead of animating (honored inside the hook). The hook is
+  // inert on native (no global input target to restore from). Chrome-only, so
+  // it never touches the Novel/daily-pulse/act-boundary/TomeSheet wiring above.
+  const { chromeOpacity, faded: chromeFaded } = useCandlelightFocus({
+    enabled: settings.focusMode,
+    reducedMotion: reduceMotion || settings.reduceMotion,
+    guards: {
+      anySheetOpen: tomeOpen || drawerOpen || flagOpen,
+      atChapterBoundary: Boolean(chapterBoundary),
+      atEnding: Boolean(projection.ending),
+      candleGutterShown: showCandleGutter,
+      softSignupShown: showSoftSignupRibbon,
+      isStreaming,
+    },
+  });
+
   return (
     <SafeAreaView style={{ backgroundColor: tokens.colors.background, flex: 1 }}>
       <ScrollView
@@ -664,6 +686,17 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
             width: "100%",
           }}
         >
+          {/* Candlelight Focus (phase-2 quick-win) — ONLY the top bar + story
+              ribbon live inside this fading wrapper (chrome only; prose/choices
+              below are untouched). `chromeOpacity` dims to 0 after idle and
+              snaps back on any input. When fully faded we drop pointerEvents so
+              an invisible control never eats a tap — the tap passes through to
+              the prose and the same gesture restores the chrome. The inner gap
+              re-creates the column gap the two rows had as direct children. */}
+          <Animated.View
+            pointerEvents={chromeFaded ? "none" : "auto"}
+            style={{ gap: isPhone ? tokens.spacing.md : tokens.spacing.lg, opacity: chromeOpacity }}
+          >
           {/* R1 — the slim top bar replaces the global AppNav mount: exit/brand
               candle → home, ellipsized mono title, the inline candle wick (only
               under today's showCandleMeter rule — RC2), a compact Auto indicator
@@ -717,6 +750,7 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
                 }
               : {})}
           />
+          </Animated.View>
 
         {/* Panel-2 Wave 2 — the candle-gutter interstitial. The daily cap as a
             narrative event, not an error string (Principle 8). Rendered ABOVE

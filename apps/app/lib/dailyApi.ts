@@ -409,6 +409,56 @@ export async function getRemoteChoicePulse(input: {
 }
 
 /**
+ * The pulse buckets PLUS the reader's own daily save id (daily-killcam 4.3).
+ * `readerSaveId` is the reader's OWN winning-run save — never a foreign one — so
+ * the results route can fetch their OWN turn-1..3 choice labels for the
+ * "Opening forks" join (BC10-safe). `null` when the reader has no recorded rows.
+ */
+export type RemoteChoicePulse = {
+  pulses: RemotePulseEntry[];
+  readerSaveId: string | null;
+};
+
+// Raw server value for `getChoicePulse` — pulses (null-for-absent tolerated) and
+// the reader's own save id (string or null).
+type ServerChoicePulse = { pulses: ServerPulseEntry[] | null; readerSaveId: string | null };
+
+/**
+ * Map the raw `getChoicePulse` server value to the pulses + reader save id.
+ * Reuses `adaptChoicePulse` for the buckets (same BC2/BC5 tolerance) and
+ * coerces `readerSaveId` to a non-empty string or `null` (missing/garbage →
+ * `null`, so the OpeningForks fetch is simply skipped).
+ */
+export function adaptChoicePulseResult(
+  raw: ServerChoicePulse | null | undefined,
+): RemoteChoicePulse {
+  const readerSaveId =
+    raw && typeof raw.readerSaveId === "string" && raw.readerSaveId.length > 0
+      ? raw.readerSaveId
+      : null;
+  return { pulses: adaptChoicePulse(raw), readerSaveId };
+}
+
+/**
+ * Fetch the reader's pulse buckets AND their own daily save id in one query
+ * (daily-killcam 4.3). Always resolves to a model (empty pulses + `null` save)
+ * so the results route degrades to "no strip" on any failure (BC5). The save id
+ * lets the route fetch the reader's OWN opening labels for the OpeningForks join.
+ */
+export async function getRemoteChoicePulseWithSave(input: {
+  dailyId: string;
+  accountId: string;
+  guestTokenHash?: string;
+}): Promise<RemoteChoicePulse> {
+  const result = await convexHttp<ServerChoicePulse>(
+    "query",
+    DAILY_PATHS.getChoicePulse,
+    input as unknown as Record<string, unknown>,
+  );
+  return adaptChoicePulseResult(result);
+}
+
+/**
  * The one-line chip copy: `"62% of today's readers · the well-worn path"`. Copy
  * is ALWAYS scoped to "today's readers" — never "all readers" — because buckets
  * are approximate by design (R3.4). `sharePct` is rendered verbatim (DK5).
@@ -473,4 +523,34 @@ export function buildOpeningForkTiles(
     tiles.push({ turnNumber: entry.turnNumber, label, entry });
   }
   return tiles.sort((a, b) => a.turnNumber - b.turnNumber);
+}
+
+/**
+ * Derive the reader's OWN opening-fork choice labels from their run history
+ * (daily-killcam 4.3). Each `getRunHistory` turn carries the choice that LED
+ * INTO it (`choice.choiceLabel`) — the SAME string the killcam recorded under
+ * that turn number — so the pair `{turnNumber, choiceLabel}` joins 1:1 to the
+ * pulse buckets in `buildOpeningForkTiles`. Only turns with a non-empty own
+ * label survive; the pulse side already caps to KILLCAM_TURN_CAP, so no cap is
+ * imposed here. Pure + total: tolerates a missing history / turns / choice
+ * (BC2) — a malformed history yields an empty list and the strip self-hides.
+ * The labels are the reader's OWN — never another reader's — so no spoiler
+ * crosses the wire (BC10).
+ */
+export function openingChoicesFromRunHistory(
+  history:
+    | { turns?: readonly { turnNumber: number; choice?: { choiceLabel: string } | undefined }[] }
+    | null
+    | undefined,
+): { turnNumber: number; choiceLabel: string }[] {
+  const turns = history?.turns;
+  if (!Array.isArray(turns)) return [];
+  const out: { turnNumber: number; choiceLabel: string }[] = [];
+  for (const turn of turns) {
+    if (!turn || !Number.isFinite(turn.turnNumber)) continue;
+    const label = turn.choice?.choiceLabel;
+    if (typeof label !== "string" || label.length === 0) continue;
+    out.push({ turnNumber: Math.floor(turn.turnNumber), choiceLabel: label });
+  }
+  return out;
 }

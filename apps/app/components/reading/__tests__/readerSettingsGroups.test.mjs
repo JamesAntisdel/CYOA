@@ -43,7 +43,10 @@ const {
   PRO_MEDIA_PAYWALL_ROUTE,
 } = mod;
 
-// The 8 canonical labels the drawer (mid-tale subset) renders (R4.2).
+// The canonical labels the drawer (mid-tale subset) renders (R4.2). The 8
+// reader-chrome-declutter groups PLUS `focusMode` (Candlelight Focus, a phase-2
+// quick-win offered on BOTH surfaces so a reader can flip the chrome dimming
+// off mid-tale from the drawer without leaving the story).
 const SHARED_KEYS = [
   "theme",
   "fontScale",
@@ -53,6 +56,7 @@ const SHARED_KEYS = [
   "narratorPlaybackRate",
   "videoEnabled",
   "reduceMotion",
+  "focusMode",
 ];
 
 // ── Shape / canonical labels (R4.2) ─────────────────────────────────────────
@@ -129,7 +133,7 @@ test("drawer set is a STRICT subset of the settings set (R4.4)", () => {
   assert.ok(drawerKeys.size < settingsKeys.size, "drawer must be a STRICT subset");
 });
 
-test("the drawer renders exactly the 8 shared mid-tale groups (R4.4)", () => {
+test("the drawer renders exactly the shared mid-tale groups (R4.4, + focusMode)", () => {
   const groups = readerSettingsGroups({ illustratedUnlocked: true });
   const drawerKeys = groups
     .filter((g) => g.surfaces.includes("drawer"))

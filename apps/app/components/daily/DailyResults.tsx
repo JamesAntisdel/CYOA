@@ -112,7 +112,7 @@ function DistributionRow({ bar }: { bar: DistributionBar }) {
           tone={bar.isYours ? "accent" : "default"}
           variant="bodySmall"
         >
-          {bar.isYours ? `➤ ${bar.label}` : bar.label}
+          {bar.label}
         </Text>
         <Text
           muted
@@ -130,7 +130,7 @@ function DistributionRow({ bar }: { bar: DistributionBar }) {
           style={{ color: tokens.colors.accent, fontFamily: tokens.typography.families.mono }}
           variant="caption"
         >
-          {`✦ First found by ${bar.firstAccountName}`}
+          {`First found by ${bar.firstAccountName}`}
         </Text>
       ) : null}
       {bar.isRarest && !bar.hasFirstFinder ? (

@@ -43,7 +43,10 @@ test("ChoiceList renders locked choices as a non-submitting shake+reveal card", 
   const src = read("components/choices/ChoiceList.tsx");
   assert.match(src, /if \(choice\.locked\)/, "ChoiceList must branch locked choices to a dedicated row");
   assert.match(src, /LockedChoiceRow/, "ChoiceList must render a LockedChoiceRow for locked choices");
-  assert.match(src, /🔒/, "locked choices must show the lock affordance");
+  // R5 glyph sweep: the lock affordance is the icon-font `key` glyph, not the
+  // 🔒 emoji (a locked page opens with a key — in-world, on-system).
+  assert.match(src, /<Icon\b/, "locked choices must render the icon-font key affordance");
+  assert.match(src, /name="key"/, "the locked affordance is the `key` glyph, not 🔒");
   assert.match(src, /Animated\.sequence/, "locked press must shake (Animated.sequence)");
   assert.match(src, /reducedMotion\) return;/, "shake must respect reduced motion");
   assert.match(src, /LockedChoiceCopy hint=\{choice\.hint\}/, "locked press must reveal the in-world hint");

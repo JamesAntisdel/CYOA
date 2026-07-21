@@ -223,7 +223,7 @@ export default function PaywallRoute() {
       <AppNav current="account" />
       <BackToSceneButton
         fallbackHref="/account"
-        label="← Back to account"
+        label="Back to account"
         accessibilityLabel="Back to account"
       />
 

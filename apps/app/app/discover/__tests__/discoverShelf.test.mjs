@@ -53,13 +53,50 @@ test("loading, unreachable-with-retry, and empty shelf states all render", () =>
 test("public seeds launch as fresh runs via the existing createSave path", () => {
   assert.match(
     discoverSrc,
-    /library\.createSave\(seed\.storyId, "story", seed\.title\)/,
+    /library\.createSave\(\s*seed\.storyId,\s*"story",\s*seed\.title,/,
     "launch must go through useLibrary.createSave with the seed storyId + title override",
   );
   assert.match(
     discoverSrc,
     /router\.push\(`\/read\/\$\{save\.saveId\}`\)/,
     "a successful launch must land in the reader",
+  );
+});
+
+test("the reading-mode segmented control renders and threads into launch createSave", () => {
+  // Novel-entry: the compact Branching | Novel segmented control (RC5 — filled
+  // Chip for the selected segment, no check-mark glyph) reaches the discover
+  // create flow, matching the cover screen.
+  assert.match(
+    discoverSrc,
+    /accessibilityLabel="Reading mode"/,
+    "a Reading mode radiogroup must render on the discover surface",
+  );
+  assert.match(
+    discoverSrc,
+    /<Chip variant=\{novelMode \? "accent" : "muted"\}>Novel<\/Chip>/,
+    "the Novel segment must be a filled Chip when selected (no check glyph)",
+  );
+  assert.match(
+    discoverSrc,
+    /<Chip variant=\{novelMode \? "muted" : "accent"\}>Branching<\/Chip>/,
+    "the Branching segment must be a filled Chip when selected (no check glyph)",
+  );
+  assert.doesNotMatch(
+    discoverSrc,
+    /Branching<\/Chip>[\s\S]*?✓|✓[\s\S]*?Branching/,
+    "no check-mark glyph on the segmented control (RC5)",
+  );
+  // The chosen mode must reach createSave.
+  assert.match(
+    discoverSrc,
+    /readingMode: novelMode \? "novel" : "branching"/,
+    "the selected reading mode must thread into library.createSave",
+  );
+  assert.match(
+    discoverSrc,
+    /const chooseReadingMode = \(novel: boolean\) =>/,
+    "a single chooseReadingMode entry point drives selection + caption reveal",
   );
 });
 
