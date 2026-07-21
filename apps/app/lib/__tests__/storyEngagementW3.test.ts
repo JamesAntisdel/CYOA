@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   adaptKeepsakes,
   adaptLibrarianRank,
+  adaptMementos,
+  adaptRankProgress,
   buildDowngradeModel,
   canStartMode,
   hasKeepsakes,
@@ -11,6 +13,9 @@ import {
   KEEPSAKE_TAG,
   librarianRankChipLabel,
   librarianRankProgressLine,
+  mementoRelativeDate,
+  mementoStampLine,
+  rankTickerLine,
   selectedKeepsake,
   toggleKeepsakeSelection,
   whatMightHaveBeenCards,
@@ -133,6 +138,116 @@ describe("Librarian Rank display model", () => {
       tales: 3,
     })!;
     expect(librarianRankProgressLine(rank)).toBe("1 ending · 0 beats · 3 tales");
+  });
+});
+
+describe("Act-mementos — rank-progress ticker (R3.3)", () => {
+  const progress = (over: Partial<{
+    nextTier: string;
+    nextLabel: string;
+    needsEndings: number;
+    needsBeats: number;
+    needsTales: number;
+  }> = {}) => ({
+    nextTier: "keeper",
+    nextLabel: "Keeper",
+    needsEndings: 0,
+    needsBeats: 0,
+    needsTales: 0,
+    ...over,
+  });
+
+  it("single metric reads 'N more <unit>' and pluralizes", () => {
+    expect(rankTickerLine(progress({ needsEndings: 2 }))).toBe("Next: Keeper — 2 more endings");
+    expect(rankTickerLine(progress({ needsEndings: 1 }))).toBe("Next: Keeper — 1 more ending");
+    expect(rankTickerLine(progress({ needsBeats: 5 }))).toBe("Next: Keeper — 5 more beats");
+    expect(rankTickerLine(progress({ needsTales: 1 }))).toBe("Next: Keeper — 1 more tale");
+  });
+
+  it("multiple metrics list each remaining deficit joined by ' · ' (no 'more')", () => {
+    expect(
+      rankTickerLine(progress({ nextLabel: "The Unwritten", needsEndings: 12, needsTales: 4 })),
+    ).toBe("Next: The Unwritten — 12 endings · 4 tales");
+    expect(
+      rankTickerLine(progress({ nextLabel: "Librarian", needsEndings: 3, needsBeats: 2, needsTales: 1 })),
+    ).toBe("Next: Librarian — 3 endings · 2 beats · 1 tale");
+  });
+
+  it("lists ONLY non-zero deficits", () => {
+    expect(
+      rankTickerLine(progress({ needsEndings: 0, needsBeats: 4, needsTales: 0 })),
+    ).toBe("Next: Keeper — 4 more beats");
+  });
+
+  it("degrades to a bare 'Next: <label>' when no deficit remains", () => {
+    expect(rankTickerLine(progress())).toBe("Next: Keeper");
+  });
+});
+
+describe("Act-mementos — adapter tolerance for absent/malformed fields", () => {
+  it("adaptRankProgress maps null/absent/malformed to undefined", () => {
+    expect(adaptRankProgress(null)).toBe(undefined);
+    expect(adaptRankProgress(undefined)).toBe(undefined);
+    expect(adaptRankProgress({ needsEndings: 2 } as any)).toBe(undefined);
+  });
+
+  it("adaptRankProgress zero-floors the deficits", () => {
+    expect(
+      adaptRankProgress({
+        nextTier: "keeper",
+        nextLabel: "Keeper",
+        needsEndings: -3,
+        needsBeats: 2.9,
+        needsTales: Number.NaN,
+      }),
+    ).toEqual({
+      nextTier: "keeper",
+      nextLabel: "Keeper",
+      needsEndings: 0,
+      needsBeats: 2,
+      needsTales: 0,
+    });
+  });
+
+  it("adaptMementos maps null/absent to an empty shelf model", () => {
+    expect(adaptMementos(null)).toEqual({ total: 0, items: [] });
+    expect(adaptMementos(undefined)).toEqual({ total: 0, items: [] });
+    expect(adaptMementos({ items: null } as any)).toEqual({ total: 0, items: [] });
+  });
+
+  it("adaptMementos drops malformed rows and floors total to at least the item count", () => {
+    const good = {
+      act: 2,
+      label: "Act II — The Drowned Bell",
+      description: "The bell tolled at last.",
+      storyTitle: "Tidewrack",
+      createdAt: 1_700_000_000_000,
+    };
+    const out = adaptMementos({
+      total: 1, // server undercount → floored up to surviving items
+      items: [good, { act: 2, label: "x" } as any, good],
+    });
+    expect(out.items).toEqual([good, good]);
+    expect(out.total).toBe(2);
+  });
+});
+
+describe("Act-mementos — memento copy + relative date", () => {
+  it("mementoStampLine is the fixed book-voice acknowledgement", () => {
+    expect(mementoStampLine()).toBe("A memento is pressed between the pages");
+  });
+
+  it("mementoRelativeDate reads quietly and never goes negative", () => {
+    const now = Date.UTC(2026, 0, 20);
+    const day = 24 * 60 * 60 * 1000;
+    expect(mementoRelativeDate(now, now)).toBe("today");
+    expect(mementoRelativeDate(now + day, now)).toBe("today"); // future → today
+    expect(mementoRelativeDate(now - day, now)).toBe("yesterday");
+    expect(mementoRelativeDate(now - 3 * day, now)).toBe("3 days ago");
+    expect(mementoRelativeDate(now - 14 * day, now)).toBe("2 weeks ago");
+    expect(mementoRelativeDate(now - 7 * day, now)).toBe("1 week ago");
+    expect(mementoRelativeDate(Number.NaN, now)).toBe("today");
+    expect(mementoRelativeDate(now - 60 * day, now)).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 });
 

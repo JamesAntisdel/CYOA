@@ -5,6 +5,7 @@
 //   dailyFunctions:getToday     query
 //   dailyFunctions:startDaily   mutation
 //   dailyFunctions:getResults   query
+//   dailyFunctions:getChoicePulse       query           (daily-killcam R2)
 //   dailyFunctions:mintDailyTale        internalAction  (cron: mint-daily-tale)
 //   dailyFunctions:insertDailyTaleRow   internalMutation (idempotent per date)
 //   dailyFunctions:findDailyByDate      internalQuery
@@ -37,12 +38,16 @@ import {
   anonymousReaderName,
   buildDailyPremise,
   buildDailyResultRow,
+  choiceKeyForLabel,
+  computeChoicePulse,
   computeDistribution,
   dailyQuestionTeaser,
   emptyStreak,
   endingLabelResolver,
   isoDateFromMillis,
+  KILLCAM_TURN_CAP,
   type DailyDistributionRow,
+  type PulseEntry,
   type StreakState,
 } from "./daily";
 import { streakKeepsake, KEEPSAKE_GRANTED, type Keepsake } from "./keepsakes";
@@ -216,6 +221,70 @@ export const getResults = queryGeneric({
     const streak = await readStreak(ctx, String(args.accountId));
 
     return { yours, distribution, streak };
+  },
+});
+
+// ---------------------------------------------------------------------------
+// getChoicePulse (query) — daily-killcam R2 / design §2.
+//   {dailyId, accountId, guestTokenHash?} → {pulses: PulseEntry[]}
+//
+// Returns, for each early turn the READER has a recorded row for, ONLY the
+// reader's OWN bucket (turnNumber, sharePct, sameCount, totalReaders, phrase).
+// The full per-turn distribution, other buckets' keys, and other readers'
+// labels NEVER leave this handler (BC10 — a foreign label is a spoiler for a
+// scene that was never the reader's). Percentages are server-computed in the
+// pure `computeChoicePulse` (DK5). Queries are read-only, so there is NO
+// analytics write here (DK2). Authorization mirrors `getResults`; guests are
+// first-class and rows keyed by the stable `accountId` survive guest→account
+// claim with no migration (DK3). Any read failure (missing table on deploy
+// skew, index race) throws → the client adapter degrades to an empty pulse and
+// the surfaces self-hide (design §6).
+// ---------------------------------------------------------------------------
+export const getChoicePulse = queryGeneric({
+  args: {
+    dailyId: v.id("daily_tales"),
+    accountId,
+    guestTokenHash,
+  },
+  handler: async (ctx, args): Promise<{ pulses: PulseEntry[] }> => {
+    await loadAndAuthorizeAccount(ctx, args.accountId, args.guestTokenHash);
+
+    const dailyId = String(args.dailyId);
+    const accountIdValue = String(args.accountId);
+
+    // The reader's own killcam rows for this Daily (≤ KILLCAM_TURN_CAP). The
+    // `by_daily_account` index leads with `dailyId`, so this is a bounded read.
+    const readerRowDocs = await ctx.db
+      .query("daily_choice_results")
+      .withIndex("by_daily_account", (q: any) =>
+        q.eq("dailyId", dailyId).eq("accountId", accountIdValue),
+      )
+      .collect();
+
+    const readerRows = readerRowDocs.map((row: any) => ({
+      turnNumber: Number(row.turnNumber),
+      choiceKey: String(row.choiceKey),
+    }));
+
+    // Aggregate only the turns the reader actually has a bucket for (≤ cap
+    // bounded `by_daily_turn` reads, each proportional to the day's readers).
+    const turnNumbers = Array.from(new Set(readerRows.map((r) => r.turnNumber)));
+    const allRows: { turnNumber: number; choiceKey: string }[] = [];
+    for (const turnNumber of turnNumbers) {
+      const turnDocs = await ctx.db
+        .query("daily_choice_results")
+        .withIndex("by_daily_turn", (q: any) =>
+          q.eq("dailyId", dailyId).eq("turnNumber", turnNumber),
+        )
+        .collect();
+      for (const row of turnDocs) {
+        allRows.push({ turnNumber: Number(row.turnNumber), choiceKey: String(row.choiceKey) });
+      }
+    }
+
+    // computeChoicePulse emits ONLY the reader's own bucket per turn (no foreign
+    // keys/counts), drops turns under KILLCAM_MIN_READERS, and rounds server-side.
+    return { pulses: computeChoicePulse(readerRows, allRows) };
   },
 });
 
@@ -470,6 +539,187 @@ export async function insertDailyResultIfAbsent(
     resultId: String(resultId),
     ...(streakOutcome.mintedKeepsake ? { streakMintedKeepsakeId: streakOutcome.mintedKeepsake.id } : {}),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Killcam recording (daily-killcam R1 / design §2). Exported PLAIN helpers —
+// NOT registered functions — mirroring `insertDailyResultIfAbsent`. The
+// integrator imports and calls `recordDailyChoiceIfEligible` from the SINGLE
+// live llm-driven turn site (`runLlmDrivenBeginStreaming`, game.ts:4340 — the
+// choice is already committed there; DK1) and `deleteDailyChoicesFromTurn` from
+// the rewind mutation (`rewindSaveTurns`, game.ts:1086, turn_history delete
+// loop ~:1148). game.ts is RESERVED — do NOT edit it; see the task report.
+//
+// Both helpers are DECORATIVE and best-effort: a failure degrades to "no row",
+// NEVER a turn failure (R1.1 / BC5) — they never throw out of themselves.
+// ---------------------------------------------------------------------------
+
+/** The db surface the recording helper needs — a subset of the turn mutation's ctx. */
+type KillcamRecordCtx = {
+  db: {
+    query: (table: string) => any;
+    insert: (table: string, doc: any) => Promise<any>;
+    patch: (id: any, doc: any) => Promise<any>;
+  };
+};
+
+/**
+ * Record ONE `daily_choice_results` row for an early committed choice on a
+ * Daily save (R1.1–R1.6). Contract:
+ *   - non-daily save / turnNumber outside 1..KILLCAM_TURN_CAP / authored
+ *     (non-llm) / co-op follower / no committed choice ⇒ no-op (R1.5).
+ *   - `choiceKeyForLabel(choiceLabel, freeForm)` derives the bucket key; a
+ *     free-form turn maps to the reserved `free-form` key and the reader's typed
+ *     text is NEVER persisted (DK4 / R1.2).
+ *   - upsert keyed by (dailyId, accountId, turnNumber): a row with the SAME
+ *     saveId is patched (rewind → re-choose replaces the bucket); a row with a
+ *     DIFFERENT saveId is left untouched — the account's first daily run wins,
+ *     so a forked copy can't double-vote (DK6 / R1.3); no row ⇒ `cleanDoc`
+ *     insert (R1.3).
+ *   - `daily.choice_recorded` fires fire-and-forget from THIS mutation (queries
+ *     can't write; DK2 / R1.6).
+ *   - EVERY failure is swallowed — recording never fails a turn (R1.1 / BC5).
+ */
+export async function recordDailyChoiceIfEligible(
+  ctx: KillcamRecordCtx,
+  input: {
+    /** The save's `dailyId`; absent/empty ⇒ non-daily save ⇒ no-op (R1.5). */
+    dailyId?: string;
+    accountId: string;
+    saveId: string;
+    turnNumber: number;
+    /** The committed choice's reader-facing label (turn_history.choiceLabel). */
+    choiceLabel?: string;
+    /** True when the reader wrote their own action — records the reserved key (DK4). */
+    freeForm?: boolean;
+    /** Authored (non-llm) save ⇒ no-op (R1.5). */
+    isAuthored?: boolean;
+    /** Co-op follower submission ⇒ no-op (R1.5). */
+    isFollower?: boolean;
+    now: number;
+  },
+): Promise<{ recorded: boolean; rowId?: string }> {
+  try {
+    // R1.5 — non-daily / authored / co-op follower saves are never recorded.
+    const dailyId = typeof input.dailyId === "string" ? input.dailyId.trim() : "";
+    if (dailyId.length === 0) return { recorded: false };
+    if (input.isAuthored === true) return { recorded: false };
+    if (input.isFollower === true) return { recorded: false };
+
+    // R1.1 — opening forks only: turns 1..KILLCAM_TURN_CAP, nothing past the cap.
+    const turnNumber = Number(input.turnNumber);
+    if (!Number.isFinite(turnNumber) || turnNumber < 1 || turnNumber > KILLCAM_TURN_CAP) {
+      return { recorded: false };
+    }
+
+    // "choice present" gate — a free-form turn always counts (via its reserved
+    // key); a non-free-form turn needs a non-empty committed label.
+    const freeForm = input.freeForm === true;
+    const label = typeof input.choiceLabel === "string" ? input.choiceLabel : "";
+    if (!freeForm && label.trim().length === 0) return { recorded: false };
+
+    // DK4 — the reserved `free-form` key is derived here; the typed text never
+    // touches the row.
+    const choiceKey = choiceKeyForLabel(label, freeForm);
+
+    // DK6 — upsert keyed by (dailyId, accountId, turnNumber). Read the account's
+    // rows for this Daily (≤ cap via `by_daily_account`) and find this turn's.
+    const accountRows = await ctx.db
+      .query("daily_choice_results")
+      .withIndex("by_daily_account", (q: any) =>
+        q.eq("dailyId", dailyId).eq("accountId", input.accountId),
+      )
+      .collect();
+    const existing = accountRows.find((row: any) => Number(row.turnNumber) === turnNumber);
+
+    if (existing) {
+      // Fork guard (DK6 / R1.3): a row voted by a DIFFERENT save (e.g. a forked
+      // copy of a daily save) is never overwritten — the first run wins.
+      if (String(existing.saveId) !== String(input.saveId)) {
+        return { recorded: false, rowId: String(existing._id) };
+      }
+      // Same save replaying the turn (rewind → re-choose): replace the bucket.
+      await ctx.db.patch(
+        existing._id,
+        cleanDoc({ choiceKey, freeForm, updatedAt: input.now }),
+      );
+      await insertDailyAnalytics(ctx as any, {
+        eventName: "daily.choice_recorded",
+        accountId: input.accountId,
+        saveId: input.saveId,
+        payload: { dailyId, turnNumber, choiceKey, freeForm },
+        now: input.now,
+      });
+      return { recorded: true, rowId: String(existing._id) };
+    }
+
+    const rowId = await ctx.db.insert(
+      "daily_choice_results",
+      cleanDoc({
+        dailyId,
+        accountId: input.accountId,
+        saveId: input.saveId,
+        turnNumber,
+        choiceKey,
+        freeForm,
+        createdAt: input.now,
+        updatedAt: input.now,
+      }),
+    );
+
+    await insertDailyAnalytics(ctx as any, {
+      eventName: "daily.choice_recorded",
+      accountId: input.accountId,
+      saveId: input.saveId,
+      payload: { dailyId, turnNumber, choiceKey, freeForm },
+      now: input.now,
+    });
+
+    return { recorded: true, rowId: String(rowId) };
+  } catch {
+    // R1.1 / BC5 — recording is decorative; any failure leaves the turn untouched.
+    return { recorded: false };
+  }
+}
+
+/** The db surface the rewind-deletion helper needs. */
+type KillcamDeleteCtx = {
+  db: {
+    query: (table: string) => any;
+    delete: (id: any) => Promise<any>;
+  };
+};
+
+/**
+ * Delete the save's `daily_choice_results` rows at or after `fromTurnNumber`
+ * (R1.4). Called inside the rewind mutation alongside the `turn_history` delete
+ * loop so an abandoned rewind never leaves a stale vote. Best-effort — a
+ * failure here never fails the rewind (BC5). Uses the `by_save` index so the
+ * scan is bounded to this run's rows.
+ */
+export async function deleteDailyChoicesFromTurn(
+  ctx: KillcamDeleteCtx,
+  saveId: string,
+  fromTurnNumber: number,
+): Promise<{ deleted: number }> {
+  try {
+    const from = Number(fromTurnNumber);
+    if (!Number.isFinite(from)) return { deleted: 0 };
+    const rows = await ctx.db
+      .query("daily_choice_results")
+      .withIndex("by_save", (q: any) => q.eq("saveId", saveId))
+      .collect();
+    let deleted = 0;
+    for (const row of rows) {
+      if (Number(row.turnNumber) >= from) {
+        await ctx.db.delete(row._id);
+        deleted += 1;
+      }
+    }
+    return { deleted };
+  } catch {
+    return { deleted: 0 };
+  }
 }
 
 // ---------------------------------------------------------------------------

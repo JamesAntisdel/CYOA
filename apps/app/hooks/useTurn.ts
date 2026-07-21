@@ -137,6 +137,20 @@ export type ReaderProjection = {
    */
   turnNumber?: number;
   /**
+   * Daily-killcam (R3.3) — the daily_tales id when this save is a Daily run,
+   * mirrored from `RemoteScene.dailyId` (a reader-known fact: they tapped the
+   * Daily card — BC10-clean). Present ONLY on daily saves; absent on every
+   * other projection so the DailyPulseChip self-hides with zero layout shift.
+   */
+  dailyId?: string;
+  /**
+   * Reading modes R4 (novel mode) — present ONLY on a novel save, mirrored from
+   * `RemoteScene.readingMode` (a reader-known fact: they chose novel at create —
+   * BC10-clean). Drives the Novel "Turn the page" affordance; absent on every
+   * branching / legacy projection so those render the normal choice row unchanged.
+   */
+  readingMode?: "novel";
+  /**
    * Story-engagement Wave 3 (R14) — UNREACHED candidate endings for the
    * What-Might-Have-Been cards on the terminal ending panel. Populated ONLY
    * post-terminal from `remoteScene.ending.whatMightHaveBeen` (BC10); absent on
@@ -1024,6 +1038,15 @@ function projectRemoteScene(
     // so the reader sees their own title, not "Open Canvas".
     storyTitle: scene.seedTitle ?? story.title,
     ...(tone ? { storyTone: tone } : {}),
+    // Daily-killcam (R3.3): mirror the reader-known Daily id so the pulse chip
+    // can gate on it. Conditional-spread — absent on non-daily saves (BC4/BC9).
+    ...(scene.dailyId ? { dailyId: scene.dailyId } : {}),
+    // Reading modes R4 (novel mode): mirror the reader-known content axis so the
+    // Novel layout can render the "Turn the page" affordance. Conditional-spread
+    // — absent on branching / legacy saves (BC4/BC9). Copied here because
+    // ReaderProjection is a SEPARATE type from RemoteScene; mirroring the field
+    // on RemoteScene alone does NOT reach `projection.readingMode`.
+    ...(scene.readingMode ? { readingMode: scene.readingMode } : {}),
     mode: "story",
     scene: {
       id: scene.nodeId,

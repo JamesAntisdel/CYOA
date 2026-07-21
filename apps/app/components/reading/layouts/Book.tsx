@@ -41,6 +41,7 @@ export function BookLayout({
   onBeginAgain,
   onSeeMap,
   onShareEnding,
+  onReadAsBook,
   onFork,
   choiceHistory,
   endingTier,
@@ -53,6 +54,7 @@ export function BookLayout({
   videoEnabled = true,
   narratorPlaybackRate = 1,
   onNarratorPlaybackRateChange,
+  onNarrationActiveChange,
   onFreeformSubmit,
   freeformPending = false,
   freeformError = null,
@@ -96,6 +98,7 @@ export function BookLayout({
             audioEnabled={audioEnabled}
             narratorPlaybackRate={narratorPlaybackRate}
             {...(onNarratorPlaybackRateChange ? { onNarratorPlaybackRateChange } : {})}
+            {...(onNarrationActiveChange ? { onNarrationActiveChange } : {})}
           />
 
           {saveId && illuminateAuth ? (
@@ -160,7 +163,7 @@ export function BookLayout({
                   ...(cinematicUri !== undefined ? { cinematicUri } : {}),
                   ...(endingIsFirstFind !== undefined ? { isFirstFind: endingIsFirstFind } : {}),
                 })}
-                {...endingPanelHandlers({ onOpenEndings, onOpenLibrary, onReturnHome, onBeginAgain, onSeeMap, onShareEnding })}
+                {...endingPanelHandlers({ onOpenEndings, onOpenLibrary, onReturnHome, onBeginAgain, onSeeMap, onShareEnding, onReadAsBook })}
               />
               {/* "Your choices echoed" — the run's visible-choice recap on the
                   terminal panel. Skipped when this session recorded none. */}

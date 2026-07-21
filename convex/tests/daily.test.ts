@@ -16,12 +16,19 @@ import {
   anonymousReaderName,
   buildDailyPremise,
   buildDailyResultRow,
+  choiceKeyForLabel,
+  computeChoicePulse,
   computeDistribution,
   DAILY_PREMISE_BANK,
   DAILY_TONE_ROTATION,
   emptyStreak,
   epochDayFromISO,
+  FREE_FORM_KEY,
   isoDateFromMillis,
+  KILLCAM_MIN_READERS,
+  KILLCAM_TURN_CAP,
+  pulsePhrase,
+  type PulseEntry,
 } from "../daily";
 import {
   authorDailyStoryArc,
@@ -133,6 +140,211 @@ describe("buildDailyResultRow / anonymousReaderName", () => {
   it("derives a PII-free stable handle", () => {
     expect(anonymousReaderName("acct_ABCD1234")).toBe("Reader 1234");
     expect(anonymousReaderName("")).toBe("A reader");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PURE: daily killcam — constants, choiceKeyForLabel, pulsePhrase (R1.2/R2.4/R4.1)
+// ---------------------------------------------------------------------------
+
+describe("killcam constants (R4.1)", () => {
+  it("caps at the opening 3 forks and floors at 10 readers", () => {
+    expect(KILLCAM_TURN_CAP).toBe(3);
+    expect(KILLCAM_MIN_READERS).toBe(10);
+    expect(FREE_FORM_KEY).toBe("free-form");
+  });
+});
+
+describe("choiceKeyForLabel (R1.2 normalization)", () => {
+  it("lowercases, trims, collapses whitespace, and slugifies punctuation", () => {
+    expect(choiceKeyForLabel("Row Toward the Dark", false)).toBe("row-toward-the-dark");
+    expect(choiceKeyForLabel("  Answer the Signal  ", false)).toBe("answer-the-signal");
+    expect(choiceKeyForLabel("Follow    the   light", false)).toBe("follow-the-light");
+    // Case-insensitive: two casings collapse to the SAME bucket key.
+    expect(choiceKeyForLabel("Open the Door", false)).toBe(
+      choiceKeyForLabel("OPEN THE DOOR", false),
+    );
+  });
+
+  it("strips punctuation and never emits leading/trailing separators", () => {
+    expect(choiceKeyForLabel("Wait... and listen!", false)).toBe("wait-and-listen");
+    expect(choiceKeyForLabel("\"Run,\" she said.", false)).toBe("run-she-said");
+    expect(choiceKeyForLabel("--edge--", false)).toBe("edge");
+  });
+
+  it("maps free-form turns to the reserved key regardless of the label", () => {
+    expect(choiceKeyForLabel("literally anything the reader typed", true)).toBe(FREE_FORM_KEY);
+    expect(choiceKeyForLabel("", true)).toBe(FREE_FORM_KEY);
+  });
+
+  it("falls back to free-form when the normalized label is empty", () => {
+    expect(choiceKeyForLabel("", false)).toBe(FREE_FORM_KEY);
+    expect(choiceKeyForLabel("   ", false)).toBe(FREE_FORM_KEY);
+    expect(choiceKeyForLabel("!!!???", false)).toBe(FREE_FORM_KEY);
+    // Non-latin script slugs to nothing under the ascii slug discipline.
+    expect(choiceKeyForLabel("日本語", false)).toBe(FREE_FORM_KEY);
+  });
+
+  it("is total on unicode — never throws, deterministic", () => {
+    // Accented latin: the accented char is a separator, the ascii tail survives.
+    expect(choiceKeyForLabel("Café résumé", false)).toBe("caf-r-sum");
+    const once = choiceKeyForLabel("Naïve café ☕ path", false);
+    expect(choiceKeyForLabel("Naïve café ☕ path", false)).toBe(once);
+    expect(() => choiceKeyForLabel("🎲🔥", false)).not.toThrow();
+    expect(choiceKeyForLabel("🎲🔥", false)).toBe(FREE_FORM_KEY);
+  });
+
+  it("clamps the slug to 64 chars with no dangling separator", () => {
+    const long = "word ".repeat(40).trim(); // 200 chars → slug far over 64
+    const key = choiceKeyForLabel(long, false);
+    expect(key.length).toBeLessThanOrEqual(64);
+    expect(key.endsWith("-")).toBe(false);
+    expect(key.startsWith("-")).toBe(false);
+    // Just under the cap survives intact.
+    const under = "a".repeat(64);
+    expect(choiceKeyForLabel(under, false)).toBe(under);
+  });
+});
+
+describe("pulsePhrase (R2.4 tier boundaries)", () => {
+  it("selects tiers at the inclusive floor boundaries", () => {
+    // under 25 → the road less traveled (24/25 boundary)
+    expect(pulsePhrase(0, false)).toBe("the road less traveled");
+    expect(pulsePhrase(24, false)).toBe("the road less traveled");
+    // 25–59 → a common thread (25 and 59)
+    expect(pulsePhrase(25, false)).toBe("a common thread");
+    expect(pulsePhrase(59, false)).toBe("a common thread");
+    // 60+ → the well-worn path (59/60 boundary)
+    expect(pulsePhrase(60, false)).toBe("the well-worn path");
+    expect(pulsePhrase(100, false)).toBe("the well-worn path");
+  });
+
+  it("free-form overrides every tier", () => {
+    expect(pulsePhrase(0, true)).toBe("wrote their own page");
+    expect(pulsePhrase(62, true)).toBe("wrote their own page");
+    expect(pulsePhrase(100, true)).toBe("wrote their own page");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PURE: computeChoicePulse (R2.1/R2.2/R2.3)
+// ---------------------------------------------------------------------------
+
+/** Build `n` rows at a turn: `same` of them match `key`, the rest are "other". */
+function rowsAt(turnNumber: number, key: string, same: number, total: number) {
+  const rows: { turnNumber: number; choiceKey: string }[] = [];
+  for (let i = 0; i < total; i++) {
+    rows.push({ turnNumber, choiceKey: i < same ? key : `other-${i}` });
+  }
+  return rows;
+}
+
+describe("computeChoicePulse (R2 spoiler-safe aggregation)", () => {
+  it("emits the reader's own bucket with a server-rounded sharePct", () => {
+    const readerRows = [{ turnNumber: 1, choiceKey: "answer-the-signal" }];
+    const allRows = rowsAt(1, "answer-the-signal", 6, 10);
+    const out = computeChoicePulse(readerRows, allRows);
+    expect(out).toEqual<PulseEntry[]>([
+      {
+        turnNumber: 1,
+        sharePct: 60,
+        sameCount: 6,
+        totalReaders: 10,
+        phrase: "the well-worn path",
+      },
+    ]);
+  });
+
+  it("includes a turn at EXACTLY the 10-reader floor and omits one below it", () => {
+    const readerRows = [{ turnNumber: 1, choiceKey: "k" }];
+    // 10 total → kept.
+    expect(computeChoicePulse(readerRows, rowsAt(1, "k", 5, 10))).toHaveLength(1);
+    // 9 total → omitted entirely (silence, not a low-confidence number).
+    expect(computeChoicePulse(readerRows, rowsAt(1, "k", 5, 9))).toEqual([]);
+  });
+
+  it("rounds sharePct with the same Math.round discipline as computeDistribution", () => {
+    // 2 of 3 → 66.67 → 67, mirroring computeDistribution's rounding.
+    const out = computeChoicePulse(
+      [{ turnNumber: 1, choiceKey: "k" }],
+      [
+        ...rowsAt(1, "k", 2, 3),
+        // pad to the floor with distinct other rows, preserving the 2/… ratio target
+      ],
+    );
+    // With only 3 rows we are under the floor, so assert rounding on a floor-passing set:
+    void out;
+    const passing = computeChoicePulse(
+      [{ turnNumber: 1, choiceKey: "k" }],
+      rowsAt(1, "k", 8, 12), // 8/12 = 66.67 → 67
+    );
+    expect(passing[0]!.sharePct).toBe(67);
+    expect(Math.round((8 / 12) * 100)).toBe(passing[0]!.sharePct);
+  });
+
+  it("drops a reader row that has no matching aggregate rows", () => {
+    // Reader voted turn 2, but the day has no rows for turn 2 → omitted.
+    const out = computeChoicePulse(
+      [{ turnNumber: 2, choiceKey: "k" }],
+      rowsAt(1, "k", 5, 10), // only turn 1 in the aggregate
+    );
+    expect(out).toEqual([]);
+  });
+
+  it("returns entries sorted ascending by turnNumber across multiple turns", () => {
+    const readerRows = [
+      { turnNumber: 3, choiceKey: "c3" },
+      { turnNumber: 1, choiceKey: "c1" },
+      { turnNumber: 2, choiceKey: "c2" },
+    ];
+    const allRows = [
+      ...rowsAt(1, "c1", 7, 10), // 70% → well-worn
+      ...rowsAt(2, "c2", 3, 10), // 30% → common thread
+      ...rowsAt(3, "c3", 1, 20), // 5%  → road less traveled
+    ];
+    const out = computeChoicePulse(readerRows, allRows);
+    expect(out.map((e) => e.turnNumber)).toEqual([1, 2, 3]);
+    expect(out.map((e) => e.phrase)).toEqual([
+      "the well-worn path",
+      "a common thread",
+      "the road less traveled",
+    ]);
+    expect(out.map((e) => e.sharePct)).toEqual([70, 30, 5]);
+  });
+
+  it("phrases a free-form own-bucket as 'wrote their own page'", () => {
+    const out = computeChoicePulse(
+      [{ turnNumber: 1, choiceKey: FREE_FORM_KEY }],
+      rowsAt(1, FREE_FORM_KEY, 4, 10),
+    );
+    expect(out[0]!.phrase).toBe("wrote their own page");
+    expect(out[0]!.sharePct).toBe(40);
+  });
+
+  it("carries ONLY aggregate counts — no foreign bucket key or label (BC10)", () => {
+    const out = computeChoicePulse(
+      [{ turnNumber: 1, choiceKey: "mine" }],
+      [
+        ...rowsAt(1, "mine", 3, 6),
+        { turnNumber: 1, choiceKey: "secret-foreign-path" },
+        { turnNumber: 1, choiceKey: "another-foreign-path" },
+        ...rowsAt(1, "filler", 0, 2),
+      ],
+    );
+    expect(out).toHaveLength(1);
+    const entry = out[0]!;
+    // Exactly the whitelisted keys — nothing that could leak another run's text.
+    expect(Object.keys(entry).sort()).toEqual(
+      ["phrase", "sameCount", "sharePct", "totalReaders", "turnNumber"].sort(),
+    );
+    const serialized = JSON.stringify(out);
+    expect(serialized).not.toContain("secret-foreign-path");
+    expect(serialized).not.toContain("another-foreign-path");
+    expect(serialized).not.toContain("mine"); // the reader's OWN key isn't echoed either
+  });
+
+  it("returns [] when the reader has no rows", () => {
+    expect(computeChoicePulse([], rowsAt(1, "k", 5, 10))).toEqual([]);
   });
 });
 

@@ -5,6 +5,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { AppNav } from "../navigation";
 import { AiSceneFlag } from "../moderation";
+import { DailyPulseChip } from "../daily";
 import { Text } from "../primitives";
 import { useAccountProfile } from "../../hooks/useAccountProfile";
 import { useLibrary } from "../../hooks/useLibrary";
@@ -20,7 +21,8 @@ import {
 import { CinematicMoment } from "../media/CinematicMoment";
 import { useSceneMedia } from "../../hooks/useSceneMedia";
 import { useStreamingScene } from "../../hooks/useStreamingScene";
-import { useTurn } from "../../hooks/useTurn";
+import { useTurn, type ChoiceProjection } from "../../hooks/useTurn";
+import { useAutoNarrator } from "../../hooks/useAutoNarrator";
 import { PATRON_TIERS_BY_ID, resolvePatronTier } from "../../lib/billingConfig";
 import { useBreakpoint } from "../../lib/responsive";
 import { useAppTheme } from "../../theme";
@@ -36,9 +38,15 @@ import {
   SOFT_SIGNUP_TURN,
 } from "./softSignup";
 import { READER_LAYOUTS } from "./layouts";
+import { NovelLayout } from "./layouts/Novel";
 import { liveMediaMatchesScene, mergeLiveMediaIntoProjection } from "./mergeLiveMedia";
 import { ReaderSettingsDrawer } from "./ReaderSettingsDrawer";
 import { actStampFromDiffs } from "../../lib/storyEngagement";
+import {
+  mementoStampLine,
+  rankTickerLine,
+  type RemoteRankProgress,
+} from "../../lib/storyEngagementW3";
 import {
   candleBurnModel,
   getRemoteDailyTurnState,
@@ -120,6 +128,26 @@ function actStampProps(
 ): { actNumber?: number; actLabel?: string } {
   if (!stamp) return {};
   return { actNumber: stamp.actNumber, ...(stamp.actLabel ? { actLabel: stamp.actLabel } : {}) };
+}
+
+/**
+ * Conditional-spread the ChapterEnd act-boundary lines (act-mementos R3.4, AM5).
+ * ONLY when the boundary turn advanced an act (a stamp) do we surface the
+ * memento acknowledgement and the rank ticker; otherwise `{}` so both optional
+ * props are omitted, never passed as `undefined` (BC4). The ticker is sourced
+ * from the already-fetched profile `rankProgress` — no new polling — and is
+ * dropped at the top tier (absent progress). A non-act boundary returns `{}`,
+ * keeping ChapterEnd byte-identical to today (BC9).
+ */
+function actBoundaryLineProps(
+  stamp: ReturnType<typeof actStampFromDiffs>,
+  rankProgress: RemoteRankProgress | undefined,
+): { mementoLine?: string; rankTickerLine?: string } {
+  if (!stamp) return {};
+  return {
+    mementoLine: mementoStampLine(),
+    ...(rankProgress ? { rankTickerLine: rankTickerLine(rankProgress) } : {}),
+  };
 }
 
 /**
@@ -334,7 +362,7 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
   //  - isFirstFind: TODO(Wave E) — real lookup against `endings_unlocked`.
   //    Until then pass `true` so eligible tier+asset reads can still fire
   //    Cinematic in QA without re-playing on the wrong account.
-  const { profile, claimWithEmail } = useAccountProfile();
+  const { profile, claimWithEmail, rankProgress } = useAccountProfile();
   const endingTier = profile
     ? resolvePatronTier({
         entitlement: profile.entitlementTier,
@@ -465,13 +493,27 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
   // the stored choice. See `resolveActiveLayout` above for the rationale.
   const { isPhone } = useBreakpoint();
   const activeLayout = resolveActiveLayout(settings.layout, isPhone);
-  const Layout = READER_LAYOUTS[activeLayout] ?? READER_LAYOUTS.book;
+  // Reading-modes Wave 3 (R4.6): novel mode is a CONTENT axis orthogonal to the
+  // cosmetic `layout` skin. When the projection carries `readingMode === "novel"`
+  // (a reader-known fact from create) the Novel layout takes over — chapter
+  // prose ending in one "Turn the page" affordance instead of a choice row —
+  // regardless of which of the five cosmetic skins is selected. Absent /
+  // "branching" ⇒ the normal skin dispatch, byte-identical to today (R5.3).
+  const Layout =
+    projection.readingMode === "novel"
+      ? NovelLayout
+      : (READER_LAYOUTS[activeLayout] ?? READER_LAYOUTS.book);
 
   // Panel-2 Wave 2 — daily turn budget → in-reader candle surfaces. The turn
   // number rides on the scene projection; a new scene means the reader spent a
   // turn, so `useDailyTurnState` refetches. `nowTs` ticks only while the candle
   // has guttered so the re-light countdown stays live without a permanent timer.
   const turnNumber = projection.turnNumber ?? 0;
+  // Daily Killcam (R3.1/R3.3) — the Daily this save belongs to, read off the
+  // scene projection. Typed narrowly here because `ReaderProjection` gains its
+  // own `dailyId?` field in the integrator's useTurn.ts widening; this read is
+  // safe (undefined → chip stays dark) whether or not that has landed yet.
+  const dailyPulseId = (projection as { dailyId?: string }).dailyId;
   const dailyTurnState = useDailyTurnState(remoteAuth, turnNumber);
   const [nowTs, setNowTs] = useState(() => Date.now());
   const burn = candleBurnModel(dailyTurnState, nowTs);
@@ -501,6 +543,50 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
   // cap, so it hides on terminal panels (the reader has already reached an end).
   const showCandleGutter = !isTerminalView && burn.guttered;
   const showCandleMeter = !isTerminalView && burn.showMeter && Boolean(dailyTurnState);
+
+  // Auto-narrator ("the tome reads itself" — R1). Session state ONLY (default
+  // OFF, resets on reader close) — never routed through useReaderSettings
+  // (R1.6). It re-fires the EXISTING `submitChoice` a manual tap uses (RM10),
+  // so every auto-advance is one real metered turn and re-entrancy is safe with
+  // zero change to useTurn. The halt guards (R1.2) are the ReaderScreen facts
+  // already derived above; on a surfaced turn error (incl. the daily-budget
+  // rejection) `freeformError` halts it (R1.7).
+  // Narration playback state, reported up from SceneMedia (deep in the active
+  // layout). While the narrator is speaking, the auto-narrator holds the
+  // page-turn so it never skips over the narration (R1.8 — the "auto skips the
+  // narrator" fix). False when audio is off / no clip / native.
+  const [isNarrating, setIsNarrating] = useState(false);
+  const { autoOn, toggleAuto, setAutoOn } = useAutoNarrator<ChoiceProjection>({
+    sceneId: projection.scene.id,
+    choices: projection.choices,
+    submitChoice,
+    reducedMotion: reduceMotion || settings.reduceMotion,
+    guards: {
+      isStreaming,
+      pendingChoiceId,
+      hasEnding: Boolean(projection.ending),
+      atChapterBoundary: Boolean(chapterBoundary),
+      candleGuttered: showCandleGutter,
+      hasError: Boolean(freeformError),
+      isNarrating,
+    },
+    // OQ8 default: stay hands-free — auto-acknowledge the chapter recap after a
+    // readable beat (reduced-motion shortens it). Seam: drop this line to PAUSE
+    // at chapter interstitials instead (the boundary is already a halt guard).
+    onChapterAdvance: acknowledgeChapter,
+  });
+  // R1.5 / OQ8 default: a manual choice tap "grabs the wheel" — flip auto OFF,
+  // then submit unchanged. Auto itself advances via the RAW `submitChoice`
+  // handed to the hook above (not this wrapper), so lean-back mode keeps running
+  // until the reader taps a choice or toggles auto off. Seam: to keep auto
+  // running THROUGH a manual detour, remove the `setAutoOn(false)` line.
+  const handleManualChoose = useCallback(
+    (choice: ChoiceProjection) => {
+      setAutoOn(false);
+      return submitChoice(choice);
+    },
+    [setAutoOn, submitChoice],
+  );
 
   return (
     <SafeAreaView style={{ backgroundColor: tokens.colors.background, flex: 1 }}>
@@ -533,6 +619,21 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
               {...(projection.recentDiffs ? { recentDiffs: projection.recentDiffs } : {})}
             />
           ) : null}
+          {/* Daily Killcam (daily-killcam R3.1) — the mid-run pulse chip, beside
+              ThreadsPill. Gated on `projection.dailyId` (the reader tapped the
+              Daily card — spoiler-neutral, BC10); self-hides with zero layout
+              shift on non-daily saves, an empty pulse, or an uncommitted turn.
+              NOTE: `projection.dailyId` is threaded onto ReaderProjection by the
+              integrator's useTurn.ts widening (RemoteScene.dailyId → projection);
+              the local read stays type-safe until then and simply reads
+              undefined, keeping the chip dark. */}
+          {dailyPulseId ? (
+            <DailyPulseChip
+              dailyId={dailyPulseId}
+              completedTurn={turnNumber}
+              {...(remoteAuth ? { auth: remoteAuth } : {})}
+            />
+          ) : null}
           {/* DOORS-JOURNAL — the teased-doors pill (story-bible fetch-quest
               loop, reader half). Self-fetching + zero-state invisible, so
               legacy / bible-less / local saves render nothing here. */}
@@ -552,7 +653,7 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
           ) : null}
         </View>
 
-        <ReaderSaveActions saveId={saveId} />
+        <ReaderSaveActions saveId={saveId} autoOn={autoOn} onToggleAuto={toggleAuto} />
 
         {/* Panel-2 Wave 2 — the candle-gutter interstitial. The daily cap as a
             narrative event, not an error string (Principle 8). Rendered ABOVE
@@ -609,12 +710,26 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
             // (an `act_advanced` diff), stamp the chapter recap with the new
             // act ("Act II — <label>"). Absent on non-arc boundaries (R1.5).
             {...actStampProps(actStampFromDiffs(projection.recentDiffs, projection.arc))}
+            // Act-mementos (R3.4) — memento acknowledgement + rank ticker, only
+            // alongside the act stamp; the ticker reuses the cached profile
+            // rankProgress (no new polling). Non-act boundaries spread `{}`.
+            {...actBoundaryLineProps(
+              actStampFromDiffs(projection.recentDiffs, projection.arc),
+              rankProgress,
+            )}
           />
         ) : (
           <Layout
             hudMode={settings.hudMode}
             isStreaming={isStreaming}
-            onChoose={submitChoice}
+            // Auto-narrator (R1.5): a manual choice tap grabs the wheel (flips
+            // auto OFF) then submits unchanged. Auto advances bypass this and
+            // ride the raw submitChoice, so lean-back mode keeps running.
+            onChoose={handleManualChoose}
+            // Read-as-books (R2.7): the terminal EndingPanel's "Read this tale
+            // as a book" action → the read-only book route. Wired through the
+            // layout's endingPanelHandlers onto <EndingPanel onReadAsBook>.
+            onReadAsBook={() => router.push(`/read/${saveId}/book`)}
             onOpenEndings={() => router.push("/endings")}
             onOpenLibrary={() => router.push("/library")}
             onReturnHome={() => router.push("/")}
@@ -657,6 +772,7 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
             videoEnabled={settings.videoEnabled}
             narratorPlaybackRate={settings.narratorPlaybackRate}
             onNarratorPlaybackRateChange={setNarratorPlaybackRate}
+            onNarrationActiveChange={setIsNarrating}
             dialogBlocksEnabled={settings.dialogBlocksEnabled}
             // Free-form ("Option D") affordance. Only wired for remote
             // LLM-driven saves — supportsFreeform is false for scripted /
@@ -714,7 +830,17 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
  * the test in `__tests__/readerSaveActions.test.mjs` drift-guards so
  * we don't lose the entry point in a future refactor.
  */
-function ReaderSaveActions({ saveId }: { saveId: string }) {
+function ReaderSaveActions({
+  saveId,
+  autoOn,
+  onToggleAuto,
+}: {
+  saveId: string;
+  /** Auto-narrator session flag (R1.5) — drives the toggle pill's label + a11y state. */
+  autoOn: boolean;
+  /** Flip auto-narrator ON/OFF — the one-tap "grab the wheel" affordance (R1.5). */
+  onToggleAuto: () => void;
+}) {
   const router = useRouter();
   const { tokens } = useAppTheme();
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -766,6 +892,22 @@ function ReaderSaveActions({ saveId }: { saveId: string }) {
       <View style={{ marginRight: "auto" }}>
         <AiSceneFlag saveId={saveId} />
       </View>
+      {/* Auto-narrator toggle (R1.5) — one tap to hand the book the wheel or take
+          it back, reachable on ANY page-state because this row renders above the
+          chapter / ending / streaming branches. Session state only (R1.6); the
+          label + accessibilityState reflect the live flag so screen readers hear
+          the toggle's state. Drift-guarded by autoNarratorReader.test.mjs. */}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Auto-narrator"
+        accessibilityState={{ selected: autoOn }}
+        onPress={onToggleAuto}
+        style={pillStyle}
+      >
+        <Text style={labelStyle} variant="bodySmall">
+          {autoOn ? "⏸ Auto" : "▶ Auto"}
+        </Text>
+      </Pressable>
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Reader settings"

@@ -503,6 +503,15 @@ function buildLlmDrivenPrompt(request: SceneGenerationRequest): string {
     : null;
   const hasArc = request.pursuit !== undefined;
   const hasBible = request.storyBible !== undefined;
+  // Novel mode (R4.5): a TRUE linear book. The reader never branches — the
+  // server stamps a single synthetic "turn-page" choice after validation
+  // (R4.2/R4.4), so the model must emit a prose+terminal-only shape with NO
+  // choices array. We KEEP the narrative spine (terminal handling,
+  // anti-repetition, continuity, visualDescription, and the arc/pursuit spine —
+  // a linear read is IMPROVED by the arc driving one dramatic question to one
+  // climax) and DROP every choice/effect-bearing rule below. Absent/branching
+  // saves are byte-identical to today (the filter only runs when isNovel).
+  const isNovel = request.readingMode === "novel";
   const candidateEndings = request.pursuit?.candidateEndings ?? [];
   const hasNpcSheets = Array.isArray(request.npcSheets) && request.npcSheets.length > 0;
   // Build the output rule bodies dynamically so the numbering stays consecutive
@@ -583,6 +592,46 @@ function buildLlmDrivenPrompt(request: SceneGenerationRequest): string {
   // output rules so it rides the same "emit this JSON" contract.
   if (request.produceArc) {
     ruleBodies.push(STORY_ARC_PRODUCTION_BLOCK);
+  }
+  if (isNovel) {
+    // Strip the choice/effect machinery: with no branching choices there are no
+    // per-choice ids, effects, gates, checks, or divergence to describe. This
+    // includes the named drops (R4.5): the "choices is an array of 2 to 4" rule,
+    // CHOICE DIVERGENCE, and the arc CHOICE CONSEQUENCE / GATED CHOICE rules.
+    // Prefix-matched so the exact rule strings stay defined in one place above.
+    const NOVEL_DROP_PREFIXES = [
+      "choices is an array of 2 to 4",
+      "id is a short kebab-case identifier",
+      "effects is an array of",
+      "INVENTORY_ADD LOCATION RULE",
+      "Stat deltas must be integers",
+      "STAT CHANGES MUST BE NARRATED",
+      "DURABLE WORLD STATE",
+      "CHOICE DIVERGENCE",
+      "CHOICE CONSEQUENCE",
+      "GATED CHOICE",
+      "ITEM-ID CONSISTENCY",
+      "THREADS",
+      "RELATIONSHIPS",
+      "SKILL CHECKS",
+      "SCARCITY",
+      "CODEX",
+    ];
+    const novelRules = ruleBodies.filter(
+      (body) => !NOVEL_DROP_PREFIXES.some((prefix) => body.startsWith(prefix)),
+    );
+    // Replace the JSON shape rule with the prose+terminal-only linear shape:
+    // no `choices` array (R4.2 — the reader turns the page; the server stamps
+    // the single synthetic choice after validation).
+    const shapeIdx = novelRules.findIndex((body) =>
+      body.startsWith("Output a single JSON object"),
+    );
+    if (shapeIdx >= 0) {
+      novelRules[shapeIdx] =
+        'Output a single JSON object with this exact shape: { "prose": string, "terminal": Terminal | null, "visualDescription"?: string, "npcMentions"?: string[] }. This is a LINEAR NOVEL — do NOT emit a `choices` array. The reader simply turns the page; the story advances through your prose alone. Drive the scene like a chapter of a novel toward the single dramatic question.';
+    }
+    ruleBodies.length = 0;
+    ruleBodies.push(...novelRules);
   }
   const outputRules = [
     "Output rules — failure to follow these is rejected:",

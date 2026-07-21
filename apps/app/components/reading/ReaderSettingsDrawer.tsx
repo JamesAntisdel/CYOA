@@ -1,3 +1,4 @@
+import { useRouter } from "expo-router";
 import { Modal, Pressable, ScrollView, View } from "react-native";
 
 import { Text } from "../primitives";
@@ -48,11 +49,48 @@ export type ReaderSettingsDrawerProps = {
   onClose: () => void;
 };
 
+// Illustrated Book couples the cosmetic layout skin (`illustratedBook`,
+// camelCase — client-only localStorage) with the still-guaranteeing media
+// strategy (`illustrated_book`, snake_case — round-trips via
+// mediaPrefs.cinematicMode). Selecting the mode writes both plus images-ON so
+// the image-first plate always has a still to fill it (RM7/R3.8). Kept in
+// lockstep with the same constant in `app/settings/index.tsx`.
+const ILLUSTRATED_BOOK_SETTINGS = {
+  layout: "illustratedBook",
+  cinematicMode: "illustrated_book",
+  imagesEnabled: true,
+} as const;
+
+// Pro-gate for Illustrated Book (R3.7). The guaranteed still is a paid
+// entitlement, so a non-Pro reader sees the option locked → paywall. The dev
+// unlock mirrors the server `CYOA_DEV_FORCE_PRO_MEDIA` / `devForceProMedia`
+// flag through the EXPO_PUBLIC_ seam so local dev previews the full mode; the
+// literal access is required for the Expo web bundler to inline the value.
+function isIllustratedBookUnlocked(
+  profile: {
+    entitlementTier: "free" | "unlimited" | "pro";
+    entitlementStatus: "active" | "grace" | "expired" | "revoked";
+  } | null,
+): boolean {
+  if (process.env.EXPO_PUBLIC_DEV_FORCE_PRO_MEDIA === "1") return true;
+  return Boolean(
+    profile &&
+      profile.entitlementStatus === "active" &&
+      (profile.entitlementTier === "pro" || profile.entitlementTier === "unlimited"),
+  );
+}
+
 export function ReaderSettingsDrawer({ visible, onClose }: ReaderSettingsDrawerProps) {
   const { tokens } = useAppTheme();
   const { isPhone } = useBreakpoint();
   const { resetSettings, settings, updateSettings } = useReaderSettings();
   const account = useAccountProfile();
+  const router = useRouter();
+
+  // Illustrated Book (R3.7): Pro-gated so a non-Pro reader can never select
+  // the image-first skin into a permanently empty plate — locked → paywall
+  // until the account is Pro (or the dev override previews it).
+  const illustratedBookUnlocked = isIllustratedBookUnlocked(account.profile);
 
   // Best-effort server sync for the three media gates. Mirrors the same
   // pattern /settings uses — localStorage is the authoritative client
@@ -66,6 +104,24 @@ export function ReaderSettingsDrawer({ visible, onClose }: ReaderSettingsDrawerP
         imagesEnabled: next.imagesEnabled,
         audioEnabled: next.audioEnabled,
         videoEnabled: next.videoEnabled,
+      });
+    } catch {
+      // Silent — the next hydrate will reconcile.
+    }
+  };
+
+  // Illustrated Book's coupling (RM7) also round-trips the still-guaranteeing
+  // `cinematicMode` — unlike the plain media-gate toggles above — so the
+  // server strategy tracks the image-first skin. Separate from the gate sync
+  // so the ordinary toggles keep their byte-identical three-field payload.
+  const syncMediaPrefsWithStrategy = async (next: ReaderSettings) => {
+    if (!account.profile) return;
+    try {
+      await account.setMediaPrefs({
+        imagesEnabled: next.imagesEnabled,
+        audioEnabled: next.audioEnabled,
+        videoEnabled: next.videoEnabled,
+        cinematicMode: next.cinematicMode,
       });
     } catch {
       // Silent — the next hydrate will reconcile.
@@ -173,9 +229,35 @@ export function ReaderSettingsDrawer({ visible, onClose }: ReaderSettingsDrawerP
                 { label: "Modern", value: "modernApp" },
                 { label: "Journal", value: "journal" },
                 { label: "Comic", value: "graphicNovel" },
+                {
+                  // Illustrated Book is a Pro image-first mode. The lock glyph
+                  // on non-Pro accounts signals it routes to the paywall
+                  // rather than selecting into an empty full-bleed plate.
+                  label: illustratedBookUnlocked ? "Illustrated" : "Illustrated 🔒",
+                  value: "illustratedBook",
+                },
               ]}
               selected={settings.layout}
               onSelect={(layout) => {
+                if (layout === "illustratedBook") {
+                  // R3.7: a non-Pro reader can never select into a permanent
+                  // skeleton — locked → paywall (dev override previews).
+                  if (!illustratedBookUnlocked) {
+                    onClose();
+                    router.push("/paywall?reason=pro_media");
+                    return;
+                  }
+                  // RM7 / R3.8 coupling: set the image-first skin, force
+                  // images-ON, and the stills-guaranteeing strategy TOGETHER —
+                  // `layout` is client-only localStorage while `cinematicMode`
+                  // round-trips through mediaPrefs, so the two axes must move as
+                  // one or the reader gets a full-bleed plate that never fills.
+                  markLayoutAsExplicitlyChosen();
+                  updateSettings({ ...ILLUSTRATED_BOOK_SETTINGS }, (next) => {
+                    void syncMediaPrefsWithStrategy(next);
+                  });
+                  return;
+                }
                 // Mirror /settings: mark as an explicit user choice so
                 // the phone-aware auto-default doesn't override later.
                 markLayoutAsExplicitlyChosen();

@@ -274,6 +274,22 @@ export type RemoteScene = {
    * surfaces render nothing.
    */
   ending?: { whatMightHaveBeen?: RemoteWhatMightHaveBeen[] | null } | null;
+  /**
+   * Daily Killcam (daily-killcam R3.3, DK): the Daily Tale this save belongs to.
+   * A reader-known fact (they tapped the Daily card) — spoiler-neutral under
+   * BC10. Present ONLY on Daily saves; `projectLlmDrivenScene` emits it via
+   * conditional spread and legacy / non-daily projections omit it (BC9/BC4), so
+   * the client treats absent as "not a Daily" and the pulse chip stays dark.
+   */
+  dailyId?: string;
+  /**
+   * Reading modes R4 (novel mode): the save's content axis when it is a novel
+   * read. A reader-known fact (they chose novel at create) — spoiler-neutral
+   * under BC10. Present ONLY on novel saves; `projectLlmDrivenScene` emits it
+   * via conditional spread and branching / legacy projections omit it (BC9/BC4),
+   * so the client treats absent as "branching" and renders the normal choice row.
+   */
+  readingMode?: "novel";
 };
 
 export function hasRemoteGameApi() {
@@ -318,6 +334,12 @@ export async function createRemoteSave(input: {
    * threaded for completeness of the create path.
    */
   dailyId?: string;
+  /**
+   * Reading-modes R4 — start this save in Novel mode (linear reading via a
+   * single synthetic "turn the page" choice). Server re-gates through
+   * `resolveReadingMode` (posture A). Absent ⇒ branching (byte-identical).
+   */
+  readingMode?: "branching" | "novel";
   /**
    * Narrator voice id chosen by the reader on the cover screen. Sent at save
    * creation only — the backend persists it on the save record so subsequent

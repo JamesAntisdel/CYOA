@@ -88,7 +88,7 @@ export class LlmRouter {
         // provider returning and the next loop iteration starting.
         const generation = await provider.generate(request, signal);
         if (signal?.aborted) throw new ClientDisconnectedError();
-        const parsed = parseSceneOutput(generation.text);
+        const parsed = parseSceneOutput(generation.text, request.readingMode);
         // Classify prose AND the proposed choice labels (+ terminal label)
         // together, BEFORE returning. For llm-driven scenes the SSE handler
         // emits an `event: choices` frame carrying the raw labels, so a
@@ -140,7 +140,7 @@ export class LlmRouter {
     const safeGeneration = await fallback.generate(request);
     return {
       generation: safeGeneration,
-      parsed: parseSceneOutput(safeGeneration.text),
+      parsed: parseSceneOutput(safeGeneration.text, request.readingMode),
       safetyAction,
     };
   }

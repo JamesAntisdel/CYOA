@@ -1,3 +1,4 @@
+import { useRouter } from "expo-router";
 import { useState } from "react";
 import { ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -26,6 +27,38 @@ type Option<T extends string | boolean | number> = {
   value: T;
 };
 
+// Illustrated Book couples two axes (RM7/R3.8): the cosmetic layout skin
+// (`illustratedBook`, camelCase — client-only localStorage) and the
+// still-guaranteeing media strategy (`illustrated_book`, snake_case — round-
+// trips to the server via mediaPrefs.cinematicMode). Selecting the mode in
+// EITHER picker writes both plus images-ON so the reader can never land on the
+// image-first plate with a strategy that produces no still.
+const ILLUSTRATED_BOOK_STRATEGY = "illustrated_book" as const;
+const ILLUSTRATED_BOOK_SETTINGS = {
+  layout: "illustratedBook",
+  cinematicMode: ILLUSTRATED_BOOK_STRATEGY,
+  imagesEnabled: true,
+} as const;
+
+// Pro-gate for Illustrated Book (R3.7). The guaranteed still is a paid
+// entitlement, so a non-Pro reader sees the option locked → paywall. The dev
+// unlock mirrors the server `CYOA_DEV_FORCE_PRO_MEDIA` / `devForceProMedia`
+// flag through the EXPO_PUBLIC_ seam so local dev previews the full mode; the
+// literal access is required for the Expo web bundler to inline the value.
+function isIllustratedBookUnlocked(
+  profile: {
+    entitlementTier: "free" | "unlimited" | "pro";
+    entitlementStatus: "active" | "grace" | "expired" | "revoked";
+  } | null,
+): boolean {
+  if (process.env.EXPO_PUBLIC_DEV_FORCE_PRO_MEDIA === "1") return true;
+  return Boolean(
+    profile &&
+      profile.entitlementStatus === "active" &&
+      (profile.entitlementTier === "pro" || profile.entitlementTier === "unlimited"),
+  );
+}
+
 export default function SettingsRoute() {
   const { resetSettings, settings, updateSettings } = useReaderSettings();
   const { tokens } = useAppTheme();
@@ -35,6 +68,13 @@ export default function SettingsRoute() {
   const [showMatureFlow, setShowMatureFlow] = useState(false);
   const [matureError, setMatureError] = useState<string | null>(null);
   const narratorController = useNarratorVoice(null);
+  const router = useRouter();
+
+  // Illustrated Book (R3.7): a Pro reading mode whose whole promise is a
+  // guaranteed still. A non-Pro reader must NEVER be able to select the
+  // image-first skin into a permanently empty plate, so the option is locked
+  // → paywall until the account is Pro (or the dev override previews it).
+  const illustratedBookUnlocked = isIllustratedBookUnlocked(account.profile);
 
   return (
     <SafeAreaView style={{ backgroundColor: tokens.colors.background, flex: 1 }}>
@@ -224,21 +264,56 @@ export default function SettingsRoute() {
 
               <SettingGroup
                 label="Cinematic mode"
-                helpText="How much generated media a run produces. Endpoint cinematics need Pro; your plan may cap the effective setting."
+                helpText="How much generated media a run produces. Endpoint cinematics and Illustrated Book need Pro; your plan may cap the effective setting."
                 options={[
                   { label: "Off", value: "off" },
                   { label: "Stills only", value: "stills_only" },
                   { label: "Endpoint cinematics", value: "endpoint_cinematic" },
                   { label: "Per-scene", value: "per_scene_legacy" },
+                  {
+                    // Illustrated Book carries the guaranteed-still strategy
+                    // (OQ7 distinct value). The lock glyph on non-Pro accounts
+                    // signals it routes to the paywall rather than selecting.
+                    label: illustratedBookUnlocked ? "Illustrated Book" : "Illustrated Book 🔒",
+                    value: ILLUSTRATED_BOOK_STRATEGY,
+                  },
                 ]}
                 selected={settings.cinematicMode}
                 onSelect={(cinematicMode) => {
-                  // Persist locally (authoritative client cache) and echo to
-                  // the server through the mediaPrefs path from the post-merge
-                  // snapshot — same discipline as the imagesEnabled toggle.
-                  updateSettings({ cinematicMode }, (next) => {
-                    void syncMediaPrefs(account, pickMediaPrefs(next));
-                  });
+                  if (cinematicMode === ILLUSTRATED_BOOK_STRATEGY) {
+                    // R3.7: a non-Pro reader can never select into a permanent
+                    // skeleton — locked → paywall (dev override previews).
+                    if (!illustratedBookUnlocked) {
+                      router.push("/paywall?reason=pro_media");
+                      return;
+                    }
+                    // RM7 / R3.8 coupling: set the image-first skin, force
+                    // images-ON, and the stills-guaranteeing strategy TOGETHER
+                    // — `layout` is client-only localStorage while
+                    // `cinematicMode` round-trips through mediaPrefs, so the two
+                    // axes must move as one or the reader gets a full-bleed
+                    // plate that never fills.
+                    markLayoutAsExplicitlyChosen();
+                    updateSettings({ ...ILLUSTRATED_BOOK_SETTINGS }, (next) => {
+                      void syncMediaPrefs(account, pickMediaPrefs(next));
+                    });
+                    return;
+                  }
+                  // Leaving Illustrated Book: if the reader picks any other
+                  // strategy while still on the image-first skin, drop back to
+                  // the Book skin so they don't strand on a full-bleed plate the
+                  // new strategy may never fill.
+                  const leavingIllustrated = settings.layout === "illustratedBook";
+                  if (leavingIllustrated) markLayoutAsExplicitlyChosen();
+                  updateSettings(
+                    leavingIllustrated ? { cinematicMode, layout: "book" } : { cinematicMode },
+                    (next) => {
+                      // Persist locally (authoritative client cache) and echo to
+                      // the server through the mediaPrefs path from the
+                      // post-merge snapshot — same discipline as imagesEnabled.
+                      void syncMediaPrefs(account, pickMediaPrefs(next));
+                    },
+                  );
                 }}
               />
 

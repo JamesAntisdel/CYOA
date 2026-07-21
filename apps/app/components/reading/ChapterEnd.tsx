@@ -27,6 +27,16 @@ type ChapterEndProps = {
    */
   actNumber?: number;
   actLabel?: string;
+  /**
+   * Act-mementos (R3.4) — two book-voice lines that ride the act-boundary recap
+   * beside the act `Stamp`. `mementoLine` acknowledges the memento pressed
+   * server-side ("A memento is pressed between the pages"); `rankTickerLine`
+   * echoes the next Librarian rung ("Next: Keeper — 2 more endings"). Both are
+   * optional and self-hide (zero layout shift): they render ONLY alongside an
+   * act stamp, so plain chapter boundaries and legacy saves are unchanged (BC9).
+   */
+  mementoLine?: string;
+  rankTickerLine?: string;
 };
 
 const ACT_ROMAN = ["I", "II", "III", "IV", "V"];
@@ -66,6 +76,8 @@ export function ChapterEnd({
   audioEnabled = true,
   actNumber,
   actLabel,
+  mementoLine,
+  rankTickerLine,
 }: ChapterEndProps) {
   const { tokens } = useAppTheme();
   const chapterLabel = `Chapter ${romanize(chapterIndex)}`;
@@ -95,6 +107,22 @@ export function ChapterEnd({
       <View style={{ gap: tokens.spacing.xs }}>
         {actStamp ? (
           <Stamp accessibilityLabel={`${actStamp} begins`}>{actStamp}</Stamp>
+        ) : null}
+        {/* Act-mementos (R3.4): the memento acknowledgement + rank ticker ride
+            the act stamp only. Both self-hide when absent, and gating on
+            `actStamp` keeps every non-act boundary byte-identical to today. */}
+        {actStamp && mementoLine ? (
+          <Text
+            style={{ color: tokens.colors.accent, fontStyle: "italic" }}
+            variant="caption"
+          >
+            {mementoLine}
+          </Text>
+        ) : null}
+        {actStamp && rankTickerLine ? (
+          <Text muted variant="caption">
+            {rankTickerLine}
+          </Text>
         ) : null}
         <Stamp>End of {chapterLabel.toLowerCase()}</Stamp>
         <Text

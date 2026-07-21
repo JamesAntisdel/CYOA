@@ -11,7 +11,14 @@ import {
   setRemoteMatureContent,
   setRemoteMediaPrefs,
 } from "../lib/gameApi";
-import { adaptKeepsakes, adaptLibrarianRank } from "../lib/storyEngagementW3";
+import {
+  adaptKeepsakes,
+  adaptLibrarianRank,
+  adaptMementos,
+  adaptRankProgress,
+  type RemoteMementoList,
+  type RemoteRankProgress,
+} from "../lib/storyEngagementW3";
 import {
   ensureRemoteAppAccount,
   getRemoteAuthedProfile,
@@ -312,6 +319,16 @@ export function useAccountProfile() {
   }, [auth]);
 
   return useMemo(() => {
+    // The rankProgress + mementos projections widen `getProfile` (act-mementos
+    // design §3). `gameApi.ts` (not owned by this feature) doesn't name them on
+    // the return type yet, so read them through a widened view. Server emits
+    // null-for-absent; the adapters map that to optional/empty (BC2/BC9).
+    const remoteW3 = remoteProfile as
+      | (RemoteProfileState & {
+          rankProgress?: RemoteRankProgress | null;
+          mementos?: RemoteMementoList | null;
+        })
+      | null;
     const profile: AccountProfile | null = auth.session
       ? {
           // Prefer the bridged app `accounts._id` so saves/entitlements/admin
@@ -370,6 +387,11 @@ export function useAccountProfile() {
       // account / pre-W3 server (BC2/BC4).
       librarianRank: adaptLibrarianRank(remoteProfile?.librarianRank),
       keepsakes: adaptKeepsakes(remoteProfile?.keepsakes),
+      // Act-mementos (R3.3, R4): the rank-progress ticker (undefined at the top
+      // tier / pre-mementos server) and the mementos shelf model (empty when the
+      // account has pressed none). Both self-hide on the profile (BC2/BC9).
+      rankProgress: adaptRankProgress(remoteW3?.rankProgress),
+      mementos: adaptMementos(remoteW3?.mementos),
     };
   }, [
     archetypes,

@@ -89,6 +89,7 @@ import type * as media_omniClient from "../media/omniClient.js";
 import type * as media_proMediaGate from "../media/proMediaGate.js";
 import type * as media_sceneMedia from "../media/sceneMedia.js";
 import type * as media_veo from "../media/veo.js";
+import type * as mementos from "../mementos.js";
 import type * as memory from "../memory.js";
 import type * as migrations from "../migrations.js";
 import type * as moderation from "../moderation.js";
@@ -191,6 +192,7 @@ declare const fullApi: ApiFromModules<{
   "media/proMediaGate": typeof media_proMediaGate;
   "media/sceneMedia": typeof media_sceneMedia;
   "media/veo": typeof media_veo;
+  mementos: typeof mementos;
   memory: typeof memory;
   migrations: typeof migrations;
   moderation: typeof moderation;

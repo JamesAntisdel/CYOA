@@ -1,6 +1,6 @@
 import { mutationGeneric, queryGeneric } from "convex/server";
 
-import { librarianRank } from "@cyoa/engine";
+import { librarianRank, rankProgress, type RankProgress } from "@cyoa/engine";
 
 import { accountFromDoc, cleanDoc } from "./lib/docs";
 import { dedupeKeepsakes, type Keepsake } from "./keepsakes";
@@ -17,7 +17,7 @@ import {
 } from "./account";
 import type { EntitlementRecord } from "./billing/entitlements";
 import { assertAccountSessionAccess } from "./lib/authz";
-import { cascadeAccountData } from "./lib/accountCascade";
+import { cascadeAccountData, deleteByIndex } from "./lib/accountCascade";
 import { AppError } from "./lib/errors";
 import {
   buildAccountProfile,
@@ -54,12 +54,34 @@ export const getProfile = queryGeneric({
   },
 });
 
+/** Newest-N cap the profile returns for the mementos shelf (R2.4). */
+const MEMENTO_PROJECTION_CAP = 12;
+
+/** Shape the client reads for each memento card (design §3 wire shape). */
+type MementoProjectionItem = {
+  act: number;
+  label: string;
+  description: string;
+  storyTitle: string;
+  createdAt: number;
+};
+
 /**
- * Compute the W3 profile additions (Requirement 12.3): the Librarian Rank +
- * the account's deduped owned keepsakes. Gathered from `endings_unlocked`
- * (count + carried keepsakes), `published_tales` (active tale count), and the
- * account's saves (lifetime arc beats fired). All three are account-indexed so
- * this stays a bounded read.
+ * Compute the profile additions:
+ *
+ * - **W3 (Requirement 12.3):** the Librarian Rank + the account's deduped owned
+ *   keepsakes. Gathered from `endings_unlocked` (count + carried keepsakes),
+ *   `published_tales` (active tale count), and the account's saves (lifetime arc
+ *   beats fired).
+ * - **Act-mementos (R3.2):** the `rankProgress` ticker — the NEXT tier and the
+ *   per-metric deficits — computed by the pure engine helper from the SAME
+ *   `librarianRank` value the chip renders (AM3: one count, not two), so chip
+ *   and ticker never disagree. Null at the top tier.
+ * - **Act-mementos (R2.4):** the newest `MEMENTO_PROJECTION_CAP` mementos plus a
+ *   `total` count, via `by_accountId`. Null when the shelf is empty (R4.2).
+ *
+ * All four reads are account-indexed so this stays a bounded read (AM4 — this is
+ * a query, so it is read-only: no analytics, no writes).
  */
 async function buildProfileMetaAdditions(
   ctx: QueryCtx,
@@ -67,8 +89,10 @@ async function buildProfileMetaAdditions(
 ): Promise<{
   librarianRank: ReturnType<typeof librarianRank>;
   keepsakes: Keepsake[];
+  rankProgress: RankProgress | null;
+  mementos: { total: number; items: MementoProjectionItem[] } | null;
 }> {
-  const [endingRows, taleRows, saveRows] = await Promise.all([
+  const [endingRows, taleRows, saveRows, mementoRows] = await Promise.all([
     ctx.db
       .query("endings_unlocked")
       .withIndex("by_account_story", (q) => q.eq("accountId", accountIdValue))
@@ -79,6 +103,10 @@ async function buildProfileMetaAdditions(
       .collect(),
     ctx.db
       .query("saves")
+      .withIndex("by_accountId", (q) => q.eq("accountId", accountIdValue))
+      .collect(),
+    ctx.db
+      .query("mementos")
       .withIndex("by_accountId", (q) => q.eq("accountId", accountIdValue))
       .collect(),
   ]);
@@ -99,7 +127,38 @@ async function buildProfileMetaAdditions(
       .filter(isKeepsake),
   );
 
-  return { librarianRank: librarianRank({ endings, beats, tales }), keepsakes };
+  // AM3: the rank the chip shows AND the ticker's progression are derived from
+  // one `librarianRank` result — never a second metric count.
+  const rank = librarianRank({ endings, beats, tales });
+
+  // R2.4: total from the full account read; items are the newest cap, sorted by
+  // `createdAt` descending. Null-for-absent when there are no mementos (R4.2 —
+  // the client shelf self-hides).
+  const total = mementoRows.length;
+  const items = mementoRows
+    .map(projectMemento)
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, MEMENTO_PROJECTION_CAP);
+
+  return {
+    librarianRank: rank,
+    keepsakes,
+    // Null at the top tier (engine returns null) — the client falls back to the
+    // existing totals line.
+    rankProgress: rankProgress(rank),
+    mementos: total === 0 ? null : { total, items },
+  };
+}
+
+function projectMemento(row: unknown): MementoProjectionItem {
+  const memento = (row ?? {}) as Partial<MementoProjectionItem>;
+  return {
+    act: typeof memento.act === "number" ? memento.act : 0,
+    label: typeof memento.label === "string" ? memento.label : "",
+    description: typeof memento.description === "string" ? memento.description : "",
+    storyTitle: typeof memento.storyTitle === "string" ? memento.storyTitle : "",
+    createdAt: typeof memento.createdAt === "number" ? memento.createdAt : 0,
+  };
 }
 
 function countFiredBeats(save: unknown): number {
@@ -180,6 +239,18 @@ export const deleteAccount = mutationGeneric({
     summary.assetsDeleted += cascade.assetsDeleted;
     summary.taleReadsDeleted += cascade.taleReadsDeleted;
     summary.taleForksDeleted += cascade.taleForksDeleted;
+
+    // Act-mementos (R2.3): purge the account's mementos on full-account erasure
+    // (parity with `endings_unlocked`). Save deletion / rewind / hardcore
+    // permadeath deliberately do NOT touch mementos (R2.1) — only whole-account
+    // deletion does.
+    await deleteByIndex(ctx, "mementos", "by_accountId", "accountId", args.accountId);
+
+    // daily-killcam (design §5, NFR Security): purge the account's killcam rows
+    // on full-account erasure via the account-scoped `by_accountId` index (the
+    // `by_daily_account` index leads with `dailyId`, so it can't front an
+    // account-only scan). Mirrors the `daily_results` purge posture.
+    await deleteByIndex(ctx, "daily_choice_results", "by_accountId", "accountId", args.accountId);
 
     const authoredSeeds = await ctx.db
       .query("authored_seeds")
@@ -262,6 +333,11 @@ export const setMediaPrefs = mutationGeneric({
         v.literal("stills_only"),
         v.literal("endpoint_cinematic"),
         v.literal("per_scene_legacy"),
+        // Reading-modes R3 (Illustrated Book, OQ7 distinct strategy). MUST be
+        // accepted here or Convex rejects the picker's coupled write and the
+        // still-guaranteeing strategy never persists (the reader keeps the
+        // dev-Pro `endpoint_cinematic` default — an opening cinematic video).
+        v.literal("illustrated_book"),
       ),
     ),
   },
@@ -301,6 +377,8 @@ async function buildAccountExportBundle(ctx: QueryCtx, id: GenericId<"accounts">
     analyticsEvents,
     assets,
     dailyCounters,
+    mementos,
+    dailyChoiceResults,
   ] = await Promise.all([
     ctx.db.query("entitlements").withIndex("by_accountId", (q) => q.eq("accountId", id)).collect(),
     ctx.db.query("usage_meters").withIndex("by_account_period", (q) => q.eq("accountId", id)).collect(),
@@ -312,6 +390,8 @@ async function buildAccountExportBundle(ctx: QueryCtx, id: GenericId<"accounts">
     ctx.db.query("analytics_events").withIndex("by_accountId", (q) => q.eq("accountId", id)).collect(),
     ctx.db.query("assets").withIndex("by_accountId", (q) => q.eq("accountId", id)).collect(),
     ctx.db.query("daily_turn_counter").withIndex("by_account_day", (q) => q.eq("accountId", id)).collect(),
+    ctx.db.query("mementos").withIndex("by_accountId", (q) => q.eq("accountId", id)).collect(),
+    ctx.db.query("daily_choice_results").withIndex("by_accountId", (q) => q.eq("accountId", id)).collect(),
   ]);
 
   // story_bibles is save-scoped (only by_saveId), so gather it by iterating the
@@ -376,6 +456,13 @@ async function buildAccountExportBundle(ctx: QueryCtx, id: GenericId<"accounts">
       createdAt: asset.createdAt,
     })),
     dailyCounters: dailyCounters.map(stripSystemFields),
+    // Act-mementos (R2.3): mementos ride into the export bundle, same posture as
+    // `endings`.
+    mementos: mementos.map(stripSystemFields),
+    // daily-killcam (design §5): killcam rows ride into the export bundle, same
+    // posture as `daily_results` / `mementos`. `choiceKey` is a normalized slug
+    // or the reserved `free-form` key — never the reader's typed text (DK4).
+    dailyChoiceResults: dailyChoiceResults.map(stripSystemFields),
   };
 }
 

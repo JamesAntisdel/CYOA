@@ -58,6 +58,11 @@ export type SaveRecord = {
   // keepsake id carried in from a prior ending (R12.2). Both optional.
   dailyId?: string;
   keepsakeCarried?: string;
+  // reading-modes R4 (novel mode): the content axis this save was created
+  // under. OPTIONAL and resolved at `createSave` (posture A) — absent reads
+  // back as "branching", so every legacy save keeps today's exact path
+  // (RM4). Mirrors the reserved `saves.readingMode` schema field.
+  readingMode?: "branching" | "novel";
   createdAt: number;
   updatedAt: number;
 };
@@ -139,6 +144,22 @@ export type SceneProjection = {
    * arc-less saves omit it entirely.
    */
   ending?: { whatMightHaveBeen: Array<{ label: string; hint: string }> };
+  /**
+   * The Daily Tale this save plays (daily-killcam R3.3). A reader-KNOWN fact —
+   * they tapped the Daily card — so it is spoiler-neutral under BC10 and drives
+   * the client's killcam surfaces (DailyPulseChip / OpeningForks). Present on
+   * Daily saves only; legacy / non-daily projections omit it (BC9,
+   * conditional-spread per BC4).
+   */
+  dailyId?: string;
+  /**
+   * reading-modes R4 (novel mode) — present ONLY on a novel save so a Novel
+   * layout can render the single "Turn the page" affordance instead of the
+   * branching choice row. A reader-KNOWN fact (they chose novel at create),
+   * so spoiler-neutral under BC10. Emitted via conditional spread; absent on
+   * every branching / legacy projection so those stay byte-identical (BC9/BC4).
+   */
+  readingMode?: "novel";
   terminal: ReturnType<typeof resolveTerminal>;
 };
 
@@ -698,6 +719,15 @@ export function projectLlmDrivenScene(input: {
       const whatMightHaveBeen = projectWhatMightHaveBeen(input.save.state, input.terminal ?? null);
       return whatMightHaveBeen.length > 0 ? { ending: { whatMightHaveBeen } } : {};
     })(),
+    // daily-killcam R3.3: forward the reader-known Daily id so the client can
+    // mount the killcam surfaces. Conditional-spread (BC4) — absent on every
+    // non-daily save so legacy projections stay byte-identical (BC9).
+    ...(input.save.dailyId ? { dailyId: input.save.dailyId } : {}),
+    // reading-modes R4 (novel mode): carry the reader-known content axis so the
+    // Novel layout renders the "Turn the page" affordance. Conditional-spread
+    // (BC4) — present ONLY for a novel save so branching / legacy projections
+    // stay byte-identical (BC9). BC10-clean: the reader chose novel at create.
+    ...(input.save.readingMode === "novel" ? { readingMode: "novel" as const } : {}),
     terminal: input.terminal ?? null,
   };
 }

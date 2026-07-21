@@ -5,9 +5,11 @@ import {
   distributionShareLine,
   type DistributionBar,
   type RemoteDailyResults,
+  type RemotePulseEntry,
 } from "../../lib/dailyApi";
 import { useAppTheme } from "../../theme";
 import { Bar, Note, Stamp, Surface, Text } from "../primitives";
+import { OpeningForks } from "./OpeningForks";
 
 type DailyResultsProps = {
   /** The results payload, or null while loading / on transport failure. */
@@ -16,6 +18,17 @@ type DailyResultsProps = {
   title?: string;
   /** True while the first fetch is in flight. */
   loading?: boolean;
+  /**
+   * Daily Killcam (R3.2): the reader's early-turn pulse buckets. When present
+   * alongside `openingChoices`, the "Opening forks" recap strip renders above
+   * the ending distribution. Absent (default) ⇒ the strip is hidden entirely.
+   */
+  pulses?: readonly RemotePulseEntry[];
+  /**
+   * The reader's OWN early-turn choice labels (client-known from their run
+   * history), joined by turn number to `pulses` for the OpeningForks tiles.
+   */
+  openingChoices?: readonly { turnNumber: number; choiceLabel: string }[];
 };
 
 /**
@@ -24,7 +37,13 @@ type DailyResultsProps = {
  * first-finder badge, and a rarest-path callout ("only 7% found this"). All
  * shares are server-computed (BC10 — the client never derives the math).
  */
-export function DailyResults({ results, title, loading = false }: DailyResultsProps) {
+export function DailyResults({
+  results,
+  title,
+  loading = false,
+  pulses = [],
+  openingChoices = [],
+}: DailyResultsProps) {
   const { tokens } = useAppTheme();
   const model = buildDistributionModel(results);
 
@@ -47,6 +66,11 @@ export function DailyResults({ results, title, loading = false }: DailyResultsPr
           </Text>
         )}
       </View>
+
+      {/* Daily Killcam (R3.2) — the opening-forks recap, above the ending
+          distribution. Self-hides (zero layout shift) when no early turn met
+          the reader-floor threshold. */}
+      <OpeningForks choiceHistory={openingChoices} pulses={pulses} />
 
       {model.rarest ? (
         <Note>

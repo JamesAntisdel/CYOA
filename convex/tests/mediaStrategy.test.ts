@@ -50,6 +50,27 @@ describe("computeMediaStrategy", () => {
     expect(computeMediaStrategy(base({ videoEnabled: false }))).toBe("stills_only");
   });
 
+  it("resolves illustrated_book to its own distinct strategy (guaranteed still, no video)", () => {
+    // Reading-modes R3 / OQ7 = DISTINCT STRATEGY. Image-first mode: a distinct
+    // value the resolver owns, NOT reused stills_only.
+    expect(computeMediaStrategy(base({ cinematicMode: "illustrated_book" }))).toBe<MediaStrategy>(
+      "illustrated_book",
+    );
+    // Like stills_only, the video toggle is irrelevant — there is no per-turn clip.
+    expect(
+      computeMediaStrategy(base({ cinematicMode: "illustrated_book", videoEnabled: false })),
+    ).toBe("illustrated_book");
+    // Needs no Omni provider and no Pro flag in the resolver (the Pro gate lives
+    // at selection + queueSceneImage) — resolves the same for a non-Pro, no-omni env.
+    expect(
+      computeMediaStrategy(base({ cinematicMode: "illustrated_book", isPro: false, omniEnabled: false })),
+    ).toBe("illustrated_book");
+    // Images off still caps everything at "off" (the base-layer rule wins).
+    expect(
+      computeMediaStrategy(base({ cinematicMode: "illustrated_book", imagesEnabled: false })),
+    ).toBe("off");
+  });
+
   it("grants endpoint_cinematic only when Pro AND omni are both present", () => {
     expect(computeMediaStrategy(base({ cinematicMode: "endpoint_cinematic" }))).toBe(
       "endpoint_cinematic",

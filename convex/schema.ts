@@ -44,6 +44,15 @@ export default defineSchema({
           v.literal("stills_only"),
           v.literal("endpoint_cinematic"),
           v.literal("per_scene_legacy"),
+          // Reading-modes R3 (OQ7 = DISTINCT STRATEGY, RM6): Illustrated Book —
+          // an image-first read with a GUARANTEED still per scene. Additive and
+          // back-compat: absence still resolves to the legacy default, so every
+          // existing save reads back byte-identically. Moves in LOCKSTEP with the
+          // two `CinematicMode` TS unions (convex/account.ts +
+          // apps/app/hooks/useReaderSettings.ts) and the `MediaStrategy` union;
+          // without this literal the schema validator strips a persisted
+          // cinematicMode:"illustrated_book" and resolveMediaPrefs never sees it.
+          v.literal("illustrated_book"),
         ),
       ),
     })),
@@ -150,6 +159,13 @@ export default defineSchema({
     // this run from a prior ending (injected as a tagged inventory item at
     // createSave). Absent when no keepsake was carried.
     keepsakeCarried: v.optional(v.string()),
+    // reading-modes W3 (R4.1 / RM4). The content axis: how the reader consumes
+    // the branch. OPTIONAL so every legacy save reads back as "branching"
+    // (absence is the default, never a migration). Resolved server-side at
+    // createSave via `resolveReadingMode({ desired, isPro })` (posture A — gated
+    // once at create, kept for the save's lifetime). No index — read only
+    // through the already-loaded `save` doc on the live turn path.
+    readingMode: v.optional(v.union(v.literal("branching"), v.literal("novel"))),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
@@ -285,6 +301,26 @@ export default defineSchema({
   })
     .index("by_account_story", ["accountId", "storyId"])
     .index("by_account_ending", ["accountId", "endingId"]),
+
+  // act-mementos (R1–R2). A small, durable, account-scoped collectible minted
+  // when a run crosses an act boundary. Account-scoped like `endings_unlocked`
+  // and independent of the save row — `saveId` is provenance only, so the
+  // memento survives the save being rewound or deleted (R2.1). `by_save_act`
+  // backs idempotent minting (one per save+act, R1.2); `by_accountId` backs the
+  // profile shelf read + account purge/export (R2.3/R2.4).
+  mementos: defineTable({
+    accountId,
+    saveId,                       // provenance only — row survives save deletion
+    storyId: v.string(),
+    act: v.number(),              // the act ENTERED (2 or 3 today)
+    label: v.string(),            // ≤80, policy-gated (R1.3)
+    description: v.string(),      // ≤160, policy-gated
+    storyTitle: v.string(),
+    dailyId: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index("by_accountId", ["accountId"])          // shelf read + purge
+    .index("by_save_act", ["saveId", "act"]),      // idempotent mint (R1.2)
 
   published_tales: defineTable({
     ownerAccountId: accountId,
@@ -521,6 +557,32 @@ export default defineSchema({
   })
     .index("by_daily", ["dailyId"])
     .index("by_daily_account", ["dailyId", "accountId"]),
+
+  // daily-killcam (design §1.1, BC7). One per-reader side table row per early
+  // committed choice on a Daily save (turns 1..KILLCAM_TURN_CAP). Copies the
+  // `daily_results` shape discipline above. `saveId` is the fork-dedupe anchor
+  // (DK6): the account's first daily run owns the (dailyId, accountId, turn)
+  // slot and a forked copy can't overwrite it. `choiceKey` is a normalized
+  // label slug (≤64) or the reserved `free-form` key — the reader's typed
+  // free-form text is NEVER stored here (DK4). Aggregation reads go through
+  // by_daily_turn; upsert + the reader's own rows through by_daily_account;
+  // rewind deletion through by_save; whole-account purge through by_accountId
+  // (the by_daily_account index leads with dailyId so it can't front an
+  // account-only scan — §1.1/§5).
+  daily_choice_results: defineTable({
+    dailyId: v.string(),
+    accountId,
+    saveId,
+    turnNumber: v.number(),
+    choiceKey: v.string(),
+    freeForm: v.boolean(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_daily_turn", ["dailyId", "turnNumber"])
+    .index("by_daily_account", ["dailyId", "accountId"])
+    .index("by_save", ["saveId"])
+    .index("by_accountId", ["accountId"]),
 
   assets: defineTable({
     accountId,

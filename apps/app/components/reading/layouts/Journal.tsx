@@ -40,6 +40,7 @@ export function JournalLayout({
   onBeginAgain,
   onSeeMap,
   onShareEnding,
+  onReadAsBook,
   onFork,
   choiceHistory,
   endingTier,
@@ -185,7 +186,7 @@ export function JournalLayout({
                   ...(cinematicUri !== undefined ? { cinematicUri } : {}),
                   ...(endingIsFirstFind !== undefined ? { isFirstFind: endingIsFirstFind } : {}),
                 })}
-                {...endingPanelHandlers({ onOpenEndings, onOpenLibrary, onReturnHome, onBeginAgain, onSeeMap, onShareEnding })}
+                {...endingPanelHandlers({ onOpenEndings, onOpenLibrary, onReturnHome, onBeginAgain, onSeeMap, onShareEnding, onReadAsBook })}
               />
               {/* "Your choices echoed" — the run's visible-choice recap on the
                   terminal panel. Skipped when this session recorded none. */}

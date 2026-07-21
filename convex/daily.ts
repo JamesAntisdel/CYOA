@@ -6,7 +6,15 @@
 // any timestamps/seeds are passed as PARAMETERS. This is what lets the mint
 // cron reproduce the same premise for a given UTC day and lets tests assert
 // determinism without mocking the clock.
+//
+// The one import below (`slugify` from `@cyoa/engine`) is itself a pure, total
+// string function — no clock, no randomness, no I/O — so it does not break the
+// BC6 contract; it just lets `choiceKeyForLabel` share the SAME slug discipline
+// (lowercase / non-alphanumeric→"-" / trim / clamp) the arc uses everywhere
+// else, so killcam buckets slug identically to the rest of the codebase.
 // =============================================================================
+
+import { slugify } from "@cyoa/engine";
 
 /**
  * 14-entry tone rotation table (design §6). The date-derived epoch-day indexes
@@ -228,6 +236,147 @@ export function computeDistribution(
 
   rows.sort((a, b) => (b.count - a.count) || (a.endingId < b.endingId ? -1 : a.endingId > b.endingId ? 1 : 0));
   return rows;
+}
+
+// -- daily killcam pulse (pure) ----------------------------------------------
+// "N% of today's readers chose this" (daily-killcam R1/R2/R4). The Daily shares
+// the ARC, not the generated scenes, so independently-generated choice labels
+// only "rhyme" on the OPENING forks — bucketing is honest there and nowhere
+// else. Everything here is pure/deterministic (BC6); the recording helper and
+// the query (both integrator/DK-SERVER-owned) supply the rows.
+
+/**
+ * R4.1 — record + display are hard-capped at the first 3 completed turns:
+ * past turn 3 the shared-seed runs diverge enough that label buckets stop
+ * meaning "the same fork", so a percentage over them would be dishonest.
+ */
+export const KILLCAM_TURN_CAP = 3;
+
+/**
+ * R4.1 — a turn's pulse stays SILENT under 10 readers: below the floor a
+ * percentage is both statistical noise and deanonymizable (small-cell
+ * privacy), so the turn is omitted entirely rather than shown low-confidence.
+ */
+export const KILLCAM_MIN_READERS = 10;
+
+/**
+ * R1.2 / DK4 — the reserved bucket for "write your own" turns. Free-form typed
+ * text is NEVER persisted into a killcam row (privacy + spoilers: another
+ * reader must never receive it), so every free-form turn collapses to this one
+ * key before anything touches the DB or the aggregate.
+ */
+export const FREE_FORM_KEY = "free-form";
+
+/**
+ * R1.2 — derive the aggregation key from a committed choice's reader-facing
+ * label (the same string persisted as `turn_history.choiceLabel`). Pure + total
+ * — NEVER throws on a malformed label (BC5 spirit): trim / lowercase / collapse
+ * whitespace / strip punctuation / slugify / clamp to 64 via the shared
+ * `slugify`. Returns `FREE_FORM_KEY` when the turn is free-form OR when the
+ * normalized label is empty (e.g. an all-punctuation / all-unicode label that
+ * slugs to nothing), so a bucket key is always well-formed.
+ */
+export function choiceKeyForLabel(label: string, freeForm: boolean): string {
+  if (freeForm) return FREE_FORM_KEY;
+  const key = slugify(label ?? "", 64);
+  return key.length > 0 ? key : FREE_FORM_KEY;
+}
+
+/**
+ * R2.4 — the free-form bucket's phrase, always. Split out so the free-form
+ * override reads as its own decision, not a tier edge case.
+ */
+export const PULSE_PHRASE_FREE_FORM = "wrote their own page";
+
+/**
+ * R2.4 — book-voice copy, table-driven so tone edits are one line. Tiers are
+ * evaluated top-down by inclusive `minPct` floor: 60+ "the well-worn path",
+ * 25–59 "a common thread", else (0–24) "the road less traveled".
+ */
+export const PULSE_PHRASE_TIERS: readonly { minPct: number; phrase: string }[] = [
+  { minPct: 60, phrase: "the well-worn path" },
+  { minPct: 25, phrase: "a common thread" },
+  { minPct: 0, phrase: "the road less traveled" },
+];
+
+/**
+ * R2.4 — map a server-computed `sharePct` (0–100) to its book-voice phrase.
+ * `freeForm` overrides the tiers entirely (a free-form bucket is never a
+ * "path"). Pure + total: the `?? ` tail guards a hypothetically empty table.
+ */
+export function pulsePhrase(sharePct: number, freeForm: boolean): string {
+  if (freeForm) return PULSE_PHRASE_FREE_FORM;
+  for (const tier of PULSE_PHRASE_TIERS) {
+    if (sharePct >= tier.minPct) return tier.phrase;
+  }
+  return PULSE_PHRASE_TIERS[PULSE_PHRASE_TIERS.length - 1]?.phrase ?? PULSE_PHRASE_FREE_FORM;
+}
+
+/** A single turn's own-bucket pulse (BC10: never carries a foreign key/label). */
+export type PulseEntry = {
+  turnNumber: number;
+  /** 0–100, `Math.round` — mirrors `computeDistribution`'s pct rounding. */
+  sharePct: number;
+  sameCount: number;
+  totalReaders: number;
+  phrase: string;
+};
+
+type KillcamRow = { turnNumber: number; choiceKey: string };
+
+/**
+ * R2 — the reader's OWN bucket per early turn, and nothing else (BC10). For
+ * each turn the reader has a recorded row for, count the day's rows at that
+ * turn (`totalReaders`) and how many share the reader's key (`sameCount`),
+ * then emit a `PulseEntry` with a server-rounded `sharePct` (same `Math.round`
+ * discipline as `computeDistribution`). Turns under `KILLCAM_MIN_READERS` are
+ * DROPPED entirely (R2.2 — silence, not a low-confidence number), which also
+ * makes the division safe (a kept turn always has ≥10 readers > 0). The output
+ * carries only aggregate counts + the reader's phrase — no foreign bucket key,
+ * count, or label ever leaves this function. Sorted ascending by `turnNumber`.
+ *
+ * Pure + total. `readerRows` is this account's rows (≤ KILLCAM_TURN_CAP);
+ * `allRows` is the day's rows for those turn numbers (which includes the
+ * reader's own row, so the reader counts toward their own bucket).
+ */
+export function computeChoicePulse(
+  readerRows: readonly KillcamRow[],
+  allRows: readonly KillcamRow[],
+): PulseEntry[] {
+  // The reader votes at most once per turn (upsert key); last row wins if the
+  // caller ever passes a duplicate, keeping this total.
+  const readerKeyByTurn = new Map<number, string>();
+  for (const row of readerRows) readerKeyByTurn.set(row.turnNumber, row.choiceKey);
+  if (readerKeyByTurn.size === 0) return [];
+
+  const totalByTurn = new Map<number, number>();
+  const sameByTurn = new Map<number, number>();
+  for (const row of allRows) {
+    const readerKey = readerKeyByTurn.get(row.turnNumber);
+    if (readerKey === undefined) continue; // only turns the reader participated in
+    totalByTurn.set(row.turnNumber, (totalByTurn.get(row.turnNumber) ?? 0) + 1);
+    if (row.choiceKey === readerKey) {
+      sameByTurn.set(row.turnNumber, (sameByTurn.get(row.turnNumber) ?? 0) + 1);
+    }
+  }
+
+  const entries: PulseEntry[] = [];
+  for (const [turnNumber, readerKey] of readerKeyByTurn) {
+    const totalReaders = totalByTurn.get(turnNumber) ?? 0;
+    if (totalReaders < KILLCAM_MIN_READERS) continue; // R2.2 floor (and NaN guard)
+    const sameCount = sameByTurn.get(turnNumber) ?? 0;
+    const sharePct = Math.round((sameCount / totalReaders) * 100);
+    entries.push({
+      turnNumber,
+      sharePct,
+      sameCount,
+      totalReaders,
+      phrase: pulsePhrase(sharePct, readerKey === FREE_FORM_KEY),
+    });
+  }
+
+  entries.sort((a, b) => a.turnNumber - b.turnNumber);
+  return entries;
 }
 
 // -- terminal row shaper (pure) ----------------------------------------------

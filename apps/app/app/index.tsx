@@ -54,6 +54,11 @@ export default function IndexRoute() {
   const narrator = useNarratorVoice(null);
   const tutorialStory = getTutorialStory(library.starterStories);
 
+  // Reading-modes R4 — let the reader start a starter tale in Novel mode
+  // (linear "turn the page" reading). Chosen at create (posture A); the server
+  // re-gates on entitlement (dev-force-unlocked locally). Default: branching.
+  const [novelMode, setNovelMode] = useState(false);
+
   const handleAgeSubmit = (selection: AgeSelection) => {
     void guest.createGuestSession(selection);
   };
@@ -342,6 +347,40 @@ export default function IndexRoute() {
             </Text>
           </Pressable>
         </View>
+        <View style={{ gap: tokens.spacing.xs }}>
+          <View style={{ alignItems: "center", flexDirection: "row", gap: tokens.spacing.sm }}>
+            <Text muted style={{ fontWeight: "800" }} variant="bodySmall">
+              Reading mode
+            </Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Branching reading mode: you choose the path"
+              accessibilityState={{ selected: !novelMode }}
+              onPress={() => setNovelMode(false)}
+              style={{ opacity: novelMode ? 0.55 : 1 }}
+            >
+              <Chip variant={novelMode ? "muted" : "accent"}>
+                {novelMode ? "Branching" : "✓ Branching"}
+              </Chip>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Novel reading mode: one linear story, just turn the page"
+              accessibilityState={{ selected: novelMode }}
+              onPress={() => setNovelMode(true)}
+              style={{ opacity: novelMode ? 1 : 0.55 }}
+            >
+              <Chip variant={novelMode ? "accent" : "muted"}>
+                {novelMode ? "✓ Novel" : "Novel"}
+              </Chip>
+            </Pressable>
+          </View>
+          <Text muted variant="caption">
+            {novelMode
+              ? "Novel: one continuous story — no choices, just turn the page. Applies to the tale you start next."
+              : "Branching: you pick the path at every scene. Tap Novel for a linear read instead."}
+          </Text>
+        </View>
         <View style={{ gap: tokens.spacing.sm }}>
           {library.starterStories.slice(0, 3).map((story: StorySummary) => (
             <Pressable
@@ -353,6 +392,8 @@ export default function IndexRoute() {
                   "story",
                   undefined,
                   narrator.voiceId,
+                  undefined,
+                  { readingMode: novelMode ? "novel" : "branching" },
                 );
                 openSave(save.saveId);
               }}

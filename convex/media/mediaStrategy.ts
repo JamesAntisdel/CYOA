@@ -28,7 +28,21 @@ import { hasPaidEntitlement } from "../billing/entitlements";
 import { resolveMediaPrefs, type CinematicMode } from "../account";
 import { devForceProMedia } from "./proMediaGate";
 
-export type MediaStrategy = "off" | "stills_only" | "endpoint_cinematic" | "per_scene_legacy";
+export type MediaStrategy =
+  | "off"
+  | "stills_only"
+  | "endpoint_cinematic"
+  | "per_scene_legacy"
+  // Reading-modes R3 (OQ7 = DISTINCT STRATEGY): the Illustrated Book mode. An
+  // image-first read with a GUARANTEED still per scene and NO per-turn video —
+  // like `stills_only` for generation, but a distinct value so the RESOLVER (not
+  // the layout) owns the still guarantee, and so `queueSceneImage`'s
+  // credit-exhaustion fallback is MODE-SCOPED to it (keep an unmetered
+  // placeholder + emit `outOfCredits` instead of the silent delete every other
+  // reader gets). Composes with every existing consumer: the cinematics/video
+  // gates all key off `=== "endpoint_cinematic"` / `=== "per_scene_legacy"`, so
+  // this value produces neither cinematics nor a per-scene clip.
+  | "illustrated_book";
 
 /**
  * Pure strategy resolver. Given the account's `cinematicMode`, its per-modality
@@ -62,6 +76,13 @@ export function computeMediaStrategy(input: {
 
   if (desired === "off") return "off";
   if (desired === "stills_only") return "stills_only";
+
+  // Illustrated Book (R3): image-first with a guaranteed still per scene and no
+  // per-turn video. Ignores the video toggle (there is no clip) and needs no
+  // Omni provider; the Pro requirement lives at selection + `queueSceneImage`,
+  // matching `stills_only`. Its own value lets the still guarantee live in the
+  // resolver and scopes the credit-exhaustion placeholder to this mode alone.
+  if (desired === "illustrated_book") return "illustrated_book";
 
   if (desired === "endpoint_cinematic") {
     // Endpoint cinematics require a paid tier AND a configured, un-killed Omni

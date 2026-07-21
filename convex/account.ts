@@ -10,7 +10,19 @@ import { planAllowance } from "./billing/entitlements";
 
 export type AgeSelection = AgeBand | "under_13";
 
-export type CinematicMode = "off" | "stills_only" | "endpoint_cinematic" | "per_scene_legacy";
+// NOTE (RM6): this union is DEFINED TWICE and the two move in LOCKSTEP —
+// here (server, consumed by `resolveMediaPrefs` → `computeMediaStrategy`) and in
+// `apps/app/hooks/useReaderSettings.ts` (client, `CINEMATIC_MODES` +
+// `isCinematicMode`). Reading-modes R3 (OQ7 = DISTINCT STRATEGY) adds the
+// `illustrated_book` literal for the Illustrated Book mode; the client union +
+// the `saves.mediaPrefs.cinematicMode` schema union (integrator-owned) must
+// carry the same literal or `resolveMediaPrefs` silently drops the mode.
+export type CinematicMode =
+  | "off"
+  | "stills_only"
+  | "endpoint_cinematic"
+  | "per_scene_legacy"
+  | "illustrated_book";
 
 export type MediaPrefs = {
   imagesEnabled: boolean;

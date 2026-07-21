@@ -46,6 +46,15 @@ export type ReaderLayoutProps = {
    */
   onShareEnding?: () => void;
   /**
+   * "Read this tale as a book" — the read-as-books entry point on the terminal
+   * ending panel (reading-modes R2.7). ReaderScreen wires it to the read-only
+   * book route `/read/[saveId]/book`; the layout forwards it through
+   * `endingPanelHandlers` onto `<EndingPanel onReadAsBook>`. Optional: legacy
+   * hosts that don't supply it keep the panel's action hidden (EndingPanel
+   * self-hides when `onReadAsBook` is undefined — BC4).
+   */
+  onReadAsBook?: () => void;
+  /**
    * The run's visible-choice history from `useTurn`, newest last. Drives the
    * ConsequenceReel ("your choices echoed") on the terminal ending panel.
    * Optional — layouts render no reel when absent or empty, so scripted /
@@ -107,6 +116,13 @@ export type ReaderLayoutProps = {
    * don't render SceneMedia (Journal).
    */
   onNarratorPlaybackRateChange?: (rate: number) => void;
+  /**
+   * Narration play/pause reporter. Forwarded to SceneMedia so ReaderScreen's
+   * auto-narrator can hold the hands-free page-turn until narration finishes
+   * (never skips over the narrator). Omit on layouts that don't render
+   * SceneMedia (Journal).
+   */
+  onNarrationActiveChange?: (active: boolean) => void;
   /**
    * Free-form ("Option D") affordance. When `onFreeformSubmit` is provided
    * the layout's ChoiceList renders a 4th row that expands into a typed-
@@ -198,16 +214,19 @@ export function endingPanelHandlers(props: {
   onBeginAgain?: Nav;
   onSeeMap?: Nav;
   onShareEnding?: Nav;
+  onReadAsBook?: Nav;
 }): {
   onBeginAgain?: () => void;
   onSeeMap?: () => void;
   onShareEnding?: () => void;
+  onReadAsBook?: () => void;
   onClose?: () => void;
 } {
   const handlers: {
     onBeginAgain?: () => void;
     onSeeMap?: () => void;
     onShareEnding?: () => void;
+    onReadAsBook?: () => void;
     onClose?: () => void;
   } = {};
   const beginAgain = props.onBeginAgain ?? props.onReturnHome;
@@ -215,6 +234,9 @@ export function endingPanelHandlers(props: {
   if (beginAgain) handlers.onBeginAgain = beginAgain;
   if (seeMap) handlers.onSeeMap = seeMap;
   if (props.onShareEnding) handlers.onShareEnding = props.onShareEnding;
+  // Read-as-books (R2.7). Omitted (never `undefined` — BC4) when no host wires
+  // it, so EndingPanel keeps the action hidden.
+  if (props.onReadAsBook) handlers.onReadAsBook = props.onReadAsBook;
   if (props.onOpenLibrary) handlers.onClose = props.onOpenLibrary;
   return handlers;
 }

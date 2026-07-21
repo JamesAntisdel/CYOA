@@ -17,13 +17,14 @@ import {
   getStat,
   hasItemTolerant,
   keySeedingPlan,
-  llmSceneOutputSchema,
   matchEndingHints,
   nextTargetBeat,
   normalizeItemRef,
   recordLlmProposalTerminal,
   resolveChoiceCheck,
+  resolveReadingMode,
   resolveTerminal,
+  sceneSchemaFor,
   scheduleThread,
   synthesizeFallbackArc,
   validateProposedArc,
@@ -50,7 +51,7 @@ import { v } from "convex/values";
 import type { ContentPolicyContext, ContentPolicySummary } from "@cyoa/shared";
 
 import { canEnableMatureContent, type AccountRecord } from "./account";
-import { dailyAllowance } from "./billing/entitlements";
+import { dailyAllowance, hasPaidEntitlement } from "./billing/entitlements";
 import { loadEntitlementLite } from "./lib/entitlement";
 import {
   evaluateTextPolicy,
@@ -71,7 +72,12 @@ import {
   KEEPSAKE_GRANTED,
   KEEPSAKE_CARRIED,
 } from "./keepsakes";
-import { insertDailyResultIfAbsent } from "./dailyFunctions";
+import {
+  insertDailyResultIfAbsent,
+  recordDailyChoiceIfEligible,
+  deleteDailyChoicesFromTurn,
+} from "./dailyFunctions";
+import { mintActMementoIfDue } from "./mementos";
 import { HARDCORE_PURGE_DELAY_MS } from "./hardcore";
 import { loadAndAuthorizeAccount } from "./lib/authz";
 import { AppError } from "./lib/errors";
@@ -107,6 +113,7 @@ import { costCentsForUsage } from "./llm/modelCosts";
 import { queueSceneMediaForSave } from "./media/sceneMedia";
 import { schedulePortraitsForNewNpcs } from "./media/npcMedia";
 import { resolveMediaStrategy } from "./media/mediaStrategy";
+import { devForceProMedia } from "./media/proMediaGate";
 import { detectChapterCinematicTrigger } from "./media/cinematicTriggers";
 import {
   assertCanAccessSave,
@@ -116,7 +123,6 @@ import {
   migrateSaveIfNeeded,
   projectCurrentScene,
   projectLlmDrivenScene,
-  readPersistedProposal,
   type SaveRecord,
   type VisibleDiff,
 } from "./saves";
@@ -258,9 +264,25 @@ export const createSave = mutationGeneric({
     // Tale: its fixed arc is injected from `daily_tales` and turn-1 arc
     // generation is skipped. Set by `dailyFunctions:startDaily`.
     dailyId: v.optional(v.string()),
+    // reading-modes W3 (R4.1 / R4.9). The reader's DESIRED reading mode. Gated
+    // once here (posture A) via `resolveReadingMode({ desired, isPro })`: a
+    // non-Pro reader who asks for "novel" degrades to "branching" at create and
+    // keeps that for the save's lifetime. Absent ⇒ "branching" (every legacy
+    // caller / plain launch), so the persisted field stays absent and reads
+    // back as branching — byte-identical to today.
+    readingMode: v.optional(v.union(v.literal("branching"), v.literal("novel"))),
   },
   handler: async (ctx, args) => createSaveHandler(ctx, args),
 });
+
+// reading-modes W3 (R4.2 / R4.4). The single synthetic choice novel mode stamps
+// onto every non-terminal scene server-side (never trusted from the model). The
+// id is the load-bearing contract: the Novel UI resolves the page-turn
+// affordance by this exact id, submits it unchanged, and next turn's
+// `advanceLlmTurnCursor` looks it up in the prior proposal's `choices` and
+// applies its (empty) effects as a no-op — avoiding `llm_choice_not_found`.
+const PAGE_TURN_CHOICE_ID = "turn-page";
+const PAGE_TURN_CHOICE_LABEL = "Turn the page";
 
 type CreateSaveHandlerArgs = {
   accountId: GenericId<"accounts">;
@@ -275,6 +297,7 @@ type CreateSaveHandlerArgs = {
   seedNpcs?: Array<{ name: string; role: NpcRole; description: string }> | undefined;
   keepsakeId?: string | undefined;
   dailyId?: string | undefined;
+  readingMode?: "branching" | "novel" | undefined;
 };
 
 /**
@@ -454,12 +477,34 @@ export async function createSaveHandler(ctx: any, args: CreateSaveHandlerArgs) {
     // it up via save.voiceId. Seed fields are spread conditionally so
     // cleanDoc doesn't have to filter them — schema's optional() handles
     // the case where the reader launched a plain starter.
+    // reading-modes W3 (R4.9 / RM5, posture A): resolve the reader's desired
+    // reading mode ONCE at create and keep it for the save's lifetime. A non-Pro
+    // reader who asked for "novel" degrades to "branching" here (the gate is the
+    // one-line `resolveReadingMode` seam). `resolveReadingMode` treats any
+    // non-"novel" desired (including absent) as "branching", so the field is
+    // only ever persisted as "novel" for an entitled reader who asked for it —
+    // every other save keeps the field absent (reads back as branching,
+    // byte-identical to today). `cleanDoc` strips undefined, so we only spread
+    // the field when it resolves to "novel".
+    const entitlementLite = await loadEntitlementLite(ctx, args.accountId);
+    // Dev/tunnel parity: `CYOA_DEV_FORCE_PRO_MEDIA` already unlocks Pro media +
+    // strategy for every account (resolveMediaStrategy). Extend the same switch
+    // to the novel-mode create gate so the dev env can actually START a novel
+    // save without a real paid entitlement. UNSET in prod ⇒ collapses to the
+    // real `hasPaidEntitlement` gate (posture A degrades novel→branching).
+    const isPro =
+      (entitlementLite ? hasPaidEntitlement(entitlementLite) : false) || devForceProMedia();
+    const resolvedReadingMode = resolveReadingMode({
+      ...(args.readingMode !== undefined ? { desired: args.readingMode } : {}),
+      isPro,
+    });
     save = {
       ...save,
       voiceId,
       ...(seedPremise ? { seedPremise } : {}),
       ...(seedTitle ? { seedTitle } : {}),
       ...(seedTone ? { seedTone } : {}),
+      ...(resolvedReadingMode === "novel" ? { readingMode: "novel" as const } : {}),
     };
     // story-engagement W3 (R13.2): Daily Tale — inject today's FIXED arc from
     // `daily_tales` BEFORE the llm cursor advance so turn-1 arc generation is
@@ -748,6 +793,12 @@ export const restartRun = mutationGeneric({
       ...(ended.seedTitle !== undefined ? { seedTitle: ended.seedTitle } : {}),
       ...(ended.seedTone !== undefined ? { seedTone: ended.seedTone } : {}),
       ...(seedNpcs.length > 0 ? { seedNpcs } : {}),
+      // reading-modes W3 (R4.9): a restart is a fresh run of the SAME premise —
+      // carry the reading mode as the desired mode so a novel run restarts
+      // novel. `createSaveHandler` re-gates it through `resolveReadingMode`, so a
+      // lapsed Pro reader restarts as branching (posture A, re-evaluated at
+      // create). Absent on branching saves ⇒ branching, byte-identical.
+      ...(ended.readingMode !== undefined ? { readingMode: ended.readingMode } : {}),
     });
   },
 });
@@ -1148,6 +1199,13 @@ export const rewindSaveTurns = mutationGeneric({
     for (const row of droppedHistory) {
       await ctx.db.delete(row._id);
     }
+
+    // daily-killcam (R1.4): drop this run's killcam rows for every rewound turn
+    // so an abandoned rewind never leaves a stale opening vote. newTopTurnNumber
+    // is the last KEPT turn, so we delete from newTopTurnNumber + 1 upward.
+    // Best-effort — the helper swallows its own throws, so a failure here never
+    // fails the rewind (BC5).
+    await deleteDailyChoicesFromTurn(ctx, args.saveId, newTopTurnNumber + 1);
 
     // Compute the new save cursor.
     const newTopScene = keptScenes[keptScenes.length - 1];
@@ -1848,7 +1906,12 @@ export const getAuthorizedSceneStreamRequest = mutationGeneric({
         seed: guardedSeed,
         memory,
         choices: [],
-        sceneLength: story.defaultSceneLength ?? "standard",
+        // reading-modes W3 (R4.5): novel mode forces chapter-length prose (the
+        // prompt builder honors it via the existing sceneLength line); every
+        // other save keeps the story's default. Branching/legacy saves are
+        // byte-identical (readingMode absent ⇒ branching).
+        sceneLength:
+          save.readingMode === "novel" ? "chapter" : (story.defaultSceneLength ?? "standard"),
         contentContext,
         risk: "normal",
         entitlementTier,
@@ -1864,6 +1927,13 @@ export const getAuthorizedSceneStreamRequest = mutationGeneric({
         ...(produceArc ? { produceArc: true } : {}),
         ...(checkOutcome ? { checkOutcome } : {}),
         ...(storyBible ? { storyBible } : {}),
+        // reading-modes W3 (R4.5 / R4.7): thread the content axis into the scene
+        // request so RM-PROMPT's builder drops the choice machinery and the SSE
+        // gate selects the relaxed novel schema. llm-driven branch ONLY —
+        // authored/scripted stories never reach here. Conditional-spread (BC4):
+        // present only for novel saves, so branching requests are byte-identical
+        // and deploy-skew safe (the field is optional on both type + schema).
+        ...(save.readingMode === "novel" ? { readingMode: "novel" as const } : {}),
       };
     }
 
@@ -1976,7 +2046,10 @@ export const completeSceneStream = mutationGeneric({
     });
     const proposedChoiceLabels: string[] = (() => {
       if (!args.proposal || typeof args.proposal !== "object") return [];
-      const parsed = llmSceneOutputSchema.safeParse(args.proposal);
+      // RM3 site (a) — the pre-parse choice-label classifier. Select the
+      // novel schema for novel saves so a valid 0/1-choice payload keeps its
+      // (intentionally empty) labels instead of silently degrading to [].
+      const parsed = sceneSchemaFor(save.readingMode).safeParse(args.proposal);
       if (!parsed.success) return [];
       return parsed.data.choices.map((c) => c.label);
     })();
@@ -2031,7 +2104,11 @@ export const completeSceneStream = mutationGeneric({
       if (args.proposal === undefined) {
         throw new AppError("llm_scene_invalid_shape");
       }
-      const parsedProposal = llmSceneOutputSchema.safeParse(args.proposal);
+      // RM3 site (b) — the MAIN load-bearing gate: throws
+      // `llm_scene_invalid_shape` on failure. For a novel save select the
+      // relaxed novel schema so a legit prose-only (0/1-choice) payload is not
+      // rejected as an invalid shape; branching saves keep the min(2) gate.
+      const parsedProposal = sceneSchemaFor(save.readingMode).safeParse(args.proposal);
       if (!parsedProposal.success) {
         // Bad payload — same contract as the missing-proposal branch above:
         // throw, let failSceneStream persist the failed state + keep the turn
@@ -2114,6 +2191,23 @@ export const completeSceneStream = mutationGeneric({
       // Seeded-thread diffs join phase B so the reader's echo shows the
       // planted thread pip (R5.3 — the seeded key rides the existing badge).
       llmPhaseBDiffs = [...llmPhaseBDiffs, ...bibleIntegration.seedDiffs];
+      // reading-modes W3 (R4.2 / R4.4) — novel mode: the model proposed 0
+      // choices (novel schema min 0). Stamp the single synthetic page-turn
+      // SERVER-SIDE into `proposal.choices` here, AFTER validation + the terminal
+      // gate + bible integration (which all ran on the model's clean 0-choice
+      // proposal). This feeds BOTH the persisted `proposal` (below) AND, via the
+      // projection call, the persisted `choiceViews` — so next turn's
+      // `advanceLlmTurnCursor` finds `turn-page` in the prior proposal and
+      // applies its empty effects as a no-op (no `llm_choice_not_found`). Skipped
+      // on a terminal scene — an ending renders the EndingPanel, not a page-turn.
+      // The synthetic choice carries no `choiceVisibilities` entry, so the
+      // projection defaults it to `visible` (R4.4). Branching/legacy saves never
+      // enter this branch, so their proposal + choiceViews are byte-identical.
+      if (save.readingMode === "novel" && proposal && !terminal) {
+        proposal.choices = [
+          { id: PAGE_TURN_CHOICE_ID, label: PAGE_TURN_CHOICE_LABEL },
+        ];
+      }
       const projection = projectLlmDrivenScene({
         save: { ...save, state: nextState },
         proposal,
@@ -2332,6 +2426,35 @@ export const completeSceneStream = mutationGeneric({
             saveId: args.saveId,
             force: true,
           });
+          // act-mementos (AM1): the SINGLE live act-boundary mint site. Best-
+          // effort and idempotent — `mintActMementoIfDue` never throws out of
+          // itself (R1.5), so it can neither reorder nor block the cinematic
+          // trigger above nor the terminal logic. The act ENTERED rides the
+          // `act_advanced` diff; the fired-beat label (when this turn fired one)
+          // seeds the description; the arc/story title/daily come from scope. The
+          // post-turn `nextState.arc` carries the advanced act's `actLabel`, so
+          // the memento label reads the same act the ChapterEnd stamp shows (AM2).
+          const actAdvancedDiff = (recorded?.diffs ?? []).find(
+            (diff) => (diff as { kind?: unknown }).kind === "act_advanced",
+          ) as { act?: number } | undefined;
+          const firedBeatLabel = (
+            (recorded?.diffs ?? []).find(
+              (diff) => (diff as { kind?: unknown }).kind === "beat_fired",
+            ) as { label?: string } | undefined
+          )?.label;
+          await mintActMementoIfDue(ctx, {
+            accountId: args.accountId,
+            saveId: args.saveId,
+            storyId: save.storyId,
+            act: actAdvancedDiff?.act ?? 0,
+            arc: nextState.arc ?? null,
+            ...(firedBeatLabel !== undefined ? { firedBeatLabel } : {}),
+            storyTitle: save.seedTitle ?? story.title,
+            ...(save.dailyId ? { dailyId: save.dailyId } : {}),
+            isAuthored: storyMode !== "llm-driven",
+            policyContext,
+            now,
+          });
         } else if (save.turnNumber > 0) {
           // Turn-number cadence for ALL saves (arc + legacy). Act advances are
           // sparse (~2/run), so gating arc saves on them alone left the reader
@@ -2421,13 +2544,26 @@ export const completeSceneStream = mutationGeneric({
       // out misaligned with the story.
       const proposalForVisual = args.proposal
         ? (() => {
-            const parsed = llmSceneOutputSchema.safeParse(args.proposal);
+            // RM3 site (c) — the visual-prompt parse (non-fatal, returns null).
+            // Select the novel schema so a prose-only novel payload still yields
+            // its `visualDescription` / `npcMentions` for the still.
+            const parsed = sceneSchemaFor(save.readingMode).safeParse(args.proposal);
             return parsed.success ? parsed.data : null;
           })()
         : null;
       const visualPrompt =
         proposalForVisual?.visualDescription?.trim() || extractVisualFallback(args.prose);
       try {
+        // Reading-modes R3 / RM8 — the still is ALREADY produced under every Pro
+        // strategy here; Illustrated Book adds NO new queue site. The MODE-SCOPED
+        // credit-exhaustion fallback (keep an unmetered placeholder + emit
+        // `outOfCredits` instead of the silent delete every other reader gets)
+        // fires INSIDE queueSceneImage via
+        // `resolveMediaStrategy(ctx, accountId) === "illustrated_book"` — the
+        // resolved strategy is the source of truth, so we thread NO
+        // `guaranteedStill` flag: passing it here would either duplicate the
+        // resolver or (if forced true) break the byte-identical delete-and-
+        // skeleton behavior every non-Illustrated reader must keep.
         await ctx.runMutation(
           ("media/sceneMedia:queueSceneImage" as unknown) as any,
           {
@@ -2488,8 +2624,11 @@ export const completeSceneStream = mutationGeneric({
       // so the next prompt-builder pass picks the right NPC sheets. Parse
       // defensively — the proposal field is `v.any()` on the wire so a
       // mis-shaped payload must not throw inside this completion path.
+      // RM3 site (d) — the NPC-mention parse (non-fatal, returns null). Select
+      // the novel schema so a prose-only novel payload still carries its
+      // `npcMentions` forward into the next prompt-builder pass.
       const proposalParsed = args.proposal
-        ? llmSceneOutputSchema.safeParse(args.proposal)
+        ? sceneSchemaFor(save.readingMode).safeParse(args.proposal)
         : null;
       const npcMentions = proposalParsed?.success
         ? proposalParsed.data.npcMentions
@@ -3905,6 +4044,16 @@ export function memoryBeatFromHistory(
   // the choice/node join, and the LLM had no awareness of prior prose →
   // coherence collapsed after a handful of turns.
   const excerpt = lastSentencesExcerpt(pickSceneProse(sceneRow), 300);
+  // reading-modes W3 (R4): a novel page-turn is not a decision — the reader
+  // just read on. Drop the "Chose …" clause so the memory window leans on pure
+  // prose continuity instead of echoing "Turn the page" every beat. Only the
+  // synthetic page-turn id takes this path, so branching beats are unchanged.
+  if (choiceId === PAGE_TURN_CHOICE_ID) {
+    const text = excerpt.length > 0
+      ? `Turn ${turnNumber}: ${excerpt}`
+      : `Turn ${turnNumber}.`;
+    return { id: String(row._id ?? `${turnNumber}:${choiceId}`), text, tags: [], turnNumber };
+  }
   const text = excerpt.length > 0
     ? `Turn ${turnNumber}: ${excerpt} Chose "${label}".`
     : `Turn ${turnNumber}: chose "${label}".`;
@@ -4133,6 +4282,24 @@ function snapshotPlayerState(state: PlayerState): {
  * current turn — `submitChoice` validates `args.choiceId` against it before
  * applying effects.
  */
+// reading-modes W3 (R4.4) — mode-aware rehydration of a persisted proposal.
+// The shared `readPersistedProposal` (saves.ts) validates through the branching
+// `llmSceneOutputSchema.min(2)`, which REJECTS a novel scene's single stamped
+// `turn-page` choice → null → the next turn strands on
+// `llm_prior_proposal_missing` (and the getCurrentScene reload projects no
+// page-turn). Select `sceneSchemaFor(save.readingMode)` so a novel prior
+// proposal rehydrates with its 1 choice intact; branching/legacy saves pass the
+// same min(2) schema as before (byte-identical). `LlmNovelSceneProposal` is
+// structurally assignable to `LlmSceneProposal`.
+function readPersistedProposalForMode(
+  value: unknown,
+  readingMode: "branching" | "novel" | undefined,
+): LlmSceneProposal | null {
+  if (!value || typeof value !== "object") return null;
+  const parsed = sceneSchemaFor(readingMode).safeParse(value);
+  return parsed.success ? (parsed.data as LlmSceneProposal) : null;
+}
+
 async function readPriorProposalFromCurrentScene(
   ctx: { db: { get: (id: any) => Promise<any> } },
   save: SaveRecord,
@@ -4140,7 +4307,10 @@ async function readPriorProposalFromCurrentScene(
   if (!save.currentSceneId) return null;
   const sceneDoc = await ctx.db.get(save.currentSceneId as any);
   if (!sceneDoc) return null;
-  return readPersistedProposal((sceneDoc as { proposal?: unknown }).proposal);
+  return readPersistedProposalForMode(
+    (sceneDoc as { proposal?: unknown }).proposal,
+    save.readingMode,
+  );
 }
 
 /**
@@ -4159,7 +4329,10 @@ async function projectLlmSceneFromRecord(
   if (!sceneDoc) {
     return projectLlmDrivenScene({ save, proposal: null, prose: "", streamStatus: "pending" });
   }
-  const proposal = readPersistedProposal((sceneDoc as { proposal?: unknown }).proposal);
+  const proposal = readPersistedProposalForMode(
+    (sceneDoc as { proposal?: unknown }).proposal,
+    save.readingMode,
+  );
   const terminalRaw = (sceneDoc as { terminal?: unknown }).terminal;
   const terminal = terminalRaw && typeof terminalRaw === "object" && terminalRaw !== null
     ? (terminalRaw as { kind: "death" | "success" | "safe"; endingId: string })
@@ -4346,10 +4519,17 @@ async function runLlmDrivenBeginStreaming(
     choiceId: input.choiceId,
     // Persist the typed text for free-form turns; for LLM-proposed turns we
     // fall back to the prior proposal's label so memoryBeatFromHistory can
-    // surface a human-readable beat for both paths.
+    // surface a human-readable beat for both paths. reading-modes W3: the
+    // synthetic novel page-turn carries no meaningful choiceLabel — omit it
+    // (cleanDoc strips undefined) so neither the memory window nor the
+    // summarizer beat records the noise "Turn the page" line; novel continuity
+    // rides the prose excerpt instead (memoryBeatFromHistory drops the clause
+    // for the page-turn choiceId, and the summarizer sees an empty label).
     choiceLabel: isFreeform
       ? input.userText
-      : prior?.choices.find((candidate) => candidate.id === input.choiceId)?.label,
+      : input.choiceId === PAGE_TURN_CHOICE_ID
+        ? undefined
+        : prior?.choices.find((candidate) => candidate.id === input.choiceId)?.label,
     // NPCs the just-completed scene's proposal flagged as mentioned. Carried
     // forward here so `loadRecentNpcMentions` can surface those NPCs' sheets
     // in the next prompt-builder pass (Requirement 31.3 / 31.4). The streaming
@@ -4367,6 +4547,26 @@ async function runLlmDrivenBeginStreaming(
     latency: { engineMs: 0, llmMs: 0 },
     createdAt: input.now,
   }));
+
+  // daily-killcam (DK1, design §2): record the committed opening choice for the
+  // killcam pulse. This is the SINGLE live llm-driven turn_history site — daily
+  // saves are always llm-driven + solo, so we never pass isAuthored/isFollower
+  // here. The helper is DECORATIVE + best-effort (it never throws out of
+  // itself): a recording failure degrades to "no chip", never a turn failure
+  // (BC5/R1.1). dailyId is conditional-spread so non-daily saves no-op cleanly
+  // (exactOptionalPropertyTypes, BC4). freeForm=true forces the reserved key
+  // and the helper NEVER persists the reader's typed text (DK4), so passing the
+  // committed label is safe by construction.
+  await recordDailyChoiceIfEligible(ctx, {
+    ...(input.save.dailyId ? { dailyId: input.save.dailyId } : {}),
+    accountId: input.accountId,
+    saveId: input.saveIdValue,
+    turnNumber: nextSave.turnNumber,
+    freeForm: isFreeform,
+    ...(chosenChoice?.label ? { choiceLabel: chosenChoice.label } : {}),
+    now: input.now,
+  });
+
   const sceneId = await ctx.db.insert("scenes", cleanDoc(sceneRecord));
   await ctx.db.patch(input.saveIdValue, { currentSceneId: sceneId });
 

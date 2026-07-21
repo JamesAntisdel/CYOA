@@ -196,6 +196,103 @@ test("profile screen shows the librarian rank chip + keepsakes shelf", () => {
   assert.match(src, /keepsakes\.length > 0/, "profile must render a keepsakes shelf when non-empty");
 });
 
+test("act-mementos: useAccountProfile adapts rankProgress + mementos beside the rank/keepsakes adapters", () => {
+  const src = read("hooks/useAccountProfile.ts");
+  assert.match(src, /adaptRankProgress,/, "must import the rankProgress adapter");
+  assert.match(src, /adaptMementos,/, "must import the mementos adapter");
+  assert.match(
+    src,
+    /rankProgress: adaptRankProgress\(remoteW3\?\.rankProgress\)/,
+    "must expose the adapted rankProgress (null-for-absent → optional)",
+  );
+  assert.match(
+    src,
+    /mementos: adaptMementos\(remoteW3\?\.mementos\)/,
+    "must expose the adapted mementos shelf model",
+  );
+});
+
+test("act-mementos: profile screen renders the rank ticker (gated) + mounts MementoShelf below keepsakes", () => {
+  const src = read("app/profile/index.tsx");
+  // The ticker is gated on rankProgress so the top tier keeps today's totals
+  // line unchanged (R3.3).
+  assert.match(src, /rankProgress \? \(/, "ticker must render only when rankProgress is present");
+  assert.match(src, /rankTickerLine\(rankProgress\)/, "profile must render the rank ticker line");
+  // The shelf mounts AFTER the keepsakes shelf block and BEFORE archetypes.
+  assert.match(src, /<MementoShelf mementos=\{mementos\}/, "profile must mount the MementoShelf");
+  const keepsakesIdx = src.indexOf("keepsakes.length > 0");
+  const shelfIdx = src.indexOf("<MementoShelf");
+  const archetypesIdx = src.indexOf("<ProfileArchetypes");
+  assert.ok(keepsakesIdx > -1 && shelfIdx > -1 && archetypesIdx > -1, "all three sections present");
+  assert.ok(
+    keepsakesIdx < shelfIdx && shelfIdx < archetypesIdx,
+    "MementoShelf must sit BELOW keepsakes (R4.1) and above archetypes",
+  );
+});
+
+test("act-mementos: MementoShelf hides when empty and headers the total (R4.2)", () => {
+  const src = read("components/account/MementoShelf.tsx");
+  assert.match(
+    src,
+    /if \(mementos\.items\.length === 0\) return null;/,
+    "MementoShelf must render nothing when the account has pressed none (R4.2)",
+  );
+  assert.match(src, /mementos\.total/, "the header must carry the lifetime total");
+  assert.match(src, /mementoRelativeDate\(memento\.createdAt, now\)/, "cards must show a relative date");
+  assert.match(src, /memento\.storyTitle/, "cards must show the story title");
+});
+
+test("act-mementos: ChapterEnd surfaces the two act-boundary lines ONLY with an act stamp (R3.4, BC9)", () => {
+  const src = read("components/reading/ChapterEnd.tsx");
+  assert.match(src, /mementoLine\?: string;/, "ChapterEnd must accept the optional mementoLine prop");
+  assert.match(src, /rankTickerLine\?: string;/, "ChapterEnd must accept the optional rankTickerLine prop");
+  // Both lines are gated on `actStamp &&`, so a non-act boundary (no stamp)
+  // renders exactly as before — zero layout shift / byte-identical.
+  assert.match(
+    src,
+    /actStamp && mementoLine \? \(/,
+    "the memento line must render only alongside an act stamp",
+  );
+  assert.match(
+    src,
+    /actStamp && rankTickerLine \? \(/,
+    "the ticker line must render only alongside an act stamp",
+  );
+});
+
+test("act-mementos: ReaderScreen builds the boundary lines conditional-spread beside actStampProps (AM5)", () => {
+  const src = read("components/reading/ReaderScreen.tsx");
+  assert.match(
+    src,
+    /function actBoundaryLineProps\(/,
+    "ReaderScreen must define the conditional-spread builder beside actStampProps",
+  );
+  // Empty object when there's no stamp → props omitted, never `undefined` (BC4).
+  assert.match(src, /if \(!stamp\) return \{\};/, "builder must return {} without an act stamp");
+  assert.match(
+    src,
+    /mementoLine: mementoStampLine\(\)/,
+    "builder must source the memento acknowledgement from the pure helper",
+  );
+  assert.match(
+    src,
+    /\.\.\.\(rankProgress \? \{ rankTickerLine: rankTickerLine\(rankProgress\) \} : \{\}\)/,
+    "builder must conditional-spread the ticker from the cached rankProgress (BC4, no new polling)",
+  );
+  // Sourced from the already-fetched profile hook — no new query.
+  assert.match(
+    src,
+    /useAccountProfile\(\);/,
+    "ReaderScreen must reuse the existing useAccountProfile call",
+  );
+  assert.match(src, /claimWithEmail, rankProgress/, "rankProgress must come from the existing hook destructure");
+  assert.match(
+    src,
+    /\{\.\.\.actBoundaryLineProps\(/,
+    "the ChapterEnd mount must spread the boundary-line builder",
+  );
+});
+
 test("home screen renders DailyCard from a fetched today row", () => {
   const src = read("app/index.tsx");
   assert.match(src, /import \{ DailyCard \}/, "home must import DailyCard");

@@ -14,18 +14,27 @@ export type HudMode = "full" | "quiet" | "hidden";
  *   stills_only       Scene stills, no video.
  *   endpoint_cinematic Endpoint Omni cinematics (opening + ending).
  *   per_scene_legacy  The legacy per-turn Imagen→Veo chain.
+ *   illustrated_book  Pro image-first reading mode with a GUARANTEED still
+ *                     per scene (reading-modes R3, OQ7 = distinct strategy).
+ *                     The resolver owns the still-guarantee; on credit
+ *                     exhaustion the server emits an out-of-credits signal
+ *                     and MediaPlate degrades to a stylized placeholder (never
+ *                     a bare skeleton). Moves in LOCKSTEP with the server-side
+ *                     `CinematicMode` / `MediaStrategy` unions (RM6).
  */
 export type CinematicMode =
   | "off"
   | "stills_only"
   | "endpoint_cinematic"
-  | "per_scene_legacy";
+  | "per_scene_legacy"
+  | "illustrated_book";
 
 export const CINEMATIC_MODES: readonly CinematicMode[] = [
   "off",
   "stills_only",
   "endpoint_cinematic",
   "per_scene_legacy",
+  "illustrated_book",
 ] as const;
 export type ReaderLayoutMode = "book" | "focus";
 export type ReaderLayoutVariant =
@@ -33,7 +42,8 @@ export type ReaderLayoutVariant =
   | "modernApp"
   | "graphicNovel"
   | "journal"
-  | "mobile";
+  | "mobile"
+  | "illustratedBook";
 
 export const READER_LAYOUT_VARIANTS: readonly ReaderLayoutVariant[] = [
   "book",
@@ -41,6 +51,7 @@ export const READER_LAYOUT_VARIANTS: readonly ReaderLayoutVariant[] = [
   "graphicNovel",
   "journal",
   "mobile",
+  "illustratedBook",
 ] as const;
 
 export type ReaderSettings = {
