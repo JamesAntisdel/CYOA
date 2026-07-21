@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Image, Modal, Pressable, View } from "react-native";
 
-import { Button, Text } from "../primitives";
+import { Button, Icon, Text } from "../primitives";
 import { useToast } from "../../hooks/useToast";
 import { useAppTheme } from "../../theme";
 import {
   alightCopy,
   balanceCopy,
-  candleGlyph,
   candleIsTappable,
   candleLabel,
   canAffordIllumination,
@@ -146,7 +145,6 @@ export function IlluminateButton({
   // nothing so the read is never interrupted.
   if (!accountId || mode === "hidden") return null;
 
-  const glyph = candleGlyph(mode);
   const label = candleLabel(mode);
   const tappable = candleIsTappable(mode);
   const cost = illuminationCost(state, kind);
@@ -174,7 +172,13 @@ export function IlluminateButton({
           opacity: pressed && tappable && !reducedMotion ? 0.78 : 1,
         })}
       >
-        <Text variant="caption">{glyph}</Text>
+        <Icon
+          aria-hidden
+          name="candle"
+          size={14}
+          color={mode === "illuminated" ? tokens.colors.accent : tokens.colors.textMuted}
+        />
+
         <Text
           muted
           variant="caption"

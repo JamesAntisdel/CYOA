@@ -9,7 +9,7 @@ import {
 import { doorJournalLine, doorsNewlyKeyed, keyArrivalToast } from "../../lib/storyEngagement";
 import { useToast } from "../../hooks/useToast";
 import { useAppTheme } from "../../theme";
-import { Surface, Text } from "../primitives";
+import { Icon, Surface, Text } from "../primitives";
 
 type DoorsJournalProps = {
   saveId: string;
@@ -21,12 +21,21 @@ type DoorsJournalProps = {
    * at most once per scene — same discipline as ThreadsPill's echo toast.
    */
   sceneId: string;
+  /**
+   * Reader-chrome-declutter 3.4 (RB-COUNTS) — optional upward count callback.
+   * Fired from the EXISTING fetch effect (no new query, RC2) with the number of
+   * teased doors so StoryRibbon's COLLAPSED row can show a synchronous doors
+   * segment; zero-state / no-auth / transport failure fire `0` so the segment
+   * clears. Orthogonal to the key-arrival nudge: the single mount (StoryRibbon's
+   * detail) both reports the count AND owns the one-shot toast (R3.3).
+   */
+  onCount?: ((count: number) => void) | undefined;
 };
 
 /**
  * DoorsJournal (DOORS-JOURNAL — reader-facing half of the story-bible
  * fetch-quest loop; core-read-loop Req 22 companion surface). A quiet
- * ThreadsPill-style pill ("🚪 N doors the tome remembers") that expands into
+ * ThreadsPill-style pill (a `key` glyph + "N doors the tome remembers") that expands into
  * the journal of teased doors, written in the tome's voice ("The crypt gate
  * remembers you."). The server projection (`llm/storyBible:getDoorsJournal`)
  * only ever carries doors the reader has already seen rendered locked on
@@ -40,7 +49,7 @@ type DoorsJournalProps = {
  * fetch-quest payoff signal, sibling to ThreadsPill's "An earlier choice
  * echoes."
  */
-export function DoorsJournal({ saveId, auth, sceneId }: DoorsJournalProps) {
+export function DoorsJournal({ saveId, auth, sceneId, onCount }: DoorsJournalProps) {
   const { tokens } = useAppTheme();
   const toast = useToast();
   const [entries, setEntries] = useState<RemoteDoorsJournalEntry[] | undefined>(undefined);
@@ -49,9 +58,17 @@ export function DoorsJournal({ saveId, auth, sceneId }: DoorsJournalProps) {
   const prevEntriesRef = useRef<RemoteDoorsJournalEntry[] | undefined>(undefined);
   // Last scene we nudged for — the toast is a true one-shot per scene.
   const nudgedSceneRef = useRef<string | null>(null);
+  // Held in a ref so the count callback (and the reporter/toast gate) never
+  // enters the fetch effect's deps — the fetch cadence stays byte-identical.
+  const onCountRef = useRef(onCount);
+  onCountRef.current = onCount;
 
   useEffect(() => {
-    if (!auth?.accountId || !hasRemoteGameApi()) return;
+    // No remote session ⇒ the journal stays dark; a reporter hears "no doors".
+    if (!auth?.accountId || !hasRemoteGameApi()) {
+      onCountRef.current?.(0);
+      return;
+    }
     let cancelled = false;
     void (async () => {
       const next = await getRemoteDoorsJournal({
@@ -59,8 +76,19 @@ export function DoorsJournal({ saveId, auth, sceneId }: DoorsJournalProps) {
         saveId,
         ...(auth.guestTokenHash ? { guestTokenHash: auth.guestTokenHash } : {}),
       });
-      if (cancelled || next === null) return;
+      // A null fetch is a transport failure — surface it as "no doors" so a
+      // reporter's collapsed segment self-hides (RC2), then bail as before.
+      if (cancelled) return;
+      if (next === null) {
+        onCountRef.current?.(0);
+        return;
+      }
       const arrivals = doorsNewlyKeyed(prevEntriesRef.current, next);
+      // There is exactly ONE DoorsJournal mount per reader (StoryRibbon's
+      // detail — it both reports the count upward AND owns the key-arrival
+      // nudge). The old `!onCount ⇒ toast owner` deferral existed for the
+      // removed headless-twin mount; with a single mount it would silence the
+      // toast entirely.
       if (arrivals.length > 0 && nudgedSceneRef.current !== sceneId) {
         nudgedSceneRef.current = sceneId;
         // Name the door the key belongs to and point at the pill above — the
@@ -72,6 +100,7 @@ export function DoorsJournal({ saveId, auth, sceneId }: DoorsJournalProps) {
       }
       prevEntriesRef.current = next;
       setEntries(next);
+      onCountRef.current?.(next.length);
     })();
     return () => {
       cancelled = true;
@@ -81,7 +110,10 @@ export function DoorsJournal({ saveId, auth, sceneId }: DoorsJournalProps) {
   // Zero-state invisible (ThreadsPill discipline): no teased doors → nothing.
   if (!entries || entries.length === 0) return null;
 
-  const pillLabel = `🚪 ${entries.length} ${entries.length === 1 ? "door" : "doors"} the tome remembers`;
+  // R5 glyph discipline (RC5): the door count leads with the icon-font `key`
+  // glyph, not the old door emoji. The a11y label is the plain-text phrase.
+  const doorWord = entries.length === 1 ? "door" : "doors";
+  const pillLabel = `${entries.length} ${doorWord} the tome remembers`;
 
   return (
     <View style={{ alignSelf: "flex-start", gap: tokens.spacing.xs, maxWidth: "100%" }}>
@@ -91,15 +123,19 @@ export function DoorsJournal({ saveId, auth, sceneId }: DoorsJournalProps) {
         accessibilityState={{ expanded }}
         onPress={() => setExpanded((open) => !open)}
         style={({ pressed }) => ({
+          alignItems: "center",
           alignSelf: "flex-start",
           borderColor: tokens.colors.borderMuted,
           borderRadius: tokens.radii.pill,
           borderWidth: tokens.borderWidths.hairline,
+          flexDirection: "row",
+          gap: tokens.spacing.xs,
           opacity: pressed ? 0.75 : 1,
           paddingHorizontal: tokens.spacing.md,
           paddingVertical: tokens.spacing.xs,
         })}
       >
+        <Icon name="key" size={14} color={tokens.colors.textMuted} aria-hidden />
         <Text
           muted
           style={{ fontFamily: tokens.typography.families.serif, fontStyle: "italic" }}
@@ -135,9 +171,18 @@ export function DoorsJournal({ saveId, auth, sceneId }: DoorsJournalProps) {
                 </Text>
               ) : null}
               {entry.state === "key-in-hand" ? (
-                <Text muted variant="caption">
-                  🗝 the key waits in your satchel
-                </Text>
+                <View
+                  style={{
+                    alignItems: "center",
+                    flexDirection: "row",
+                    gap: tokens.spacing.xs,
+                  }}
+                >
+                  <Icon name="key" size={13} color={tokens.colors.textMuted} aria-hidden />
+                  <Text muted variant="caption">
+                    the key waits in your satchel
+                  </Text>
+                </View>
               ) : null}
             </Surface>
           ))}

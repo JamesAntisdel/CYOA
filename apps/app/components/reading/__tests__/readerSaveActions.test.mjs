@@ -1,25 +1,21 @@
-// Drift guards for the save-scoped chrome row in ReaderScreen and the
+// Drift guards for the save-scoped navigation the reader exposes and the
 // header treatment of the two surfaces it links to (/map/[saveId] and
 // /read/[saveId]/history).
 //
-// The user-facing symptom that motivated this row: "I don't see the map
-// at all." The /map and /history routes existed, but there was no UI
-// entry to them — the only AppNav tabs are top-level (Library, Discover,
-// Create, Account, Settings, Login). These tests pin down:
+// The user-facing symptom that motivated these entries: "I don't see the map
+// at all." The /map and /history routes existed, but there was no UI entry to
+// them — the only AppNav tabs are top-level (Library, Discover, Create,
+// Account, Settings, Login).
 //
-//   1. ReaderScreen renders both buttons with the expected
-//      accessibilityLabel ("Path map" and "Run history") so the reader
-//      can find them.
-//   2. The button routes are `/map/${saveId}` and
-//      `/read/${saveId}/history` — typos here would silently break the
-//      entry point.
-//   3. The /map page renders its "Path map" kicker BEFORE the
-//      ViewToggle, which itself renders BEFORE the EndingsMap or
-//      Storyboard — so the toggle is obviously visible above any image
-//      cards. The kicker also has to come before any storyboard <Image>
-//      so the page header doesn't drift off the top of a small screen.
-//   4. Both the /map and /history pages carry the same "Back to current
-//      scene" affordance so the two surfaces feel like siblings.
+// reader-chrome-declutter Wave 1 (task 1.3) RETIRED the five-pill
+// ReaderSaveActions row: the Path map / Run history / Reading settings / Auto
+// entries moved into the Tome menu (built by the pure `buildTomeRows`), and the
+// AI-flag report action moved with them. This guard is RETARGETED (RC6 — never
+// deleted) to pin those entries down at their new home: the Tome-row callbacks
+// wired in ReaderScreen must still route to the same destinations, so the map
+// and history entry points can't silently vanish in a future refactor. Tests
+// 3-7 (the /map + /history page headers + shared back affordance) are
+// unchanged — those surfaces did not move.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -39,46 +35,74 @@ const readerScreenSource = readFileSync(readerScreenPath, "utf8");
 const mapRouteSource = readFileSync(mapRoutePath, "utf8");
 const historyRouteSource = readFileSync(historyRoutePath, "utf8");
 
-test("ReaderScreen exposes a Path map entry button", () => {
-  assert.match(
+test("ReaderScreen builds the Tome menu rows via the pure buildTomeRows", () => {
+  // The five-pill ReaderSaveActions row is GONE; the entries are Tome rows.
+  assert.doesNotMatch(
     readerScreenSource,
-    /accessibilityLabel="Path map"/,
-    "ReaderScreen must render a Pressable with accessibilityLabel='Path map'",
+    /<ReaderSaveActions/,
+    "the retired ReaderSaveActions pill row must no longer render",
   );
   assert.match(
     readerScreenSource,
-    /router\.push\(`\/map\/\$\{saveId\}`\)/,
-    "Path map button must navigate to /map/[saveId]",
+    /buildTomeRows\(\{/,
+    "ReaderScreen must build the Tome rows via buildTomeRows",
+  );
+  assert.match(
+    readerScreenSource,
+    /<TomeSheet\b/,
+    "ReaderScreen must mount the TomeSheet holding those rows",
   );
 });
 
-test("ReaderScreen exposes a Run history entry button", () => {
+test("the Tome's Path map row routes to /map/[saveId]", () => {
   assert.match(
     readerScreenSource,
-    /accessibilityLabel="Run history"/,
-    "ReaderScreen must render a Pressable with accessibilityLabel='Run history'",
-  );
-  assert.match(
-    readerScreenSource,
-    /router\.push\(`\/read\/\$\{saveId\}\/history`\)/,
-    "Run history button must navigate to /read/[saveId]/history",
+    /onPathMap:\s*\(\)\s*=>\s*router\.push\(`\/map\/\$\{saveId\}`\)/,
+    "the Tome Path map row must navigate to /map/[saveId]",
   );
 });
 
-test("ReaderScreen save action row sits below AppNav and above the layout", () => {
-  // We don't render the tree here, but we can locate the three anchors
-  // in source order. AppNav, then ReaderSaveActions, then the Layout.
-  const navIdx = readerScreenSource.indexOf("<AppNav />");
-  const actionsIdx = readerScreenSource.indexOf("<ReaderSaveActions");
-  const layoutIdx = readerScreenSource.indexOf("<Layout");
-  assert.ok(navIdx > 0, "AppNav must render in ReaderScreen");
-  assert.ok(
-    actionsIdx > navIdx,
-    "ReaderSaveActions must come AFTER AppNav",
+test("the Tome's Run history row routes to /read/[saveId]/history", () => {
+  assert.match(
+    readerScreenSource,
+    /onRunHistory:\s*\(\)\s*=>\s*router\.push\(`\/read\/\$\{saveId\}\/history`\)/,
+    "the Tome Run history row must navigate to /read/[saveId]/history",
   );
-  assert.ok(
-    layoutIdx > actionsIdx,
-    "Layout must come AFTER ReaderSaveActions",
+});
+
+test("the Tome's Reading settings row opens the existing drawer", () => {
+  // Platform-guarded handoff (code-review fix): web opens immediately; native
+  // defers past the Tome Modal's dismiss so iOS doesn't drop the incoming
+  // modal. The guard asserts the row still routes to setDrawerOpen(true).
+  assert.match(
+    readerScreenSource,
+    /onReadingSettings:[\s\S]{0,220}?setDrawerOpen\(true\)/,
+    "the Reading settings row must open the ReaderSettingsDrawer",
+  );
+  assert.match(
+    readerScreenSource,
+    /<ReaderSettingsDrawer\b/,
+    "ReaderScreen must still mount the ReaderSettingsDrawer",
+  );
+});
+
+test("the Tome's Flag row reuses the moderation ReportButton action (U3/R2.5)", () => {
+  // The disclosure stays a visible footer caption; only the flag ACTION moved
+  // into the sheet, driving the controlled (trigger-hidden) ReportButton.
+  assert.match(
+    readerScreenSource,
+    /onFlagScene:[\s\S]{0,220}?setFlagOpen\(true\)/,
+    "the Flag row must open the report picker",
+  );
+  assert.match(
+    readerScreenSource,
+    /<ReportButton[\s\S]*?hideTrigger[\s\S]*?targetType="scene"/,
+    "the flag action must be the moderation ReportButton with its trigger hidden",
+  );
+  assert.match(
+    readerScreenSource,
+    /AI-generated tale/,
+    "the persistent AI-disclosure footer caption must still render (R2.5)",
   );
 });
 

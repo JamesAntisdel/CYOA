@@ -64,12 +64,23 @@ test("ChapterEnd stamps the act when the boundary turn advanced an act", () => {
   assert.match(src, /Act \$\{actRoman\(actNumber\)\}/, "ChapterEnd must render the 'Act II' stamp");
 });
 
-test("ReaderScreen wires QuestLine + ThreadsPill under AppNav and the act stamp into ChapterEnd", () => {
+test("StoryRibbon composes QuestLine + ThreadsPill and ReaderScreen feeds the act stamp into ChapterEnd", () => {
+  // reader-chrome-declutter Wave 1 (R3): QuestLine + ThreadsPill were
+  // consolidated into StoryRibbon (composed UNCHANGED in its detail — RC2), fed
+  // the projection arc from ReaderScreen. The act-stamp wiring into ChapterEnd
+  // stays in ReaderScreen (that surface did NOT move — P4).
+  const ribbon = read("components/reading/chrome/StoryRibbon.tsx");
+  assert.match(ribbon, /import \{ QuestLine \}/, "StoryRibbon must import QuestLine");
+  assert.match(ribbon, /import \{ ThreadsPill \}/, "StoryRibbon must import ThreadsPill");
+  assert.match(ribbon, /<QuestLine/, "StoryRibbon must render QuestLine");
+  assert.match(ribbon, /<ThreadsPill/, "StoryRibbon must render ThreadsPill");
+
   const src = read("components/reading/ReaderScreen.tsx");
-  assert.match(src, /import \{ QuestLine \}/, "ReaderScreen must import QuestLine");
-  assert.match(src, /import \{ ThreadsPill \}/, "ReaderScreen must import ThreadsPill");
-  assert.match(src, /<QuestLine arc=\{projection\.arc\}/, "ReaderScreen must render QuestLine from the projection arc");
-  assert.match(src, /<ThreadsPill/, "ReaderScreen must render ThreadsPill");
+  assert.match(
+    src,
+    /<StoryRibbon[\s\S]{0,600}arc:\s*projection\.arc/,
+    "ReaderScreen must feed StoryRibbon the projection arc (drives QuestLine/ThreadsPill)",
+  );
   assert.match(
     src,
     /actStampProps\(actStampFromDiffs\(projection\.recentDiffs, projection\.arc\)\)/,

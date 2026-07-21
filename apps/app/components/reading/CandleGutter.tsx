@@ -2,7 +2,7 @@ import { View } from "react-native";
 
 import { candleSegments } from "../../lib/storyEngagement";
 import { useAppTheme } from "../../theme";
-import { Button, Surface, Text } from "../primitives";
+import { Button, Icon, Surface, Text } from "../primitives";
 
 /**
  * Panel-2 Wave 2 — the in-fiction daily-turn candle surfaces (panel-review-2:
@@ -55,9 +55,7 @@ export function CandleBurnMeter({ turnsUsed, turnsAllowed }: CandleBurnMeterProp
         gap: tokens.spacing.sm,
       }}
     >
-      <Text aria-hidden variant="caption">
-        {hot ? "🔥" : "🕯"}
-      </Text>
+      <Icon aria-hidden name="candle" size={16} color={tint} />
       <View
         accessibilityElementsHidden
         importantForAccessibility="no-hide-descendants"
@@ -130,9 +128,7 @@ export function CandleGutterInterstitial({
         gap: tokens.spacing.sm,
       }}
     >
-      <Text aria-hidden style={{ fontSize: 28, textAlign: "center" }} variant="title">
-        🕯
-      </Text>
+      <Icon aria-hidden name="candle" size={28} style={{ alignSelf: "center" }} />
       <Text
         style={{
           fontFamily: tokens.typography.families.serif,

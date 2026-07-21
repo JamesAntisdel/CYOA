@@ -1,5 +1,5 @@
 import { useRouter } from "expo-router";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -11,7 +11,20 @@ import { useAccountProfile } from "../../hooks/useAccountProfile";
 import { useMatureOptIn } from "../../hooks/useMatureOptIn";
 import { useNarratorVoice } from "../../hooks/useNarratorVoice";
 import { markLayoutAsExplicitlyChosen } from "../../components/reading/ReaderScreen";
-import { useReaderSettings } from "../../hooks/useReaderSettings";
+import {
+  useReaderSettings,
+  type CinematicMode,
+  type ReaderLayoutVariant,
+  type ReaderSettings,
+} from "../../hooks/useReaderSettings";
+import {
+  readerSettingsGroups,
+  isIllustratedBookUnlocked,
+  selectIllustratedBook,
+  ILLUSTRATED_BOOK_STRATEGY,
+  ILLUSTRATED_BOOK_LAYOUT,
+  type SettingsOption,
+} from "../../lib/readerSettingsGroups";
 import { useBreakpoint } from "../../lib/responsive";
 import { useAppTheme } from "../../theme";
 
@@ -21,43 +34,25 @@ import { useAppTheme } from "../../theme";
 // next save created from /library, /creator, or the cover screen — those
 // surfaces also call useNarratorVoice(null) and read the same last-used
 // value at mount. Mid-tale per-save changes happen on the read screen.
+//
+// Every reader-settings GROUP (label, options, the Illustrated-Book Pro-gate +
+// coupling) now lives ONCE in `lib/readerSettingsGroups.ts`
+// (reader-chrome-declutter R4.1/RC7). This surface maps over the groups tagged
+// for "settings" and renders each with its OWN `SettingGroup` button primitive
+// — a data-model extraction, not a visual merge. The in-reader
+// `ReaderSettingsDrawer` renders the "drawer" subset from the same list.
 
-type Option<T extends string | boolean | number> = {
-  label: string;
-  value: T;
+// Surface-local help text (presentation, not definition — kept out of the
+// shared module which is definitions-only). Keyed by the shared group key.
+const SETTINGS_HELP: Record<string, string> = {
+  imagesEnabled: "Turn off if data is limited.",
+  audioEnabled: "Mutes the narrator voice and any ambient soundscape.",
+  narratorPlaybackRate: "Adjust how fast the narrator reads.",
+  videoEnabled: "Skip Veo videos. Image still shows.",
+  cinematicMode:
+    "How much generated media a run produces. Endpoint cinematics and Illustrated Book need Pro; your plan may cap the effective setting.",
+  dialogBlocksEnabled: "Render quoted speech as indented blocks with the speaker's name.",
 };
-
-// Illustrated Book couples two axes (RM7/R3.8): the cosmetic layout skin
-// (`illustratedBook`, camelCase — client-only localStorage) and the
-// still-guaranteeing media strategy (`illustrated_book`, snake_case — round-
-// trips to the server via mediaPrefs.cinematicMode). Selecting the mode in
-// EITHER picker writes both plus images-ON so the reader can never land on the
-// image-first plate with a strategy that produces no still.
-const ILLUSTRATED_BOOK_STRATEGY = "illustrated_book" as const;
-const ILLUSTRATED_BOOK_SETTINGS = {
-  layout: "illustratedBook",
-  cinematicMode: ILLUSTRATED_BOOK_STRATEGY,
-  imagesEnabled: true,
-} as const;
-
-// Pro-gate for Illustrated Book (R3.7). The guaranteed still is a paid
-// entitlement, so a non-Pro reader sees the option locked → paywall. The dev
-// unlock mirrors the server `CYOA_DEV_FORCE_PRO_MEDIA` / `devForceProMedia`
-// flag through the EXPO_PUBLIC_ seam so local dev previews the full mode; the
-// literal access is required for the Expo web bundler to inline the value.
-function isIllustratedBookUnlocked(
-  profile: {
-    entitlementTier: "free" | "unlimited" | "pro";
-    entitlementStatus: "active" | "grace" | "expired" | "revoked";
-  } | null,
-): boolean {
-  if (process.env.EXPO_PUBLIC_DEV_FORCE_PRO_MEDIA === "1") return true;
-  return Boolean(
-    profile &&
-      profile.entitlementStatus === "active" &&
-      (profile.entitlementTier === "pro" || profile.entitlementTier === "unlimited"),
-  );
-}
 
 export default function SettingsRoute() {
   const { resetSettings, settings, updateSettings } = useReaderSettings();
@@ -73,8 +68,83 @@ export default function SettingsRoute() {
   // Illustrated Book (R3.7): a Pro reading mode whose whole promise is a
   // guaranteed still. A non-Pro reader must NEVER be able to select the
   // image-first skin into a permanently empty plate, so the option is locked
-  // → paywall until the account is Pro (or the dev override previews it).
+  // → paywall until the account is Pro (or the dev override previews it). ONE
+  // gate, shared with the reader drawer (R4.1).
   const illustratedBookUnlocked = isIllustratedBookUnlocked(account.profile);
+
+  // The full reader-settings inventory (R4.4): every group tagged for
+  // /settings, rendered top-to-bottom in the shared canonical order.
+  const settingsGroups = useMemo(
+    () =>
+      readerSettingsGroups({ illustratedUnlocked: illustratedBookUnlocked }).filter((g) =>
+        g.surfaces.includes("settings"),
+      ),
+    [illustratedBookUnlocked],
+  );
+
+  // ONE per-group dispatch. Media gates round-trip through mediaPrefs; the
+  // Cinematic-mode group hosts the coupled Illustrated Book strategy routed
+  // through the shared `selectIllustratedBook` so the coupling + paywall fire
+  // identically to the reader drawer.
+  const handleSelect = (key: string, value: unknown) => {
+    if (key === "layout") {
+      // Mark this as an explicit user choice so ReaderScreen's phone-aware
+      // default no longer overrides the stored value. Without this flag a
+      // desktop reader who picks "Book" then loads on a phone would still see
+      // Mobile — exactly the opposite of what the picker promises.
+      markLayoutAsExplicitlyChosen();
+      updateSettings({ layout: value as ReaderLayoutVariant });
+      return;
+    }
+    if (key === "imagesEnabled" || key === "audioEnabled" || key === "videoEnabled") {
+      // Sync server prefs from the post-merge snapshot (`next`) — NOT from the
+      // closed-over `settings`. Two rapid toggles in the same frame would
+      // otherwise each see the pre-toggle `settings` and the second one would
+      // clobber the first sibling's change server-side.
+      updateSettings({ [key]: value } as Partial<ReaderSettings>, (next) => {
+        void syncMediaPrefs(account, pickMediaPrefs(next));
+      });
+      return;
+    }
+    if (key === "cinematicMode") {
+      if (value === ILLUSTRATED_BOOK_STRATEGY) {
+        const result = selectIllustratedBook({ illustratedUnlocked: illustratedBookUnlocked });
+        if (result.kind === "paywall") {
+          // R3.7: a non-Pro reader can never select into a permanent skeleton.
+          router.push(result.route);
+          return;
+        }
+        // RM7 / R3.8 coupling: set the image-first skin, force images-ON, and
+        // the stills-guaranteeing strategy TOGETHER — `layout` is client-only
+        // localStorage while `cinematicMode` round-trips through mediaPrefs, so
+        // the two axes must move as one or the reader gets a full-bleed plate
+        // that never fills.
+        markLayoutAsExplicitlyChosen();
+        updateSettings({ ...result.settings }, (next) => {
+          void syncMediaPrefs(account, pickMediaPrefs(next));
+        });
+        return;
+      }
+      // Leaving Illustrated Book: if the reader picks any other strategy while
+      // still on the image-first skin, drop back to the Book skin so they don't
+      // strand on a full-bleed plate the new strategy may never fill.
+      const leavingIllustrated = settings.layout === ILLUSTRATED_BOOK_LAYOUT;
+      if (leavingIllustrated) markLayoutAsExplicitlyChosen();
+      updateSettings(
+        leavingIllustrated
+          ? { cinematicMode: value as CinematicMode, layout: "book" }
+          : { cinematicMode: value as CinematicMode },
+        (next) => {
+          // Persist locally (authoritative client cache) and echo to the server
+          // through the mediaPrefs path from the post-merge snapshot — same
+          // discipline as imagesEnabled.
+          void syncMediaPrefs(account, pickMediaPrefs(next));
+        },
+      );
+      return;
+    }
+    updateSettings({ [key]: value } as Partial<ReaderSettings>);
+  };
 
   return (
     <SafeAreaView style={{ backgroundColor: tokens.colors.background, flex: 1 }}>
@@ -114,219 +184,19 @@ export default function SettingsRoute() {
             style={isPhone ? { flexBasis: "100%", minWidth: "100%", width: "100%" } : { flex: 1, minWidth: 320 }}
           >
             <View style={{ gap: tokens.spacing.lg }}>
-              <SettingGroup
-                label="Theme"
-                options={[
-                  { label: "System", value: "system" },
-                  { label: "Day", value: "day" },
-                  { label: "Night", value: "night" },
-                  { label: "Sepia", value: "sepia" },
-                ]}
-                selected={settings.theme}
-                onSelect={(theme) => updateSettings({ theme })}
-              />
-
-              <SettingGroup
-                label="Typography"
-                options={[
-                  { label: "Compact", value: "compact" },
-                  { label: "Default", value: "default" },
-                  { label: "Large", value: "large" },
-                ]}
-                selected={settings.fontScale}
-                onSelect={(fontScale) => updateSettings({ fontScale })}
-              />
-
-              <SettingGroup
-                label="Reader HUD"
-                options={[
-                  { label: "Full", value: "full" },
-                  { label: "Quiet", value: "quiet" },
-                  { label: "Hidden", value: "hidden" },
-                ]}
-                selected={settings.hudMode}
-                onSelect={(hudMode) => updateSettings({ hudMode })}
-              />
-
-              <SettingGroup
-                label="Chrome"
-                options={[
-                  { label: "Book", value: "book" },
-                  { label: "Focus", value: "focus" },
-                ]}
-                selected={settings.layoutMode}
-                onSelect={(layoutMode) => updateSettings({ layoutMode })}
-              />
-
-              <SettingGroup
-                label="Reading layout"
-                options={[
-                  { label: "Book", value: "book" },
-                  { label: "Modern app", value: "modernApp" },
-                  { label: "Graphic novel", value: "graphicNovel" },
-                  { label: "Journal", value: "journal" },
-                  { label: "Mobile", value: "mobile" },
-                ]}
-                selected={settings.layout}
-                onSelect={(layout) => {
-                  // Mark this as an explicit user choice so ReaderScreen's
-                  // phone-aware default no longer overrides the stored
-                  // value. Without this flag a desktop reader who picks
-                  // "Book" then loads on a phone would still see Mobile —
-                  // exactly the opposite of what the picker promises.
-                  markLayoutAsExplicitlyChosen();
-                  updateSettings({ layout });
-                }}
-              />
-
-              <SettingGroup
-                label="Motion"
-                options={[
-                  { label: "Motion on", value: false },
-                  { label: "Reduce motion", value: true },
-                ]}
-                selected={settings.reduceMotion}
-                onSelect={(reduceMotion) => updateSettings({ reduceMotion })}
-              />
-
-              <SettingGroup
-                label="Audio"
-                options={[
-                  { label: "Sound on", value: false },
-                  { label: "Mute", value: true },
-                ]}
-                selected={settings.muted}
-                onSelect={(muted) => updateSettings({ muted })}
-              />
-
-              <SettingGroup
-                label="Show illustrations"
-                helpText="Turn off if data is limited."
-                options={[
-                  { label: "On", value: true },
-                  { label: "Off", value: false },
-                ]}
-                selected={settings.imagesEnabled}
-                onSelect={(imagesEnabled) => {
-                  // Sync server prefs from the post-merge snapshot
-                  // (`next`) — NOT from the closed-over `settings`. Two
-                  // rapid toggles in the same frame would otherwise each
-                  // see the pre-toggle `settings` and the second one
-                  // would clobber the first sibling's change server-side.
-                  updateSettings({ imagesEnabled }, (next) => {
-                    void syncMediaPrefs(account, pickMediaPrefs(next));
-                  });
-                }}
-              />
-
-              <SettingGroup
-                label="Play narration & ambient audio"
-                helpText="Mutes the narrator voice and any ambient soundscape."
-                options={[
-                  { label: "On", value: true },
-                  { label: "Off", value: false },
-                ]}
-                selected={settings.audioEnabled}
-                onSelect={(audioEnabled) => {
-                  updateSettings({ audioEnabled }, (next) => {
-                    void syncMediaPrefs(account, pickMediaPrefs(next));
-                  });
-                }}
-              />
-
-              <SettingGroup
-                label="Narrator speed"
-                helpText="Adjust how fast the narrator reads."
-                options={[
-                  { label: "0.75x", value: 0.75 },
-                  { label: "1x", value: 1 },
-                  { label: "1.25x", value: 1.25 },
-                  { label: "1.5x", value: 1.5 },
-                ]}
-                selected={settings.narratorPlaybackRate}
-                onSelect={(narratorPlaybackRate) => updateSettings({ narratorPlaybackRate })}
-              />
-
-              <SettingGroup
-                label="Play scene cinematics"
-                helpText="Skip Veo videos. Image still shows."
-                options={[
-                  { label: "On", value: true },
-                  { label: "Off", value: false },
-                ]}
-                selected={settings.videoEnabled}
-                onSelect={(videoEnabled) => {
-                  updateSettings({ videoEnabled }, (next) => {
-                    void syncMediaPrefs(account, pickMediaPrefs(next));
-                  });
-                }}
-              />
-
-              <SettingGroup
-                label="Cinematic mode"
-                helpText="How much generated media a run produces. Endpoint cinematics and Illustrated Book need Pro; your plan may cap the effective setting."
-                options={[
-                  { label: "Off", value: "off" },
-                  { label: "Stills only", value: "stills_only" },
-                  { label: "Endpoint cinematics", value: "endpoint_cinematic" },
-                  { label: "Per-scene", value: "per_scene_legacy" },
-                  {
-                    // Illustrated Book carries the guaranteed-still strategy
-                    // (OQ7 distinct value). The lock glyph on non-Pro accounts
-                    // signals it routes to the paywall rather than selecting.
-                    label: illustratedBookUnlocked ? "Illustrated Book" : "Illustrated Book 🔒",
-                    value: ILLUSTRATED_BOOK_STRATEGY,
-                  },
-                ]}
-                selected={settings.cinematicMode}
-                onSelect={(cinematicMode) => {
-                  if (cinematicMode === ILLUSTRATED_BOOK_STRATEGY) {
-                    // R3.7: a non-Pro reader can never select into a permanent
-                    // skeleton — locked → paywall (dev override previews).
-                    if (!illustratedBookUnlocked) {
-                      router.push("/paywall?reason=pro_media");
-                      return;
-                    }
-                    // RM7 / R3.8 coupling: set the image-first skin, force
-                    // images-ON, and the stills-guaranteeing strategy TOGETHER
-                    // — `layout` is client-only localStorage while
-                    // `cinematicMode` round-trips through mediaPrefs, so the two
-                    // axes must move as one or the reader gets a full-bleed
-                    // plate that never fills.
-                    markLayoutAsExplicitlyChosen();
-                    updateSettings({ ...ILLUSTRATED_BOOK_SETTINGS }, (next) => {
-                      void syncMediaPrefs(account, pickMediaPrefs(next));
-                    });
-                    return;
-                  }
-                  // Leaving Illustrated Book: if the reader picks any other
-                  // strategy while still on the image-first skin, drop back to
-                  // the Book skin so they don't strand on a full-bleed plate the
-                  // new strategy may never fill.
-                  const leavingIllustrated = settings.layout === "illustratedBook";
-                  if (leavingIllustrated) markLayoutAsExplicitlyChosen();
-                  updateSettings(
-                    leavingIllustrated ? { cinematicMode, layout: "book" } : { cinematicMode },
-                    (next) => {
-                      // Persist locally (authoritative client cache) and echo to
-                      // the server through the mediaPrefs path from the
-                      // post-merge snapshot — same discipline as imagesEnabled.
-                      void syncMediaPrefs(account, pickMediaPrefs(next));
-                    },
-                  );
-                }}
-              />
-
-              <SettingGroup
-                label="Dialog blocks"
-                helpText="Render quoted speech as indented blocks with the speaker's name."
-                options={[
-                  { label: "On", value: true },
-                  { label: "Off", value: false },
-                ]}
-                selected={settings.dialogBlocksEnabled}
-                onSelect={(dialogBlocksEnabled) => updateSettings({ dialogBlocksEnabled })}
-              />
+              {settingsGroups.map((group) => {
+                const help = SETTINGS_HELP[group.key];
+                return (
+                  <SettingGroup
+                    key={group.key}
+                    label={group.label}
+                    {...(help ? { helpText: help } : {})}
+                    options={group.options}
+                    selected={(settings as Record<string, unknown>)[group.key]}
+                    onSelect={(value) => handleSelect(group.key, value)}
+                  />
+                );
+              })}
 
               <Divider />
 
@@ -405,7 +275,7 @@ export default function SettingsRoute() {
               </View>
 
               <Divider />
-              <Button onPress={resetSettings}>Reset settings</Button>
+              <Button onPress={resetSettings}>Reset reader preferences</Button>
             </View>
           </Surface>
 
@@ -470,7 +340,7 @@ async function syncMediaPrefs(
   }
 }
 
-function SettingGroup<T extends string | boolean | number>({
+function SettingGroup({
   label,
   helpText,
   options,
@@ -484,9 +354,9 @@ function SettingGroup<T extends string | boolean | number>({
    * explain what each switch does without growing a separate primitive.
    */
   helpText?: string;
-  options: Array<Option<T>>;
-  selected: T;
-  onSelect: (value: T) => void;
+  options: ReadonlyArray<SettingsOption<unknown>>;
+  selected: unknown;
+  onSelect: (value: unknown) => void;
 }) {
   const { tokens } = useAppTheme();
 
@@ -496,6 +366,11 @@ function SettingGroup<T extends string | boolean | number>({
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: tokens.spacing.sm }}>
         {options.map((option) => {
           const isSelected = selected === option.value;
+          const locked = option.locked === true;
+          // The Pro-gated Illustrated Book option reads as locked with a
+          // plain-text " · Pro" suffix — never a lock emoji (RC5). Selecting it
+          // routes to the paywall via the shared handler.
+          const displayLabel = locked ? `${option.label} · Pro` : option.label;
           return (
             <Button
               accessibilityState={{ selected: isSelected }}
@@ -503,7 +378,7 @@ function SettingGroup<T extends string | boolean | number>({
               onPress={() => onSelect(option.value)}
               variant={isSelected ? "primary" : "default"}
             >
-              {option.label}
+              {displayLabel}
             </Button>
           );
         })}

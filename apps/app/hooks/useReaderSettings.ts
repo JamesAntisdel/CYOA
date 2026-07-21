@@ -36,7 +36,6 @@ export const CINEMATIC_MODES: readonly CinematicMode[] = [
   "per_scene_legacy",
   "illustrated_book",
 ] as const;
-export type ReaderLayoutMode = "book" | "focus";
 export type ReaderLayoutVariant =
   | "book"
   | "modernApp"
@@ -58,7 +57,6 @@ export type ReaderSettings = {
   theme: ReaderThemePreference;
   fontScale: "compact" | "default" | "large";
   hudMode: HudMode;
-  layoutMode: ReaderLayoutMode;
   layout: ReaderLayoutVariant;
   muted: boolean;
   reduceMotion: boolean;
@@ -115,7 +113,6 @@ const defaultSettings: ReaderSettings = {
   theme: "system",
   fontScale: "default",
   hudMode: "full",
-  layoutMode: "book",
   layout: "book",
   muted: false,
   reduceMotion: false,
@@ -184,7 +181,10 @@ function readSettings(): ReaderSettings {
       theme: isTheme(parsed.theme) ? parsed.theme : defaultSettings.theme,
       fontScale: parsed.fontScale === "compact" || parsed.fontScale === "large" ? parsed.fontScale : "default",
       hudMode: parsed.hudMode === "quiet" || parsed.hudMode === "hidden" ? parsed.hudMode : "full",
-      layoutMode: parsed.layoutMode === "focus" ? "focus" : "book",
+      // NOTE: `layoutMode` ("Chrome: Book/Focus") is RETIRED (reader-chrome-
+      // declutter P2/RC11 — it was consumed by nothing). Old persisted blobs
+      // may still carry the key; the tolerant field-by-field parse simply drops
+      // it (we never spread `parsed`), so legacy settings still load cleanly.
       layout: isLayoutVariant(parsed.layout) ? parsed.layout : defaultSettings.layout,
       muted: parsed.muted === true,
       reduceMotion: parsed.reduceMotion === true,

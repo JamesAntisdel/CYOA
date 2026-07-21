@@ -58,6 +58,15 @@ export default function IndexRoute() {
   // (linear "turn the page" reading). Chosen at create (posture A); the server
   // re-gates on entitlement (dev-force-unlocked locally). Default: branching.
   const [novelMode, setNovelMode] = useState(false);
+  // R6.1 — the explanatory caption under the starter header appears only once
+  // the reader CHANGES the reading-mode selection (it starts hidden so the
+  // cover leads with one clean row). `chooseReadingMode` is the single entry
+  // point for both segments so the reveal can't drift from the state update.
+  const [modeCaptionVisible, setModeCaptionVisible] = useState(false);
+  const chooseReadingMode = (novel: boolean) => {
+    setNovelMode(novel);
+    setModeCaptionVisible(true);
+  };
 
   const handleAgeSubmit = (selection: AgeSelection) => {
     void guest.createGuestSession(selection);
@@ -285,21 +294,18 @@ export default function IndexRoute() {
         Continue reading →
       </Text>
       {librarianRank ? (
-        <View
+        // R6.2 — the rank CHIP lives on the profile only; the home continue-
+        // lead keeps just the progress line (no duplicate rank chip). The a11y
+        // label still announces the rank name so the surface stays legible to
+        // screen readers.
+        <Text
+          muted
           accessibilityLabel={`Librarian rank: ${librarianRankChipLabel(librarianRank)}. ${librarianRankProgressLine(librarianRank)}.`}
-          style={{
-            alignItems: "center",
-            flexDirection: "row",
-            flexWrap: "wrap",
-            gap: tokens.spacing.sm,
-            marginTop: tokens.spacing.xs,
-          }}
+          style={{ marginTop: tokens.spacing.xs }}
+          variant="caption"
         >
-          <Chip variant="accent">{`▣ ${librarianRankChipLabel(librarianRank)}`}</Chip>
-          <Text muted variant="caption">
-            {librarianRankProgressLine(librarianRank)}
-          </Text>
-        </View>
+          {librarianRankProgressLine(librarianRank)}
+        </Text>
       ) : null}
     </Pressable>
   ) : null;
@@ -335,52 +341,74 @@ export default function IndexRoute() {
           style={{
             alignItems: "center",
             flexDirection: "row",
+            // Wrap so the segmented control drops to the next line rather than
+            // clipping "See all" on a narrow phone header.
+            flexWrap: "wrap",
+            gap: tokens.spacing.sm,
             justifyContent: "space-between",
           }}
         >
           <Text style={{ fontWeight: "800" }} variant="subtitle">
             Starter adventures
           </Text>
-          <Pressable accessibilityRole="button" onPress={() => router.push("/library")}>
-            <Text tone="accent" style={{ fontWeight: "800" }} variant="bodySmall">
-              See all
-            </Text>
-          </Pressable>
-        </View>
-        <View style={{ gap: tokens.spacing.xs }}>
+          {/* R6.1 — reading-mode toggle as a compact segmented control, right-
+              aligned opposite "See all". Selected segment = filled (accent)
+              Chip styling; no check-mark glyph (R5.3). */}
           <View style={{ alignItems: "center", flexDirection: "row", gap: tokens.spacing.sm }}>
-            <Text muted style={{ fontWeight: "800" }} variant="bodySmall">
-              Reading mode
-            </Text>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Branching reading mode: you choose the path"
-              accessibilityState={{ selected: !novelMode }}
-              onPress={() => setNovelMode(false)}
-              style={{ opacity: novelMode ? 0.55 : 1 }}
+            <View
+              accessibilityRole="radiogroup"
+              accessibilityLabel="Reading mode"
+              style={{
+                borderColor: tokens.colors.border,
+                borderRadius: tokens.radii.pill,
+                borderWidth: tokens.borderWidths.hairline,
+                flexDirection: "row",
+                overflow: "hidden",
+              }}
             >
-              <Chip variant={novelMode ? "muted" : "accent"}>
-                {novelMode ? "Branching" : "✓ Branching"}
-              </Chip>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Novel reading mode: one linear story, just turn the page"
-              accessibilityState={{ selected: novelMode }}
-              onPress={() => setNovelMode(true)}
-              style={{ opacity: novelMode ? 1 : 0.55 }}
-            >
-              <Chip variant={novelMode ? "accent" : "muted"}>
-                {novelMode ? "✓ Novel" : "Novel"}
-              </Chip>
+              <Pressable
+                accessibilityRole="radio"
+                accessibilityLabel="Branching reading mode: you choose the path"
+                accessibilityState={{ selected: !novelMode }}
+                onPress={() => chooseReadingMode(false)}
+                style={{
+                  alignItems: "center",
+                  justifyContent: "center",
+                  minHeight: 44,
+                }}
+              >
+                <Chip variant={novelMode ? "muted" : "accent"}>Branching</Chip>
+              </Pressable>
+              <Pressable
+                accessibilityRole="radio"
+                accessibilityLabel="Novel reading mode: one linear story, just turn the page"
+                accessibilityState={{ selected: novelMode }}
+                onPress={() => chooseReadingMode(true)}
+                style={{
+                  alignItems: "center",
+                  justifyContent: "center",
+                  minHeight: 44,
+                }}
+              >
+                <Chip variant={novelMode ? "accent" : "muted"}>Novel</Chip>
+              </Pressable>
+            </View>
+            <Pressable accessibilityRole="button" onPress={() => router.push("/library")}>
+              <Text tone="accent" style={{ fontWeight: "800" }} variant="bodySmall">
+                See all
+              </Text>
             </Pressable>
           </View>
+        </View>
+        {/* R6.1 — the explanatory caption shows only after the reader changes
+            the selection (starts hidden). */}
+        {modeCaptionVisible ? (
           <Text muted variant="caption">
             {novelMode
               ? "Novel: one continuous story — no choices, just turn the page. Applies to the tale you start next."
               : "Branching: you pick the path at every scene. Tap Novel for a linear read instead."}
           </Text>
-        </View>
+        ) : null}
         <View style={{ gap: tokens.spacing.sm }}>
           {library.starterStories.slice(0, 3).map((story: StorySummary) => (
             <Pressable

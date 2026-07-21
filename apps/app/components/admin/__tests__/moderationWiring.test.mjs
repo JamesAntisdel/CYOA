@@ -58,8 +58,14 @@ test("the report affordance is wired onto tale + community-shelf card + reader",
   // Published-tale read-along.
   assert.match(taleRouteSrc, /<ReportButton/);
   assert.match(taleRouteSrc, /targetType="tale"/);
-  // AI-generated reader scene flag.
-  assert.match(readerSrc, /<AiSceneFlag/);
+  // AI-generated reader scene flag. reader-chrome-declutter Wave 1 moved the
+  // per-scene flag OUT of the ReaderSaveActions pill row and into the Tome
+  // menu's "Flag this scene" row (U3/R2.5): it now drives the controlled
+  // (trigger-hidden) ReportButton with targetType="scene". The persistent
+  // AI-generated disclosure stays a visible footer caption.
+  assert.match(readerSrc, /<ReportButton/);
+  assert.match(readerSrc, /targetType="scene"/);
+  assert.match(readerSrc, /AI-generated tale/);
 });
 
 test("the age gate + publish flow surface the legal links", () => {

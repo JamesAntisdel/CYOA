@@ -70,32 +70,44 @@ test("chapter interstitial auto-acknowledges via acknowledgeChapter (R1.8, OQ8 d
   );
 });
 
-test("the one-tap auto toggle is reachable on ANY page-state (R1.5)", () => {
-  // The pill lives in the ReaderSaveActions row, which renders ABOVE the
-  // chapterBoundary / Layout branch — so it shows on live, chapter, ending, and
-  // streaming states alike.
+test("the auto toggle is reachable on ANY page-state — Tome row + top-bar pause (R1.5)", () => {
+  // reader-chrome-declutter Wave 1 moved the AFFORDANCE (RC4 — only the
+  // affordance, the hook is untouched). Auto is now reachable two ways, both
+  // rendered OUTSIDE the chapter/ending/layout branch so they show on live,
+  // chapter, ending, and streaming states alike:
+  //   1. the Tome menu's "Auto-read" toggle row (buildTomeRows, selected=autoOn)
+  //   2. the top-bar Auto indicator that PAUSES auto on tap (only when ON)
+  //
+  // (1) The Tome Auto-read row rides the SAME toggleAuto and reflects autoOn.
   assert.ok(
-    /accessibilityLabel="Auto-narrator"/.test(readerScreenSource),
-    "an 'Auto-narrator' toggle pill must render",
+    /onToggleAuto:\s*toggleAuto/.test(readerScreenSource),
+    "the Tome Auto-read row must reuse the hook's toggleAuto (RC4 — affordance only moves)",
   );
   assert.ok(
-    /accessibilityState=\{\{\s*selected:\s*autoOn\s*\}\}/.test(readerScreenSource),
-    "the toggle must expose its ON/OFF state to assistive tech",
+    /buildTomeRows\(\{\s*[\s\S]*?\bautoOn\b/.test(readerScreenSource),
+    "buildTomeRows must receive the live autoOn flag so the Auto-read row shows on/off",
   );
-  const actionsIdx = readerScreenSource.indexOf("<ReaderSaveActions");
-  const boundaryIdx = readerScreenSource.indexOf("{chapterBoundary ? (");
-  const layoutIdx = readerScreenSource.indexOf("<Layout");
-  assert.ok(actionsIdx > 0, "ReaderSaveActions must render");
   assert.ok(
-    actionsIdx < boundaryIdx && actionsIdx < layoutIdx,
-    "the toggle row must render before the chapter/ending/layout branch so it is reachable on any page",
+    /hasEnding:\s*Boolean\(projection\.ending\)/.test(readerScreenSource),
+    "buildTomeRows' hasEnding must mirror the useAutoNarrator halt guard so the Auto row hides at a terminal scene",
   );
-  // The row receives the live flag + toggle from the hook.
+  // (2) The top-bar Auto indicator pauses via the SAME toggleAuto, present only
+  // when autoOn (zero layout shift when OFF — R1.2).
   assert.ok(
-    /<ReaderSaveActions\s+saveId=\{saveId\}\s+autoOn=\{autoOn\}\s+onToggleAuto=\{toggleAuto\}/.test(
+    /\{\.\.\.\(autoOn\s*\?\s*\{\s*auto:\s*\{\s*on:\s*true as const,\s*onPause:\s*toggleAuto\s*\}\s*\}\s*:\s*\{\}\)\}/.test(
       readerScreenSource,
     ),
-    "ReaderSaveActions must receive autoOn + onToggleAuto from the hook",
+    "the ReaderTopBar Auto indicator must pause via toggleAuto, conditional on autoOn",
+  );
+  // Both affordances render OUTSIDE (before/around) the chapter/ending branch.
+  const topBarIdx = readerScreenSource.indexOf("<ReaderTopBar");
+  const tomeIdx = readerScreenSource.indexOf("<TomeSheet");
+  const boundaryIdx = readerScreenSource.indexOf("{chapterBoundary ? (");
+  const layoutIdx = readerScreenSource.indexOf("<Layout");
+  assert.ok(topBarIdx > 0 && tomeIdx > 0, "ReaderTopBar and TomeSheet must render");
+  assert.ok(
+    topBarIdx < boundaryIdx && topBarIdx < layoutIdx,
+    "the top bar (pause affordance) must render before the chapter/ending/layout branch so it is reachable on any page",
   );
 });
 

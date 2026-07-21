@@ -59,7 +59,7 @@ export default function ProfileRoute() {
               accessibilityLabel={`Librarian rank: ${librarianRankChipLabel(librarianRank)}. ${librarianRankProgressLine(librarianRank)}.`}
               style={{ alignItems: "center", flexDirection: "row", flexWrap: "wrap", gap: tokens.spacing.sm }}
             >
-              <Chip variant="accent">{`▣ ${librarianRankChipLabel(librarianRank)}`}</Chip>
+              <Chip variant="accent">{librarianRankChipLabel(librarianRank)}</Chip>
               <Text muted variant="caption">
                 {librarianRankProgressLine(librarianRank)}
               </Text>

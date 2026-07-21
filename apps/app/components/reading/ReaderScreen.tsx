@@ -1,11 +1,9 @@
 import { useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Pressable, ScrollView, View } from "react-native";
+import { Platform, ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { AppNav } from "../navigation";
-import { AiSceneFlag } from "../moderation";
-import { DailyPulseChip } from "../daily";
+import { ReportButton } from "../moderation";
 import { Text } from "../primitives";
 import { useAccountProfile } from "../../hooks/useAccountProfile";
 import { useLibrary } from "../../hooks/useLibrary";
@@ -27,11 +25,12 @@ import { PATRON_TIERS_BY_ID, resolvePatronTier } from "../../lib/billingConfig";
 import { useBreakpoint } from "../../lib/responsive";
 import { useAppTheme } from "../../theme";
 import { ChapterEnd } from "./ChapterEnd";
-import { DoorsJournal } from "./DoorsJournal";
-import { QuestLine } from "./QuestLine";
-import { ThreadsPill } from "./ThreadsPill";
-import { CandleBurnMeter, CandleGutterInterstitial } from "./CandleGutter";
+import { CandleGutterInterstitial } from "./CandleGutter";
 import { SoftSignupRibbon } from "./SoftSignupRibbon";
+import { PAGE_COLUMN_MAX, ReaderTopBar } from "./chrome/ReaderTopBar";
+import { StoryRibbon } from "./chrome/StoryRibbon";
+import { TomeSheet } from "./chrome/TomeSheet";
+import { buildTomeRows } from "./chrome/tomeRows";
 import {
   hasDismissedSoftSignup,
   markSoftSignupDismissed,
@@ -588,72 +587,136 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
     [setAutoOn, submitChoice],
   );
 
+  // Reader-chrome-declutter Wave 1 (R1/R2/R3) — the consolidated chrome.
+  //   - the Tome menu (bottom sheet <768 / anchored popover ≥768) holds every
+  //     auxiliary action; opened from the top-bar `book` trigger.
+  //   - the in-reader ReaderSettingsDrawer is now opened from the Tome's
+  //     "Reading settings" row (its open state lifted here from the old
+  //     ReaderSaveActions row).
+  //   - the per-scene report picker (moderation/ReportButton) is driven from
+  //     the Tome's "Flag this scene" row — the disclosure text stays a footer
+  //     caption (U3/R2.5), only the flag ACTION moved into the sheet.
+  const [tomeOpen, setTomeOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [flagOpen, setFlagOpen] = useState(false);
+  // Reader-chrome-declutter 3.4 (RB-COUNTS) — synchronous sources for the
+  // COLLAPSED StoryRibbon's doors + daily-pulse segments. DoorsJournal /
+  // DailyPulseChip self-fetch (RC2 forbids re-deriving their predicates or
+  // adding a query), so headless reporter mounts below surface their result
+  // upward into this state; the ribbon then shows "· 3 doors · 62%" (§3 mock).
+  const [ribbonDoorsCount, setRibbonDoorsCount] = useState<number | undefined>(undefined);
+  const [ribbonPulseLine, setRibbonPulseLine] = useState<string | undefined>(undefined);
+
+  // Read-as-book is wired unconditionally onto the ending panel below
+  // (`onReadAsBook`), so its availability predicate is "always" — the Tome row
+  // mirrors that same gate (buildTomeRows omits the row only when false).
+  const readAsBookAvailable = true;
+  // The Flag row + Leave-the-tale row render below a divider in muted type
+  // (design §3 mock). buildTomeRows emits them without `quiet`; we mark them
+  // here at the wiring seam so the sheet renders the divider treatment.
+  const tomeRows = buildTomeRows({
+    autoOn,
+    hasEnding: Boolean(projection.ending),
+    readAsBookAvailable,
+    onToggleAuto: toggleAuto,
+    onPathMap: () => router.push(`/map/${saveId}`),
+    onRunHistory: () => router.push(`/read/${saveId}/history`),
+    onReadAsBook: () => router.push(`/read/${saveId}/book`),
+    // Modal-over-modal handoff (code-review fix): a Tome row press closes the
+    // sheet's Modal in the same commit that these open the follow-on Modal
+    // (drawer / report picker). On iOS, presenting while another modal is
+    // mid-dismiss silently drops the incoming one — so on native we let the
+    // sheet's dismiss animation finish first. Web mounts both fine.
+    onReadingSettings: () =>
+      Platform.OS === "web" ? setDrawerOpen(true) : setTimeout(() => setDrawerOpen(true), 380),
+    onFlagScene: () =>
+      Platform.OS === "web" ? setFlagOpen(true) : setTimeout(() => setFlagOpen(true), 380),
+    onLeave: () => router.push("/"),
+  }).map((row) =>
+    row.key === "flag" || row.key === "leave" ? { ...row, quiet: true } : row,
+  );
+
+  // Persistent AI-disclosure footer (U3 / R2.5). Scenes are LLM-authored on
+  // remote saves (`supportsFreeform` is exactly the "remote LLM-driven" gate);
+  // scripted/tutorial saves are not AI-generated, so the caption self-hides
+  // there. Rendered as a quiet page-footer caption beneath the scene block on
+  // every live generated scene — the flag ACTION lives in the Tome (above).
+  const showDisclosureFooter = supportsFreeform && !isTerminalView;
+
   return (
     <SafeAreaView style={{ backgroundColor: tokens.colors.background, flex: 1 }}>
       <ScrollView
         contentContainerStyle={{
           alignItems: "center",
-          // On phone viewports we trim the outer ScrollView gap so the
-          // prose surface gets more vertical real estate before the user
-          // has to scroll. Padding stays at lg (16px) so the inner
-          // content still has comfortable gutters against the rounded
-          // page corners.
-          gap: isPhone ? tokens.spacing.md : tokens.spacing.lg,
           padding: isPhone ? tokens.spacing.md : tokens.spacing.lg,
           width: "100%",
         }}
       >
-        <View style={{ alignSelf: "stretch" }}>
-          <AppNav />
-        </View>
-
-        {/* Story-engagement Wave 1 — the pursuit strip + threads pill live
-            here in ReaderScreen (not per-layout) so all five layouts inherit
-            them for free. Both self-hide on legacy / arc-less saves. */}
-        <View style={{ alignSelf: "stretch", gap: tokens.spacing.xs }}>
-          <QuestLine arc={projection.arc} reducedMotion={reduceMotion || settings.reduceMotion} />
-          {projection.arc ? (
-            <ThreadsPill
-              threadsPending={projection.arc.threadsPending}
-              sceneId={projection.scene.id}
-              {...(projection.recentDiffs ? { recentDiffs: projection.recentDiffs } : {})}
-            />
-          ) : null}
-          {/* Daily Killcam (daily-killcam R3.1) — the mid-run pulse chip, beside
-              ThreadsPill. Gated on `projection.dailyId` (the reader tapped the
-              Daily card — spoiler-neutral, BC10); self-hides with zero layout
-              shift on non-daily saves, an empty pulse, or an uncommitted turn.
-              NOTE: `projection.dailyId` is threaded onto ReaderProjection by the
-              integrator's useTurn.ts widening (RemoteScene.dailyId → projection);
-              the local read stays type-safe until then and simply reads
-              undefined, keeping the chip dark. */}
-          {dailyPulseId ? (
-            <DailyPulseChip
-              dailyId={dailyPulseId}
-              completedTurn={turnNumber}
-              {...(remoteAuth ? { auth: remoteAuth } : {})}
-            />
-          ) : null}
-          {/* DOORS-JOURNAL — the teased-doors pill (story-bible fetch-quest
-              loop, reader half). Self-fetching + zero-state invisible, so
-              legacy / bible-less / local saves render nothing here. */}
-          <DoorsJournal
-            saveId={saveId}
-            sceneId={projection.scene.id}
-            {...(remoteAuth ? { auth: remoteAuth } : {})}
+        {/* Reader-chrome-declutter R7.1/RC9 — ALL ReaderScreen-owned chrome
+            renders inside ONE centered page column (PAGE_COLUMN_MAX = 760),
+            never stretched against the raw viewport. On phone we trim the row
+            gap so prose reaches the top faster; padding gutters stay on the
+            ScrollView. Layouts self-cap smaller within this column. */}
+        <View
+          style={{
+            gap: isPhone ? tokens.spacing.md : tokens.spacing.lg,
+            maxWidth: PAGE_COLUMN_MAX,
+            width: "100%",
+          }}
+        >
+          {/* R1 — the slim top bar replaces the global AppNav mount: exit/brand
+              candle → home, ellipsized mono title, the inline candle wick (only
+              under today's showCandleMeter rule — RC2), a compact Auto indicator
+              (only when auto is ON — R1.2), and the `book` + "Tome" trigger. */}
+          <ReaderTopBar
+            storyTitle={projection.storyTitle}
+            onExit={() => router.push("/")}
+            onOpenTome={() => setTomeOpen(true)}
+            {...(showCandleMeter && dailyTurnState
+              ? {
+                  wick: {
+                    turnsUsed: dailyTurnState.turnsUsed,
+                    turnsAllowed: dailyTurnState.turnsAllowed,
+                  },
+                }
+              : {})}
+            {...(autoOn ? { auto: { on: true as const, onPause: toggleAuto } } : {})}
           />
-          {/* Panel-2 Wave 2 — the day's candle meter. Appears only once the
-              reader has burned >= 50% of today's turns (Principle 7: no
-              surprise cap) and self-hides for unlimited tiers / local saves. */}
-          {showCandleMeter && dailyTurnState ? (
-            <CandleBurnMeter
-              turnsUsed={dailyTurnState.turnsUsed}
-              turnsAllowed={dailyTurnState.turnsAllowed}
-            />
-          ) : null}
-        </View>
 
-        <ReaderSaveActions saveId={saveId} autoOn={autoOn} onToggleAuto={toggleAuto} />
+          {/* R3 — the StoryRibbon replaces the four stacked strips
+              (QuestLine / ThreadsPill / DailyPulseChip / DoorsJournal): it
+              self-composes them in its detail sheet (their toasts still fire
+              while collapsed — R3.3) and renders a single quiet line that LEADS
+              with the pursuit phrase (U1), then counts. The candle rides in
+              under today's showCandleMeter rule (≥50%); the ribbon itself adds
+              the leading book-voice segment only at ≥80% (two-stage — U4). All
+              signals absent ⇒ it renders nothing (RC2). */}
+          <StoryRibbon
+            sceneId={projection.scene.id}
+            saveId={saveId}
+            completedTurn={turnNumber}
+            reducedMotion={reduceMotion || settings.reduceMotion}
+            onOpenPatronage={() => router.push("/paywall?reason=daily_limit")}
+            {...(projection.arc ? { arc: projection.arc } : {})}
+            {...(remoteAuth ? { auth: remoteAuth } : {})}
+            {...(projection.recentDiffs ? { recentDiffs: projection.recentDiffs } : {})}
+            {...(dailyPulseId ? { dailyId: dailyPulseId } : {})}
+            {...(ribbonDoorsCount !== undefined ? { doorsCount: ribbonDoorsCount } : {})}
+            {...(ribbonPulseLine !== undefined ? { pulseLine: ribbonPulseLine } : {})}
+            // RB-COUNTS (code-review fix): the ribbon's OWN detail mounts report
+            // their count/pulse upward — one fetch per surface serves both the
+            // detail and the collapsed segments (no headless twins, RC2).
+            onDoorsCount={setRibbonDoorsCount}
+            onPulseLine={setRibbonPulseLine}
+            {...(showCandleMeter && dailyTurnState
+              ? {
+                  candle: {
+                    turnsUsed: dailyTurnState.turnsUsed,
+                    turnsAllowed: dailyTurnState.turnsAllowed,
+                  },
+                }
+              : {})}
+          />
 
         {/* Panel-2 Wave 2 — the candle-gutter interstitial. The daily cap as a
             narrative event, not an error string (Principle 8). Rendered ABOVE
@@ -806,143 +869,49 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
             onRetryCurrentTurn={retryCurrentTurn}
           />
         )}
+
+          {/* Persistent AI-disclosure footer (U3 / R2.5). A quiet plain-text
+              caption (NO glyph — RC5) beneath the scene block on every live
+              generated scene. The flag ACTION lives in the Tome; this is the
+              always-visible disclosure the GenAI policy requires. */}
+          {showDisclosureFooter ? (
+            <Text
+              accessibilityLabel="This tale is AI-generated"
+              muted
+              style={{ alignSelf: "center", paddingVertical: tokens.spacing.xs }}
+              variant="caption"
+            >
+              AI-generated tale
+            </Text>
+          ) : null}
+        </View>
       </ScrollView>
-    </SafeAreaView>
-  );
-}
 
-/**
- * Save-scoped chrome row: gives the reader an obvious entry into the
- * Path map (/map/[saveId]) and the Run history (/read/[saveId]/history)
- * surfaces. The global AppNav above only exposes top-level routes; these
- * two pages live under a specific save, so they belong here in the
- * reader's per-save chrome — not in AppNav, not buried in a settings
- * menu.
- *
- * Rendered as small ghost pills so they read as auxiliary chrome and
- * don't compete with the primary turn affordances (choices, narrator).
- * Both pills share an identical style block (`saveActionPillStyle`)
- * and a shared min-width so they look like SIBLINGS — the previous
- * version had two near-but-not-identical inline blocks that drifted on
- * close inspection. The visible label and accessibilityLabel match
- * 1-to-1 ("Path map" / "Run history") so screen-reader output mirrors
- * what sighted users see. Each pill carries an accessibilityLabel that
- * the test in `__tests__/readerSaveActions.test.mjs` drift-guards so
- * we don't lose the entry point in a future refactor.
- */
-function ReaderSaveActions({
-  saveId,
-  autoOn,
-  onToggleAuto,
-}: {
-  saveId: string;
-  /** Auto-narrator session flag (R1.5) — drives the toggle pill's label + a11y state. */
-  autoOn: boolean;
-  /** Flip auto-narrator ON/OFF — the one-tap "grab the wheel" affordance (R1.5). */
-  onToggleAuto: () => void;
-}) {
-  const router = useRouter();
-  const { tokens } = useAppTheme();
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  if (!saveId) return null;
-
-  // Single style factory so both pills land identically. Padding,
-  // border width, and border style are constants — only `pressed`
-  // tweaks opacity. This is the same discipline AppNav follows: no
-  // per-state reflow.
-  //
-  // We deliberately do NOT pin a `minWidth` here: the two labels
-  // ("Path map" / "Run history") are short and naturally similar in
-  // width, and dropping the floor lets the row fit beside its sibling
-  // pills on a 375 px iPhone viewport without overflowing. `minHeight`
-  // is held at 44 px so the touch target meets Apple HIG even when
-  // the row wraps onto its own line on phones.
-  const pillStyle = ({ pressed }: { pressed: boolean }) => ({
-    alignItems: "center" as const,
-    borderColor: tokens.colors.borderMuted,
-    borderRadius: tokens.radii.pill,
-    borderStyle: "dashed" as const,
-    borderWidth: tokens.borderWidths.hairline,
-    justifyContent: "center" as const,
-    minHeight: 44,
-    opacity: pressed ? 0.75 : 1,
-    paddingHorizontal: tokens.spacing.md,
-    paddingVertical: tokens.spacing.sm,
-  });
-  const labelStyle = {
-    color: tokens.colors.textMuted,
-    fontWeight: "800" as const,
-    textAlign: "center" as const,
-  };
-
-  return (
-    <View
-      accessibilityLabel="Save actions"
-      style={{
-        alignItems: "center",
-        alignSelf: "stretch",
-        flexDirection: "row",
-        flexWrap: "wrap",
-        gap: tokens.spacing.xs,
-        justifyContent: "flex-end",
-      }}
-    >
-      {/* AI-generated disclosure + per-scene report flag (Play GenAI + UGC
-          policy). Left-aligned via marginRight:auto so it leads the chrome row. */}
-      <View style={{ marginRight: "auto" }}>
-        <AiSceneFlag saveId={saveId} />
-      </View>
-      {/* Auto-narrator toggle (R1.5) — one tap to hand the book the wheel or take
-          it back, reachable on ANY page-state because this row renders above the
-          chapter / ending / streaming branches. Session state only (R1.6); the
-          label + accessibilityState reflect the live flag so screen readers hear
-          the toggle's state. Drift-guarded by autoNarratorReader.test.mjs. */}
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Auto-narrator"
-        accessibilityState={{ selected: autoOn }}
-        onPress={onToggleAuto}
-        style={pillStyle}
-      >
-        <Text style={labelStyle} variant="bodySmall">
-          {autoOn ? "⏸ Auto" : "▶ Auto"}
-        </Text>
-      </Pressable>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Reader settings"
-        accessibilityState={{ expanded: settingsOpen }}
-        onPress={() => setSettingsOpen(true)}
-        style={pillStyle}
-      >
-        <Text style={labelStyle} variant="bodySmall">
-          ⚙ Reading
-        </Text>
-      </Pressable>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Path map"
-        onPress={() => router.push(`/map/${saveId}`)}
-        style={pillStyle}
-      >
-        <Text style={labelStyle} variant="bodySmall">
-          Path map
-        </Text>
-      </Pressable>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Run history"
-        onPress={() => router.push(`/read/${saveId}/history`)}
-        style={pillStyle}
-      >
-        <Text style={labelStyle} variant="bodySmall">
-          Run history
-        </Text>
-      </Pressable>
-      <ReaderSettingsDrawer
-        onClose={() => setSettingsOpen(false)}
-        visible={settingsOpen}
+      {/* R2 — the Tome menu (bottom sheet <768 / anchored popover ≥768). Rows
+          come from the pure buildTomeRows; nav rows auto-close the sheet, the
+          Auto-read toggle keeps it open. */}
+      <TomeSheet
+        open={tomeOpen}
+        onClose={() => setTomeOpen(false)}
+        rows={tomeRows}
+        reducedMotion={reduceMotion || settings.reduceMotion}
       />
-    </View>
+
+      {/* The in-reader settings drawer, opened from the Tome's "Reading
+          settings" row (state lifted here from the removed ReaderSaveActions). */}
+      <ReaderSettingsDrawer onClose={() => setDrawerOpen(false)} visible={drawerOpen} />
+
+      {/* The per-scene report picker, driven from the Tome's "Flag this scene"
+          row — the same moderation ReportButton action, trigger hidden (U3:
+          only the flag ACTION moved into the menu). */}
+      <ReportButton
+        hideTrigger
+        onOpenChange={setFlagOpen}
+        open={flagOpen}
+        targetId={saveId}
+        targetLabel="this AI-generated scene"
+        targetType="scene"
+      />
+    </SafeAreaView>
   );
 }
