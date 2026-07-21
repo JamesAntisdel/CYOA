@@ -1,0 +1,22 @@
+{
+  "filePath": ".spec-workflow/specs/open-book/tasks.md",
+  "currentVersion": 2,
+  "snapshots": [
+    {
+      "version": 1,
+      "filename": "snapshot-001.json",
+      "timestamp": "2026-07-21T19:36:18.800Z",
+      "trigger": "initial",
+      "approvalId": "approval_1784662578783_rqsqwtl20",
+      "approvalTitle": "The Open Book — Tasks (2 waves: spread shell/atoms → marginalia/spread/dispatch)"
+    },
+    {
+      "version": 2,
+      "filename": "snapshot-002.json",
+      "timestamp": "2026-07-21T19:48:53.603Z",
+      "trigger": "approved",
+      "approvalId": "approval_1784662578783_rqsqwtl20",
+      "approvalTitle": "The Open Book — Tasks (2 waves: spread shell/atoms → marginalia/spread/dispatch)"
+    }
+  ]
+}

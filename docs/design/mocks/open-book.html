@@ -1,0 +1,149 @@
+<title>The Open Book — Desktop Spread Mock</title>
+<style>
+  :root {
+    --shell-bg: #efe9dc; --shell-ink: #1c1914; --shell-muted: #55503f;
+    --shell-rule: rgba(28,25,20,.22); --key-bg: #1c1914; --key-ink: #efe9dc;
+  }
+  @media (prefers-color-scheme: dark){:root{--shell-bg:#171410;--shell-ink:#e8e1d0;--shell-muted:#a89f88;--shell-rule:rgba(232,225,208,.2);--key-bg:#e8e1d0;--key-ink:#171410;}}
+  :root[data-theme="dark"]{--shell-bg:#171410;--shell-ink:#e8e1d0;--shell-muted:#a89f88;--shell-rule:rgba(232,225,208,.2);--key-bg:#e8e1d0;--key-ink:#171410;}
+  :root[data-theme="light"]{--shell-bg:#efe9dc;--shell-ink:#1c1914;--shell-muted:#55503f;--shell-rule:rgba(28,25,20,.22);--key-bg:#1c1914;--key-ink:#efe9dc;}
+  /* app Night tokens for the reader frame */
+  .night{--bg:#14110b;--surface:#1d1812;--surface-muted:#403727;--ink:#ece4d2;--ink-muted:#b2a88f;--ink-faint:rgba(236,228,210,.55);--border-muted:rgba(236,228,210,.24);--accent:#d8b158;}
+
+  body{margin:0;}
+  .wrap{background:var(--shell-bg);color:var(--shell-ink);font:16px/1.55 Iowan Old Style,Palatino Linotype,Palatino,Georgia,serif;padding:44px 20px 88px;}
+  .inner{max-width:1140px;margin:0 auto;display:flex;flex-direction:column;gap:48px;}
+  .eyebrow,.lbl{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--shell-muted);}
+  h1{font-size:clamp(26px,4vw,38px);margin:.3em 0 .2em;font-weight:650;text-wrap:balance;}
+  p.lede{max-width:62ch;color:var(--shell-muted);margin:0;}
+  p.lede strong{color:var(--shell-ink);font-weight:650;}
+  section{display:flex;flex-direction:column;gap:16px;}
+  section>h2{font-size:20px;margin:0;font-weight:650;border-top:1px solid var(--shell-rule);padding-top:20px;}
+  section>.note{max-width:70ch;color:var(--shell-muted);font-size:15px;margin:0;}
+  .key{display:inline-block;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:10px;letter-spacing:.06em;background:var(--key-bg);color:var(--key-ink);border-radius:3px;padding:1px 5px 2px;vertical-align:1px;}
+
+  .topbar-strip{max-width:760px;margin:0 auto;border-bottom:1px solid var(--border-muted);padding:6px 4px;display:flex;align-items:center;gap:9px;font-family:ui-monospace,monospace;font-size:11px;letter-spacing:.1em;color:var(--ink-muted);}
+
+  /* the desk + spread */
+  .desk{background:var(--bg);border-radius:14px;border:1px solid var(--shell-rule);padding:18px;box-shadow:0 18px 40px -24px rgba(0,0,0,.5);overflow-x:auto;}
+  .spread{display:grid;grid-template-columns:1fr 1px 1fr;gap:0;max-width:1180px;margin:0 auto;color:var(--ink);font:15px/1.62 Iowan Old Style,Palatino Linotype,Georgia,serif;}
+  .page{background:var(--surface);padding:20px 22px;min-height:340px;}
+  .verso{border-radius:10px 0 0 10px;display:flex;flex-direction:column;gap:14px;}
+  .recto{border-radius:0 10px 10px 0;display:flex;flex-direction:column;}
+  .spine{background:linear-gradient(90deg,rgba(0,0,0,.28),rgba(0,0,0,.05),rgba(0,0,0,.28));}
+
+  .plate{background:linear-gradient(160deg,var(--surface-muted),var(--surface) 72%);border:1px solid var(--border-muted);border-radius:8px;min-height:180px;display:flex;align-items:flex-end;padding:10px;color:var(--ink-faint);font-size:11px;}
+  .margin{display:flex;flex-direction:column;gap:5px;border-top:1px solid var(--border-muted);padding-top:12px;font-size:12.5px;color:var(--ink-muted);}
+  .margin .pursuit{font-style:italic;color:var(--ink);}
+  .margin .row{display:flex;gap:8px;align-items:center;}
+  .margin .dim{color:var(--ink-faint);}
+  .margin .art{font-family:ui-monospace,monospace;letter-spacing:1px;color:var(--accent);}
+
+  .prose{color:var(--ink);}
+  .prose .dc::first-letter{initial-letter:2;-webkit-initial-letter:2;color:var(--accent);font-weight:600;padding-right:8px;font-size:2.6em;line-height:.8;float:left;margin:4px 8px 0 0;}
+  .footrule{border:0;border-top:1px solid var(--border-muted);margin:16px 0 10px;}
+  .footnotes{display:flex;flex-direction:column;gap:8px;font-size:14px;margin-top:auto;}
+  .fn{display:flex;gap:9px;align-items:baseline;color:var(--ink);}
+  .fn .n{font-family:ui-monospace,monospace;color:var(--accent);font-size:12px;min-width:14px;}
+  .fn.free{color:var(--ink-muted);font-style:italic;}
+  .turnpage{align-self:flex-end;margin-top:auto;border:1px solid var(--accent);color:var(--accent);border-radius:999px;padding:8px 16px;font-family:ui-monospace,monospace;font-size:12px;letter-spacing:.08em;}
+
+  .phone{width:340px;border-radius:20px;border:1px solid var(--shell-rule);overflow:hidden;background:var(--bg);color:var(--ink);font:13px/1.5 Iowan Old Style,Georgia,serif;}
+  .pscreen{padding:11px;display:flex;flex-direction:column;gap:8px;}
+  .pbar{border-bottom:1px solid var(--border-muted);padding-bottom:8px;font-family:ui-monospace,monospace;font-size:10.5px;letter-spacing:.12em;color:var(--ink-muted);display:flex;justify-content:space-between;}
+  .pplate{background:linear-gradient(160deg,var(--surface-muted),var(--surface));border-radius:10px;height:120px;}
+  ul.legend{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;max-width:60ch;font-size:14px;color:var(--shell-muted);}
+  ul.legend b{color:var(--shell-ink);font-weight:650;}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;}}
+</style>
+
+<div class="wrap"><div class="inner">
+  <header>
+    <div class="eyebrow">The Unwritten · spec open-book · 2026-07-21 · phase-2 flagship</div>
+    <h1>The Open Book — desktop two-page spread</h1>
+    <p class="lede">Visual companion to <strong>.spec-workflow/specs/open-book/</strong>.
+    Claims the empty desktop margins the phase-1 declutter reserved (declutter R7.5).
+    A pure enhancement at ≥1024 — one new layout over the unchanged
+    <span class="key">ReaderLayoutProps</span>; phone and tablet are byte-identical.
+    Where mock and requirements disagree, requirements win.</p>
+  </header>
+
+  <section>
+    <h2>Desktop ≥1024 — the spread <span class="key">R2 R3 R4 R5</span></h2>
+    <p class="note">The ReaderTopBar stays in the 760 column (declutter, unchanged);
+    only the layout region widens to the spread (capped ≤1400, centered — <span class="key">OB4</span>).
+    Verso: illustration plate + the marginalia rail (the declutter's own signals, given room — <span class="key">R3 OB5</span>).
+    Recto: drop-cap prose + numbered footnote choices submitting through the unchanged onChoose (<span class="key">R4 R5</span>).</p>
+    <div class="topbar-strip night">(candle) &nbsp;THE DROWNED BELL&nbsp;&nbsp;▮▮▮▯&nbsp;&nbsp;▤ Tome</div>
+    <div class="desk night">
+      <div class="spread">
+        <div class="page verso">
+          <div class="plate">scene illustration — full verso plate</div>
+          <div class="margin">
+            <span class="pursuit">Find the bell before dawn</span>
+            <span class="row"><span class="dim">2 threads · 3 doors</span></span>
+            <span class="row"><span class="dim">62% walked this way</span></span>
+            <span class="row art">♥ ▮▮▮▯</span>
+          </div>
+        </div>
+        <div class="spine"></div>
+        <div class="page recto">
+          <div class="prose dc">The floor beneath my boots is fused marrow, smooth and pale
+          as river stones polished by eons of silence. I take a step, and the sound does not
+          echo; it is swallowed by the porous walls before it can travel. The hum from the iron
+          barrier ahead vibrates through my very marrow, insistent and hungry.</div>
+          <hr class="footrule"/>
+          <div class="footnotes">
+            <div class="fn"><span class="n">1.</span><span>Answer the signal</span></div>
+            <div class="fn"><span class="n">2.</span><span>Row toward the dark</span></div>
+            <div class="fn free"><span class="n">—</span><span>Write your own…</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <ul class="legend">
+      <li><b>Verso margin</b> <span class="key">R3/OB5</span> — the same QuestLine/threads/doors/pulse/stats the declutter ribbon composes, reused as margin notes; no new queries; empty rail ⇒ the illustration takes the page.</li>
+      <li><b>Drop cap</b> <span class="key">R4/OB6</span> — an optional <code>dropCap</code> on the existing ProseRenderer; byte-identical when absent.</li>
+      <li><b>Footnotes</b> <span class="key">R5/OB6</span> — a thin new component over the same ChoiceProjection[]; ChoiceList untouched; locked/free-form/checks preserved.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Novel mode on the spread <span class="key">OB8</span></h2>
+    <p class="note">The recto footnotes collapse to the single "Turn the page" affordance,
+    and committing it drives the page-turn transition (<span class="key">R6</span>) — Novel mode's native home.</p>
+    <div class="desk night">
+      <div class="spread">
+        <div class="page verso"><div class="plate">scene illustration</div><div class="margin"><span class="pursuit">Act II — The Drowned Bell</span></div></div>
+        <div class="spine"></div>
+        <div class="page recto">
+          <div class="prose dc">The chapter closes on the sound of water finding a lower place, and
+          the cold that follows it into the room.</div>
+          <div class="turnpage">Turn the page →</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Below 1024 — single page, UNCHANGED <span class="key">R1.4 R7.2</span></h2>
+    <p class="note">The spread is a wide-desktop enhancement only. A phone (or a reader who
+    explicitly picked another layout) renders exactly today's reader in the 760 column — byte-identical.</p>
+    <div class="phone night"><div class="pscreen">
+      <div class="pbar"><span>(candle) THE DROWNED BELL</span><span>▤ Tome</span></div>
+      <div class="pbar" style="border:0;padding:0"><span style="font-style:italic;color:var(--ink)">Find the bell before dawn · 2 threads</span></div>
+      <div class="pplate"></div>
+      <div style="font-size:12.5px">The floor beneath my boots is fused marrow…</div>
+      <div class="lbl" style="color:var(--ink-faint)">AI-generated tale</div>
+    </div></div>
+  </section>
+
+  <footer>
+    <span class="lbl">Build key</span>
+    <p class="note" style="margin-top:8px">Wave 1: selection (SPREAD_MIN=1024) + drop-cap/footnote atoms.
+    Wave 2: marginalia rail + Spread.tsx + dispatch. The mock uses CSS
+    <code>initial-letter</code> for the drop cap and placeholder glyphs (▤ ▮▮▮▯ ♥) where the app icon
+    font / story-art render <span class="key">OB6/RC5</span>. Nothing here adds a server call or forks
+    the turn pipeline <span class="key">OB1/R7</span>.</p>
+  </footer>
+</div></div>

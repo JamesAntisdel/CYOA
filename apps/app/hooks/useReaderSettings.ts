@@ -42,7 +42,10 @@ export type ReaderLayoutVariant =
   | "graphicNovel"
   | "journal"
   | "mobile"
-  | "illustratedBook";
+  | "illustratedBook"
+  // open-book (OB1/R1.1): the desktop two-page spread. Auto-selected ≥1024
+  // (see ReaderScreen `resolveActiveLayout`); the layout body lands in Wave 2.
+  | "spread";
 
 export const READER_LAYOUT_VARIANTS: readonly ReaderLayoutVariant[] = [
   "book",
@@ -51,6 +54,7 @@ export const READER_LAYOUT_VARIANTS: readonly ReaderLayoutVariant[] = [
   "journal",
   "mobile",
   "illustratedBook",
+  "spread",
 ] as const;
 
 export type ReaderSettings = {

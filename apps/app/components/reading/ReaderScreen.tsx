@@ -7,7 +7,7 @@ import { ReportButton } from "../moderation";
 import { Text } from "../primitives";
 import { useAccountProfile } from "../../hooks/useAccountProfile";
 import { useLibrary } from "../../hooks/useLibrary";
-import { useReaderSettings } from "../../hooks/useReaderSettings";
+import { useReaderSettings, type ReaderLayoutVariant } from "../../hooks/useReaderSettings";
 import { useCandlelightFocus } from "../../hooks/useCandlelightFocus";
 import { guestAuthArgs, useGuestSession } from "../../hooks/useGuestSession";
 import { hasRemoteGameApi, restartRemoteRun } from "../../lib/gameApi";
@@ -23,7 +23,7 @@ import { useStreamingScene } from "../../hooks/useStreamingScene";
 import { useTurn, type ChoiceProjection } from "../../hooks/useTurn";
 import { useAutoNarrator } from "../../hooks/useAutoNarrator";
 import { PATRON_TIERS_BY_ID, resolvePatronTier } from "../../lib/billingConfig";
-import { useBreakpoint } from "../../lib/responsive";
+import { SPREAD_MAX, selectReaderLayout, useBreakpoint } from "../../lib/responsive";
 import { useAppTheme } from "../../theme";
 import { ChapterEnd } from "./ChapterEnd";
 import { CandleGutterInterstitial } from "./CandleGutter";
@@ -75,16 +75,28 @@ const READER_LAYOUT_OVERRIDE_KEY = "cyoa.readerLayoutChosen.v1";
  * picks a layout from the variant picker. When the flag is absent and the
  * viewport is phone-sized, we render Mobile. Desktop and tablet always
  * honor the stored value.
+ *
+ * open-book (OB2/OB3): the SAME auto-override machinery now also selects the
+ * two-page `spread` at a genuinely wide viewport (width ≥ `SPREAD_MIN` 1024,
+ * NOT `isDesktop`'s 768) when the reader has NOT explicitly picked another
+ * layout. Phone→mobile still applies first; an explicit pick always wins.
+ * The pure decision lives in `selectReaderLayout` (lib/responsive) so the
+ * full selection matrix is unit-tested; here we just thread in the viewport
+ * width and read the explicit-override flag. Below 1024 the resolved layout
+ * is byte-identical to today.
  */
 function resolveActiveLayout(
-  storedLayout: keyof typeof READER_LAYOUTS,
-  isPhone: boolean,
-): keyof typeof READER_LAYOUTS {
-  if (!isPhone) return storedLayout;
-  // The user has explicitly picked a layout in /settings — honor it.
-  if (hasExplicitLayoutOverride()) return storedLayout;
-  // Phone, no explicit pick → mobile.
-  return "mobile";
+  storedLayout: ReaderLayoutVariant,
+  { isPhone, width }: { isPhone: boolean; width: number },
+): ReaderLayoutVariant {
+  return selectReaderLayout({
+    storedLayout,
+    isPhone,
+    width,
+    hasExplicitOverride: hasExplicitLayoutOverride(),
+    mobileVariant: "mobile",
+    spreadVariant: "spread",
+  });
 }
 
 function hasExplicitLayoutOverride(): boolean {
@@ -491,18 +503,26 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
   // viewports we render Mobile unless the user has explicitly opted into
   // a different layout via /settings. Desktop/tablet readers always see
   // the stored choice. See `resolveActiveLayout` above for the rationale.
-  const { isPhone } = useBreakpoint();
-  const activeLayout = resolveActiveLayout(settings.layout, isPhone);
+  const { isPhone, width } = useBreakpoint();
+  const activeLayout = resolveActiveLayout(settings.layout, { isPhone, width });
   // Reading-modes Wave 3 (R4.6): novel mode is a CONTENT axis orthogonal to the
   // cosmetic `layout` skin. When the projection carries `readingMode === "novel"`
   // (a reader-known fact from create) the Novel layout takes over — chapter
   // prose ending in one "Turn the page" affordance instead of a choice row —
   // regardless of which of the five cosmetic skins is selected. Absent /
   // "branching" ⇒ the normal skin dispatch, byte-identical to today (R5.3).
+  //
+  // open-book (OB8, design §2): `spread` WINS the dispatch — checked BEFORE the
+  // Novel override — because the Spread reads `readingMode` itself (a Novel save
+  // at spread renders INSIDE Spread, its footnotes collapsing to the page-turn).
+  // So a wide Novel reader gets the two-page book, not the single-column Novel
+  // layout. Below spread, the dispatch is byte-identical to today.
   const Layout =
-    projection.readingMode === "novel"
-      ? NovelLayout
-      : (READER_LAYOUTS[activeLayout] ?? READER_LAYOUTS.book);
+    activeLayout === "spread"
+      ? READER_LAYOUTS.spread
+      : projection.readingMode === "novel"
+        ? NovelLayout
+        : (READER_LAYOUTS[activeLayout] ?? READER_LAYOUTS.book);
 
   // Panel-2 Wave 2 — daily turn budget → in-reader candle surfaces. The turn
   // number rides on the scene projection; a new scene means the reader spent a
@@ -682,7 +702,12 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
         <View
           style={{
             gap: isPhone ? tokens.spacing.md : tokens.spacing.lg,
-            maxWidth: PAGE_COLUMN_MAX,
+            // OB4/R2.2 — the spread is a two-page layout wider than the single
+            // page column: widen this container to SPREAD_MAX for it, so the
+            // Spread layout (which self-caps at SPREAD_MAX and centers) is not
+            // clamped to 760. The chrome + protected interstitials + ChapterEnd
+            // below cap THEMSELVES at PAGE_COLUMN_MAX so only the layout widens.
+            maxWidth: activeLayout === "spread" ? SPREAD_MAX : PAGE_COLUMN_MAX,
             width: "100%",
           }}
         >
@@ -695,7 +720,15 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
               re-creates the column gap the two rows had as direct children. */}
           <Animated.View
             pointerEvents={chromeFaded ? "none" : "auto"}
-            style={{ gap: isPhone ? tokens.spacing.md : tokens.spacing.lg, opacity: chromeOpacity }}
+            style={{
+              gap: isPhone ? tokens.spacing.md : tokens.spacing.lg,
+              opacity: chromeOpacity,
+              // Chrome stays in the 760 column even when the container widens
+              // for a spread (OB4) — centered within it.
+              alignSelf: "center",
+              maxWidth: PAGE_COLUMN_MAX,
+              width: "100%",
+            }}
           >
           {/* R1 — the slim top bar replaces the global AppNav mount: exit/brand
               candle → home, ellipsized mono title, the inline candle wick (only
@@ -723,7 +756,16 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
               with the pursuit phrase (U1), then counts. The candle rides in
               under today's showCandleMeter rule (≥50%); the ribbon itself adds
               the leading book-voice segment only at ≥80% (two-stage — U4). All
-              signals absent ⇒ it renders nothing (RC2). */}
+              signals absent ⇒ it renders nothing (RC2).
+
+              open-book (OB5): at `spread` the verso Marginalia rail is the SINGLE
+              mount of these signals (it always-mounts QuestLine/ThreadsPill/
+              DoorsJournal/DailyPulseChip exactly as this ribbon does), so the
+              chrome ribbon is SUPPRESSED there to avoid doubling their
+              self-fetch/toast effects (RC2). The top bar's candle wick stays as
+              the chrome candle. Below spread the ribbon renders exactly as
+              today — byte-identical. */}
+          {activeLayout === "spread" ? null : (
           <StoryRibbon
             sceneId={projection.scene.id}
             saveId={saveId}
@@ -750,6 +792,7 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
                 }
               : {})}
           />
+          )}
           </Animated.View>
 
         {/* Panel-2 Wave 2 — the candle-gutter interstitial. The daily cap as a
@@ -758,7 +801,7 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
             its primary door returns home until the candle re-lights, its
             secondary door leads to the daily-limit paywall. */}
         {showCandleGutter ? (
-          <View style={{ alignSelf: "stretch" }}>
+          <View style={{ alignSelf: "center", maxWidth: PAGE_COLUMN_MAX, width: "100%" }}>
             <CandleGutterInterstitial
               turnsUsed={dailyTurnState?.turnsUsed ?? 0}
               resetsInLabel={burn.resetsInLabel}
@@ -770,7 +813,7 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
 
         {/* Panel-2 Wave 2 — turn-3 soft-signup ribbon (guest → account). */}
         {showSoftSignupRibbon ? (
-          <View style={{ alignSelf: "stretch" }}>
+          <View style={{ alignSelf: "center", maxWidth: PAGE_COLUMN_MAX, width: "100%" }}>
             <SoftSignupRibbon onClaim={claimWithEmail} onDismiss={dismissSoftSignup} />
           </View>
         ) : null}
@@ -779,7 +822,7 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
             one, shown ONCE inline then retired by asset id (see markCinematicSeen).
             Skipping or playing to the end dismisses it. Hidden at chapter/ending. */}
         {showInlineMoment && inlineMoment ? (
-          <View style={{ alignSelf: "stretch" }}>
+          <View style={{ alignSelf: "center", maxWidth: PAGE_COLUMN_MAX, width: "100%" }}>
             <CinematicMoment
               cinematic={inlineMoment}
               reducedMotion={reduceMotion || settings.reduceMotion}
@@ -792,6 +835,7 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
         ) : null}
 
         {chapterBoundary ? (
+          <View style={{ alignSelf: "center", maxWidth: PAGE_COLUMN_MAX, width: "100%" }}>
           <ChapterEnd
             chapterIndex={chapterBoundary.index}
             entries={chapterBoundary.entries}
@@ -815,6 +859,7 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
               rankProgress,
             )}
           />
+          </View>
         ) : (
           <Layout
             hudMode={settings.hudMode}

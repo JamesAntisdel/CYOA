@@ -1,0 +1,22 @@
+{
+  "filePath": ".spec-workflow/specs/open-book/design.md",
+  "currentVersion": 2,
+  "snapshots": [
+    {
+      "version": 1,
+      "filename": "snapshot-001.json",
+      "timestamp": "2026-07-21T19:33:33.986Z",
+      "trigger": "initial",
+      "approvalId": "approval_1784662413971_drss73736",
+      "approvalTitle": "The Open Book — Design (OB1–OB9 build corrections + spread mocks)"
+    },
+    {
+      "version": 2,
+      "filename": "snapshot-002.json",
+      "timestamp": "2026-07-21T19:35:19.075Z",
+      "trigger": "approved",
+      "approvalId": "approval_1784662413971_drss73736",
+      "approvalTitle": "The Open Book — Design (OB1–OB9 build corrections + spread mocks)"
+    }
+  ]
+}
