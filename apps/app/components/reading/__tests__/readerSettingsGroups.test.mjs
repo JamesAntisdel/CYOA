@@ -141,14 +141,28 @@ test("the drawer renders exactly the shared mid-tale groups (R4.4, + focusMode)"
   assert.deepEqual([...drawerKeys].sort(), [...SHARED_KEYS].sort());
 });
 
-test("settings-only groups are HUD, Audio, Cinematic mode, Dialog blocks", () => {
+test("settings-only groups are HUD, Audio, Cinematic mode, Dialog blocks, Desk home", () => {
   const groups = readerSettingsGroups({ illustratedUnlocked: true });
   const settingsOnly = groups
     .filter((g) => g.surfaces.includes("settings") && !g.surfaces.includes("drawer"))
     .map((g) => g.key);
   assert.deepEqual(
     [...settingsOnly].sort(),
-    ["cinematicMode", "dialogBlocksEnabled", "hudMode", "muted"].sort(),
+    ["cinematicMode", "deskHome", "dialogBlocksEnabled", "hudMode", "muted"].sort(),
+  );
+});
+
+test("the experimental Desk-home group is settings-only + clearly labelled (the-desk R1.2)", () => {
+  const groups = readerSettingsGroups({ illustratedUnlocked: true });
+  const desk = groups.find((g) => g.key === "deskHome");
+  assert.ok(desk, "the deskHome group is present");
+  assert.deepEqual(desk.surfaces, ["settings"], "settings-surface only (not the mid-tale drawer)");
+  assert.ok(/experimental/i.test(desk.label), "label clearly marks it experimental (R1.2)");
+  assert.ok(!/🧪|⚗️/u.test(desk.label), "no emoji in the label (RC5)");
+  // A plain boolean group the settings screen dispatches with no coupling.
+  assert.deepEqual(
+    desk.options.map((o) => o.value),
+    [true, false],
   );
 });
 

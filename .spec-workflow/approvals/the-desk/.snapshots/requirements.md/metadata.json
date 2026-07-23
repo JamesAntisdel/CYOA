@@ -1,0 +1,22 @@
+{
+  "filePath": ".spec-workflow/specs/the-desk/requirements.md",
+  "currentVersion": 2,
+  "snapshots": [
+    {
+      "version": 1,
+      "filename": "snapshot-001.json",
+      "timestamp": "2026-07-23T01:20:12.300Z",
+      "trigger": "initial",
+      "approvalId": "approval_1784769612262_pbw292wjo",
+      "approvalTitle": "The Desk — Requirements (diegetic home, art-light V1, opt-in + funnel-safe)"
+    },
+    {
+      "version": 2,
+      "filename": "snapshot-002.json",
+      "timestamp": "2026-07-23T01:20:32.189Z",
+      "trigger": "approved",
+      "approvalId": "approval_1784769612262_pbw292wjo",
+      "approvalTitle": "The Desk — Requirements (diegetic home, art-light V1, opt-in + funnel-safe)"
+    }
+  ]
+}

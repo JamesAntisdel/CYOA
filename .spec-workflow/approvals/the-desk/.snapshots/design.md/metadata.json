@@ -1,0 +1,22 @@
+{
+  "filePath": ".spec-workflow/specs/the-desk/design.md",
+  "currentVersion": 2,
+  "snapshots": [
+    {
+      "version": 1,
+      "filename": "snapshot-001.json",
+      "timestamp": "2026-07-23T01:20:57.601Z",
+      "trigger": "initial",
+      "approvalId": "approval_1784769657582_vj5enof7a",
+      "approvalTitle": "The Desk — Design (DK1–DK9 build corrections + desk mocks)"
+    },
+    {
+      "version": 2,
+      "filename": "snapshot-002.json",
+      "timestamp": "2026-07-23T04:05:48.031Z",
+      "trigger": "approved",
+      "approvalId": "approval_1784769657582_vj5enof7a",
+      "approvalTitle": "The Desk — Design (DK1–DK9 build corrections + desk mocks)"
+    }
+  ]
+}

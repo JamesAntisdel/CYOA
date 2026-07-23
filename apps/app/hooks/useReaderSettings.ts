@@ -117,6 +117,16 @@ export type ReaderSettings = {
    * field to enabled (only an explicit `=== false` turns it off).
    */
   focusMode: boolean;
+  /**
+   * "Experimental: Desk home" opt-in (the-desk R1.2). When true, the home
+   * route renders the diegetic writer's desk instead of the card stack (behind
+   * the R1 gate — combined with `EXPO_PUBLIC_DESK_HOME` via `resolveDeskEnabled`
+   * in components/home/deskGate.ts; the branch itself lands in Wave 2). Default
+   * FALSE — the desk is opt-in and the card home stays the default. Tolerant
+   * parse: a missing field (every legacy blob) reads as OFF; only an explicit
+   * `=== true` opts in.
+   */
+  deskHome: boolean;
 };
 
 export const NARRATOR_PLAYBACK_RATES: readonly number[] = [0.75, 1, 1.25, 1.5] as const;
@@ -138,6 +148,7 @@ const defaultSettings: ReaderSettings = {
   narratorPlaybackRate: 1,
   dialogBlocksEnabled: true,
   focusMode: true,
+  deskHome: false,
 };
 
 export function useReaderSettings() {
@@ -225,6 +236,9 @@ function readSettings(): ReaderSettings {
       // Candlelight focus defaults to on; only an explicit `=== false` flips
       // it off so a missing field (legacy blobs) reads as enabled.
       focusMode: parsed.focusMode !== false,
+      // Desk home is opt-in and defaults OFF; only an explicit `=== true` opts
+      // in, so a missing field (every legacy blob) tolerantly reads as OFF.
+      deskHome: parsed.deskHome === true,
     };
   } catch {
     return defaultSettings;

@@ -1,0 +1,148 @@
+<title>The Desk — Diegetic Home Mock (art-light V1)</title>
+<style>
+  :root{--shell-bg:#efe9dc;--shell-ink:#1c1914;--shell-muted:#55503f;--shell-rule:rgba(28,25,20,.22);--key-bg:#1c1914;--key-ink:#efe9dc;}
+  @media (prefers-color-scheme:dark){:root{--shell-bg:#171410;--shell-ink:#e8e1d0;--shell-muted:#a89f88;--shell-rule:rgba(232,225,208,.2);--key-bg:#e8e1d0;--key-ink:#171410;}}
+  :root[data-theme="dark"]{--shell-bg:#171410;--shell-ink:#e8e1d0;--shell-muted:#a89f88;--shell-rule:rgba(232,225,208,.2);--key-bg:#e8e1d0;--key-ink:#171410;}
+  :root[data-theme="light"]{--shell-bg:#efe9dc;--shell-ink:#1c1914;--shell-muted:#55503f;--shell-rule:rgba(28,25,20,.22);--key-bg:#1c1914;--key-ink:#efe9dc;}
+  /* app Night reader tokens for the desk frame */
+  .night{--bg:#14110b;--surface:#1d1812;--surface-muted:#403727;--ink:#ece4d2;--ink-muted:#b2a88f;--ink-faint:rgba(236,228,210,.55);--border-muted:rgba(236,228,210,.24);--accent:#d8b158;--ember:#a83232;}
+  body{margin:0;}
+  .wrap{background:var(--shell-bg);color:var(--shell-ink);font:16px/1.55 Iowan Old Style,Palatino Linotype,Palatino,Georgia,serif;padding:44px 20px 88px;}
+  .inner{max-width:1120px;margin:0 auto;display:flex;flex-direction:column;gap:44px;}
+  .eyebrow,.lbl{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--shell-muted);}
+  h1{font-size:clamp(26px,4vw,38px);margin:.3em 0 .2em;font-weight:650;text-wrap:balance;}
+  p.lede{max-width:64ch;color:var(--shell-muted);margin:0;}
+  p.lede strong{color:var(--shell-ink);font-weight:650;}
+  section{display:flex;flex-direction:column;gap:16px;}
+  section>h2{font-size:20px;margin:0;font-weight:650;border-top:1px solid var(--shell-rule);padding-top:20px;}
+  section>.note{max-width:72ch;color:var(--shell-muted);font-size:15px;margin:0;}
+  .key{display:inline-block;font-family:ui-monospace,monospace;font-size:10px;letter-spacing:.06em;background:var(--key-bg);color:var(--key-ink);border-radius:3px;padding:1px 5px 2px;vertical-align:1px;}
+
+  /* the desk */
+  .desk{background:var(--bg);border-radius:16px;border:1px solid var(--shell-rule);padding:26px;box-shadow:0 20px 44px -26px rgba(0,0,0,.55);overflow-x:auto;}
+  .deskground{background:radial-gradient(120% 90% at 50% 0%,var(--surface) 0%,var(--bg) 78%);border-radius:12px;padding:26px;display:grid;grid-template-columns:1.1fr 1.3fr 1fr;gap:22px;align-items:start;color:var(--ink);min-height:320px;}
+  .obj{border:1px solid var(--border-muted);border-radius:10px;background:var(--surface);padding:14px;min-height:44px;display:flex;flex-direction:column;gap:8px;cursor:pointer;}
+  .obj .cap{font-family:ui-monospace,monospace;font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-faint);}
+  .obj .dest{font-size:13px;color:var(--accent);font-family:ui-monospace,monospace;}
+  .obj .title{font-size:15px;color:var(--ink);}
+  .col{display:flex;flex-direction:column;gap:18px;}
+
+  .spines{display:flex;gap:5px;align-items:flex-end;height:76px;}
+  .spine{width:20px;border-radius:2px;box-shadow:inset -2px 0 0 rgba(0,0,0,.25);}
+  .s1{height:72px;background:linear-gradient(180deg,#5c1a14,#3a120e);}
+  .s2{height:64px;background:linear-gradient(180deg,#3e3a5c,#26243a);}
+  .s3{height:76px;background:linear-gradient(180deg,#4a4327,#2c2717);}
+  .s4{height:60px;background:linear-gradient(180deg,#2f4a3a,#1c2c22);}
+  .tome{align-items:center;text-align:center;min-height:190px;justify-content:center;background:linear-gradient(160deg,var(--surface-muted),var(--surface) 72%);}
+  .tome .plate{width:120px;height:96px;border-radius:6px;background:linear-gradient(160deg,#3a120e,#14110b);border:1px solid var(--border-muted);}
+  .candle .wick{display:flex;gap:3px;align-items:center;}
+  .candle .wick i{width:5px;height:16px;border-radius:1px;background:var(--accent);display:block;}
+  .candle .wick i.spent{background:var(--surface-muted);}
+  .primary{border-color:var(--accent);background:var(--accent);color:#14110b;}
+  .primary .cap{color:rgba(20,17,11,.6);}
+  .primary .title{color:#14110b;font-weight:700;}
+  .primary .dest{color:#14110b;}
+
+  .phone{width:320px;border-radius:20px;border:1px solid var(--shell-rule);overflow:hidden;background:var(--bg);color:var(--ink);font:13px/1.5 Iowan Old Style,Georgia,serif;}
+  .pscreen{padding:12px;display:flex;flex-direction:column;gap:9px;}
+  .pcard{border:1px solid var(--border-muted);border-radius:10px;background:var(--surface);padding:12px;}
+  ul.legend{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;max-width:64ch;font-size:14px;color:var(--shell-muted);}
+  ul.legend b{color:var(--shell-ink);font-weight:650;}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;}}
+</style>
+
+<div class="wrap"><div class="inner">
+  <header>
+    <div class="eyebrow">The Unwritten · spec the-desk · 2026-07-22 · phase-3 · art-light V1</div>
+    <h1>The Desk — a diegetic home</h1>
+    <p class="lede">Visual companion to <strong>.spec-workflow/specs/the-desk/</strong>. The home
+    becomes a writer's desk of objects. <strong>V1 ships with ZERO commissioned art</strong> — every
+    object is built from existing cover assets + theme tokens (a real painted pass is a later
+    enhancement). <strong>Opt-in, flag-gated, funnel-safe</strong>: default OFF, the card home is
+    unchanged, and the age-gate → tutorial acquisition path is untouched. Where mock and
+    requirements disagree, requirements win.</p>
+  </header>
+
+  <section>
+    <h2>Desktop ≥1024 — the desk (returning reader) <span class="key">R2 R3</span></h2>
+    <p class="note">Each object is a labeled 44px button to an EXISTING route <span class="key">DK5</span>;
+    absent data self-hides (no in-progress save ⇒ the tome is a closed "Start here"; no Daily ⇒ no letter — <span class="key">R2.3</span>).</p>
+    <div class="desk night">
+      <div class="deskground">
+        <div class="col">
+          <div class="obj">
+            <span class="cap">Shelf</span>
+            <div class="spines"><span class="spine s1"></span><span class="spine s2"></span><span class="spine s3"></span><span class="spine s4"></span></div>
+            <span class="dest">→ Library</span>
+          </div>
+          <div class="obj">
+            <span class="cap">Key ring</span>
+            <span class="title">Your trophies</span>
+            <span class="dest">→ Endings</span>
+          </div>
+        </div>
+        <div class="col">
+          <div class="obj tome">
+            <span class="cap">The open tome</span>
+            <div class="plate"></div>
+            <span class="title">The Drowned Bell — Act II</span>
+            <span class="dest">→ Continue reading</span>
+          </div>
+        </div>
+        <div class="col">
+          <div class="obj candle">
+            <span class="cap">Candle</span>
+            <span class="wick"><i></i><i></i><i></i><i class="spent"></i></span>
+            <span class="title">Today's turns</span>
+            <span class="dest">→ Patronage</span>
+          </div>
+          <div class="obj">
+            <span class="cap">The letter</span>
+            <span class="title">Today's tale</span>
+            <span class="dest">→ Daily</span>
+          </div>
+          <div class="obj">
+            <span class="cap">The door</span>
+            <span class="dest">→ Discover</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <ul class="legend">
+      <li><b>Art-light</b> <span class="key">R3/DK3</span> — spines/tome from the bundled cover PNGs, the candle from the icon glyph + Bar meter, everything else themed Surfaces + tokens. No new assets.</li>
+      <li><b>Funnel objects mandatory</b> <span class="key">DK6</span> — continue, Daily, library, tutorial-start, rank/soft-signup all present; a missing one is a build failure.</li>
+      <li><b>Swap seam</b> <span class="key">R3.2</span> — each object's <code>DeskObject</code> has an optional art slot so a future painted pass replaces only the visual.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>First-visit (no in-progress save) — funnel intact <span class="key">R4.2 DK6</span></h2>
+    <p class="note">The tome becomes a "Start here" object — the tutorial as the PRIMARY, most-prominent
+    object — at least as prominent as today's button. The acquisition path is never hidden behind the diegetic frame.</p>
+    <div class="desk night">
+      <div class="deskground" style="grid-template-columns:1fr 1.4fr 1fr">
+        <div class="col"><div class="obj"><span class="cap">Shelf</span><div class="spines"><span class="spine s1"></span><span class="spine s3"></span></div><span class="dest">→ Library</span></div></div>
+        <div class="col"><div class="obj tome primary"><span class="cap">Begin</span><span class="title">Escape the Training Room</span><span class="dest">→ Start here</span></div></div>
+        <div class="col"><div class="obj"><span class="cap">The letter</span><span class="title">Today's tale</span><span class="dest">→ Daily</span></div></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Phone (&lt;768) — falls back to the card home <span class="key">R5 DK7</span></h2>
+    <p class="note">A desk of objects needs room; on phone (even opted-in) the home renders today's card stack, unchanged. The Desk never crams.</p>
+    <div class="phone night"><div class="pscreen">
+      <div class="pcard"><span class="lbl" style="color:var(--ink-faint)">Continue</span><div style="margin-top:4px">The Drowned Bell — Act II →</div></div>
+      <div class="pcard"><span class="lbl" style="color:var(--ink-faint)">Today's tale</span><div style="margin-top:4px">The Daily →</div></div>
+      <div class="pcard"><span class="lbl" style="color:var(--ink-faint)">Starter adventures</span></div>
+    </div></div>
+  </section>
+
+  <footer>
+    <span class="lbl">Build key</span>
+    <p class="note" style="margin-top:8px">Wave 1: the opt-in gate (<code>EXPO_PUBLIC_DESK_HOME</code> + a setting, default OFF)
+    + the shared <code>DeskObject</code> seam. Wave 2: the objects + <code>DeskHome</code> layout + ONE gated branch in
+    <code>app/index.tsx</code> (byte-identical when off — <span class="key">DK1/R7</span>). Colors/spines are placeholders in the app's
+    Night tokens; real covers + glyphs render at build. No server, no new assets, no funnel regression.</p>
+  </footer>
+</div></div>

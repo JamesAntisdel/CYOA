@@ -5,9 +5,12 @@ import type { StorySummary } from "@cyoa/stories";
 
 import { AgeGate } from "../components/account/AgeGate";
 import { DailyCard } from "../components/daily";
+import { DeskHome } from "../components/home/DeskHome";
+import { resolveDeskEnabled } from "../components/home/deskGate";
 import { AppNav } from "../components/navigation";
 import { Button, Chip, Text } from "../components/primitives";
 import { useAccountProfile } from "../hooks/useAccountProfile";
+import { useReaderSettings } from "../hooks/useReaderSettings";
 import {
   librarianRankChipLabel,
   librarianRankProgressLine,
@@ -43,7 +46,8 @@ export default function IndexRoute() {
   // acquisition hero below the fold; first-visit readers keep the original
   // Chapter-Zero-hero-first layout untouched.
   const { librarianRank } = useAccountProfile();
-  const { tokens } = useAppTheme();
+  const { settings } = useReaderSettings();
+  const { reduceMotion, tokens } = useAppTheme();
   // Responsive breakpoints: phone (<520) stacks every multi-column row.
   // Hero cover and starter-tale story cards both branch off `isPhone`.
   const { isPhone, width: viewportWidth } = useBreakpoint();
@@ -134,6 +138,54 @@ export default function IndexRoute() {
           onSubmit={handleAgeSubmit}
         />
       </ScrollView>
+    );
+  }
+
+  // the-desk (R1/R2, DK1/DK7) — the SINGLE gated branch. Placed AFTER the
+  // loading + AgeGate guards (so a no-session reader always hits the age gate,
+  // R4.1) and BEFORE the returning/first-visit card blocks below. When the desk
+  // is opted in AND the viewport is wide enough (>=768, not phone — DK7) we
+  // return the diegetic desk home; in EVERY other case (flag off, phone, or
+  // <768) control falls through to the EXACT current card home, byte-identical
+  // to today (R7.1/DK1). The env flag is read as a LITERAL so Expo web inlines
+  // it (DK2). Do NOT restructure the blocks below.
+  const deskEnabled = resolveDeskEnabled({
+    envFlag: process.env.EXPO_PUBLIC_DESK_HOME,
+    settingOn: settings.deskHome,
+  });
+  if (deskEnabled && !isPhone && viewportWidth >= 768) {
+    const deskContinue = library.continueSave;
+    return (
+      <DeskHome
+        continueSave={
+          deskContinue
+            ? {
+                saveId: deskContinue.saveId,
+                storyId: deskContinue.storyId,
+                title: deskContinue.title,
+              }
+            : null
+        }
+        dailyToday={dailyToday}
+        onLaunchTutorial={() => {
+          void launchTutorial();
+        }}
+        onNavDiscover={() => router.push("/discover")}
+        onNavEndings={() => router.push("/endings")}
+        onNavLibrary={() => router.push("/library")}
+        onNavPaywall={() => router.push("/paywall")}
+        onOpenDailyResults={(dailyId) => router.push(`/daily/${dailyId}`)}
+        onOpenSave={openSave}
+        onStartDaily={() =>
+          accountId
+            ? startRemoteDaily({ accountId, ...guestAuthArgs() })
+            : Promise.resolve(null)
+        }
+        reducedMotion={reduceMotion || settings.reduceMotion}
+        starterStoryIds={library.starterStories.map((story: StorySummary) => story.id)}
+        tutorialTitle={tutorialStory?.title ?? null}
+        {...(librarianRank ? { librarianRank } : {})}
+      />
     );
   }
 

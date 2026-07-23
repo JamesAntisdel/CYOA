@@ -273,6 +273,22 @@ export function readerSettingsGroups(input: {
         { label: "Off", value: false },
       ],
     },
+    {
+      // "Experimental: Desk home" (the-desk R1.2). Opt-in for the diegetic
+      // writer's-desk home; default OFF, settings-surface only. A plain boolean
+      // group — the settings screen's default dispatch (`updateSettings({
+      // [key]: value })`) handles it with no coupling; the `key` matches the
+      // `deskHome` ReaderSettings field so the toggle writes it directly. The
+      // "Experimental:" prefix in the label is the R1.2 clear experimental
+      // marker (RC5: text only, no glyph).
+      key: "deskHome",
+      label: "Experimental: Desk home",
+      surfaces: SETTINGS_ONLY,
+      options: [
+        { label: "On", value: true },
+        { label: "Off", value: false },
+      ],
+    },
   ];
 
   return groups;
