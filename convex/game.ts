@@ -4291,13 +4291,32 @@ function snapshotPlayerState(state: PlayerState): {
 // proposal rehydrates with its 1 choice intact; branching/legacy saves pass the
 // same min(2) schema as before (byte-identical). `LlmNovelSceneProposal` is
 // structurally assignable to `LlmSceneProposal`.
-function readPersistedProposalForMode(
+// reading-modes posture B — rehydrate a persisted proposal AND recover the mode
+// it was AUTHORED under. A mid-run `setReadingMode` switch applies from the NEXT
+// generated scene, so the scene the reader is currently on was written under the
+// PRIOR mode and its proposal fails the live `save.readingMode` schema
+// (novel<->branching are disjoint by choice cardinality: branching min(2),
+// novel max(1)). Without recovery the current scene loses its choices and the
+// next turn strands on `llm_prior_proposal_missing`. So: parse under the save's
+// current mode first (byte-identical for every un-switched save); on failure,
+// try the SIBLING schema so the current scene keeps its shape + mode. Skip the
+// sibling for TERMINAL scenes — they render from `terminal`, a null proposal is
+// correct there (as before), and a 0-choice terminal would otherwise mis-derive
+// as novel and mislabel a branching ending.
+function readPersistedProposalWithMode(
   value: unknown,
-  readingMode: "branching" | "novel" | undefined,
-): LlmSceneProposal | null {
-  if (!value || typeof value !== "object") return null;
-  const parsed = sceneSchemaFor(readingMode).safeParse(value);
-  return parsed.success ? (parsed.data as LlmSceneProposal) : null;
+  saveReadingMode: "branching" | "novel" | undefined,
+): { proposal: LlmSceneProposal | null; mode: "branching" | "novel" | undefined } {
+  if (!value || typeof value !== "object") return { proposal: null, mode: saveReadingMode };
+  const primary = sceneSchemaFor(saveReadingMode).safeParse(value);
+  if (primary.success) return { proposal: primary.data as LlmSceneProposal, mode: saveReadingMode };
+  const isTerminal = Boolean((value as { terminal?: unknown }).terminal);
+  if (!isTerminal) {
+    const otherMode = saveReadingMode === "novel" ? "branching" : "novel";
+    const sibling = sceneSchemaFor(otherMode).safeParse(value);
+    if (sibling.success) return { proposal: sibling.data as LlmSceneProposal, mode: otherMode };
+  }
+  return { proposal: null, mode: saveReadingMode };
 }
 
 async function readPriorProposalFromCurrentScene(
@@ -4307,10 +4326,10 @@ async function readPriorProposalFromCurrentScene(
   if (!save.currentSceneId) return null;
   const sceneDoc = await ctx.db.get(save.currentSceneId as any);
   if (!sceneDoc) return null;
-  return readPersistedProposalForMode(
+  return readPersistedProposalWithMode(
     (sceneDoc as { proposal?: unknown }).proposal,
     save.readingMode,
-  );
+  ).proposal;
 }
 
 /**
@@ -4329,7 +4348,7 @@ async function projectLlmSceneFromRecord(
   if (!sceneDoc) {
     return projectLlmDrivenScene({ save, proposal: null, prose: "", streamStatus: "pending" });
   }
-  const proposal = readPersistedProposalForMode(
+  const { proposal, mode: sceneReadingMode } = readPersistedProposalWithMode(
     (sceneDoc as { proposal?: unknown }).proposal,
     save.readingMode,
   );
@@ -4356,6 +4375,9 @@ async function projectLlmSceneFromRecord(
   return projectLlmDrivenScene({
     save,
     proposal,
+    // posture B: render the CURRENT scene in the mode it was AUTHORED under
+    // (recovered above), not the live save mode — a switch applies next scene.
+    ...(sceneReadingMode !== undefined ? { readingModeOverride: sceneReadingMode } : {}),
     prose: (sceneDoc as { prose?: string }).prose ?? "",
     streamStatus: ((sceneDoc as { streamStatus?: string }).streamStatus ?? "complete") as
       | "pending"

@@ -9,13 +9,16 @@
 // a lapsed Pro is never stranded on a novel prompt they can no longer render).
 //
 // WHY THIS IS SAFE MID-RUN — the switch "applies from the next turn onward".
-// Each scene is stamped with its reading mode at GENERATION time, read from the
-// LIVE `save.readingMode` field (game.ts:1936: the llm scene request spreads
-// `readingMode: "novel"` only when `save.readingMode === "novel"`). The CURRENT
-// scene was already generated against the field's PRIOR value, so patching the
-// field here cannot retro-mutate it — it only changes what the NEXT generation
-// reads. That is exactly the desired "from the next turn" semantics, with no
-// need to touch or re-render the scene the reader is currently looking at.
+// Generation of the NEXT scene reads the LIVE `save.readingMode` (game.ts:1936),
+// so it adopts the new mode. The CURRENT scene the reader is on was AUTHORED
+// under the prior mode; its persisted proposal (branching min(2) vs novel max(1)
+// choices — disjoint by cardinality) would fail the new mode's schema on
+// read-back. `readPersistedProposalWithMode` (game.ts) recovers it by parsing
+// under the sibling schema when the live-mode schema rejects, and the projection
+// renders the current scene in its AUTHORED mode (`readingModeOverride`). So the
+// patch neither strands the next turn nor blanks the current scene — it only
+// changes what the NEXT generation produces. (There is NO per-scene readingMode
+// stamp; the proposal's own choice cardinality is the mode witness.)
 //
 // Auto-registers by path as `readingModeFunctions:setReadingMode`. Lives in a
 // NEW module (convex/index.ts, game.ts, schema.ts are reserved) — it only reads

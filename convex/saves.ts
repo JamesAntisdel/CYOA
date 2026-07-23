@@ -617,6 +617,16 @@ export function projectLlmDrivenScene(input: {
   streamStatus: SceneProjection["streamStatus"];
   terminal?: TerminalResult | null;
   /**
+   * reading-modes posture B — the CURRENT scene's AUTHORED reading mode, when
+   * it differs from the live `save.readingMode` (a mid-run switch applies from
+   * the NEXT generated scene, so the scene the reader is on keeps its own
+   * mode). The read path derives this from which schema the persisted proposal
+   * parses under (see `readPersistedProposalWithMode`). Absent ⇒ use
+   * `save.readingMode` (every un-switched save + the live generation path),
+   * keeping the projection byte-identical.
+   */
+  readingModeOverride?: "branching" | "novel";
+  /**
    * Deterministic-fallback sentinel from the scene record. Forwarded
    * onto the projection so the reader UI can render the FallbackTurnPanel
    * instead of the deterministic placeholder prose + choices.
@@ -727,7 +737,9 @@ export function projectLlmDrivenScene(input: {
     // Novel layout renders the "Turn the page" affordance. Conditional-spread
     // (BC4) — present ONLY for a novel save so branching / legacy projections
     // stay byte-identical (BC9). BC10-clean: the reader chose novel at create.
-    ...(input.save.readingMode === "novel" ? { readingMode: "novel" as const } : {}),
+    ...((input.readingModeOverride ?? input.save.readingMode) === "novel"
+      ? { readingMode: "novel" as const }
+      : {}),
     terminal: input.terminal ?? null,
   };
 }

@@ -347,4 +347,83 @@ describe("getCurrentScene — novel proposal rehydration round-trip (R4.4)", () 
     // the page-turn affordance.
     expect(projection.readingMode).toBe("novel");
   });
+
+  // posture B (live mid-run switch) regression — the deep-scrub critical: a
+  // switch patches save.readingMode immediately, but the CURRENT scene was
+  // authored under the PRIOR mode. Its persisted proposal must still rehydrate
+  // (else the current scene blanks its choices and the next turn strands on
+  // llm_prior_proposal_missing), and the projection must render the current
+  // scene in its AUTHORED mode — the switch applies from the NEXT scene.
+  it("novel->branching switch: the current novel scene keeps its page-turn (rehydrated under the sibling schema)", async () => {
+    const scene = {
+      _id: "scene_novel",
+      saveId: "save_novel",
+      nodeId: "open-canvas:llm:1",
+      turnNumber: 1,
+      prose: "A single page waited to be turned.",
+      streamStatus: "complete",
+      choiceViews: [
+        { choice: { id: "turn-page", label: "Turn the page", targetNodeId: "open-canvas:llm:next" }, visibility: "visible" },
+      ],
+      proposal: { prose: "A single page waited to be turned.", choices: [{ id: "turn-page", label: "Turn the page" }] },
+      engineEvents: [],
+      safety: { risk: "normal", reasons: [] },
+      provider: "vertex",
+      createdAt: 1,
+      completedAt: 1,
+    };
+    // The save has been FLIPPED to branching mid-run; the scene is still novel.
+    const switchedSave = { ...makeNovelSaveDoc(), readingMode: "branching" };
+    const { ctx } = makeReadCtx({ save: switchedSave, account: makeAccountDoc(), scene });
+
+    const projection = await (getCurrentScene as any)._handler(ctx, {
+      accountId: "acct_1",
+      guestTokenHash: "guest_hash",
+      saveId: "save_novel",
+    });
+
+    // The novel proposal did NOT strand under the live branching schema — the
+    // page-turn survives and the current scene still renders as novel.
+    expect(projection.choices).toHaveLength(1);
+    expect(projection.choices[0].choice.id).toBe("turn-page");
+    expect(projection.readingMode).toBe("novel");
+  });
+
+  it("branching->novel switch: the current branching scene keeps its real choices (not collapsed to a page-turn)", async () => {
+    const scene = {
+      _id: "scene_novel",
+      saveId: "save_novel",
+      nodeId: "open-canvas:llm:1",
+      turnNumber: 1,
+      prose: "Two doors faced her.",
+      streamStatus: "complete",
+      choiceViews: [
+        { choice: { id: "c1", label: "The left door", targetNodeId: "open-canvas:llm:l" }, visibility: "visible" },
+        { choice: { id: "c2", label: "The right door", targetNodeId: "open-canvas:llm:r" }, visibility: "visible" },
+      ],
+      proposal: {
+        prose: "Two doors faced her.",
+        choices: [{ id: "c1", label: "The left door" }, { id: "c2", label: "The right door" }],
+      },
+      engineEvents: [],
+      safety: { risk: "normal", reasons: [] },
+      provider: "vertex",
+      createdAt: 1,
+      completedAt: 1,
+    };
+    // Branching-authored scene on a save FLIPPED to novel mid-run.
+    const switchedSave = { ...makeNovelSaveDoc(), readingMode: "novel" };
+    const { ctx } = makeReadCtx({ save: switchedSave, account: makeAccountDoc(), scene });
+
+    const projection = await (getCurrentScene as any)._handler(ctx, {
+      accountId: "acct_1",
+      guestTokenHash: "guest_hash",
+      saveId: "save_novel",
+    });
+
+    // The 2 real branching choices survive (not rejected by the novel max(1)
+    // schema), and the current scene is NOT mislabelled novel.
+    expect(projection.choices).toHaveLength(2);
+    expect(projection.readingMode).toBeUndefined();
+  });
 });
