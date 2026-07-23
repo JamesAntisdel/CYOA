@@ -30,6 +30,7 @@ import {
   pickAutoChoice,
   type AutoNarratorChoice,
 } from "../components/reading/autoNarrator";
+import { recordUiEvent } from "../lib/uiAnalytics";
 
 /**
  * The halt guards (R1.2). WHEN any is active, auto SHALL NOT fire and control
@@ -257,6 +258,19 @@ export function useAutoNarrator<T extends AutoNarratorChoice>({
     }, autoDelayMs(reducedMotion));
     return () => clearTimeout(timer);
   }, [autoOn, atChapterBoundary, reducedMotion]);
+
+  // Best-effort telemetry: emit `ui.auto_toggle {on}` whenever `autoOn` flips
+  // (P3 UI-event path). Watching the state — rather than the setters — catches
+  // every path uniformly: the one-tap `toggleAuto` AND ReaderScreen's
+  // `setAutoOn(false)` "grab the wheel". `prevAutoRef` seeds to the initial
+  // value so the mount render (default OFF) does NOT fire. Fire-and-forget —
+  // `recordUiEvent` never throws into the effect.
+  const prevAutoRef = useRef(autoOn);
+  useEffect(() => {
+    if (prevAutoRef.current === autoOn) return;
+    prevAutoRef.current = autoOn;
+    void recordUiEvent("ui.auto_toggle", { on: autoOn });
+  }, [autoOn]);
 
   const toggleAuto = useCallback(() => {
     setAutoOn((on) => !on);

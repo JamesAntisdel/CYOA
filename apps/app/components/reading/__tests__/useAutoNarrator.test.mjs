@@ -53,6 +53,12 @@ hookOut = hookOut.replace(
   /["']\.\.\/components\/reading\/autoNarrator["']/,
   JSON.stringify(pureUrl),
 );
+// 3) Stub the best-effort telemetry import — the hook only fires it from a
+//    (stubbed) effect, so a no-op keeps the data:-URL import resolvable.
+hookOut = hookOut.replace(
+  /import\s*\{[^}]*\}\s*from\s*["']\.\.\/lib\/uiAnalytics["'];?/,
+  "const recordUiEvent=()=>Promise.resolve();",
+);
 
 const hook = await import("data:text/javascript," + encodeURIComponent(hookOut));
 const pure = await import(pureUrl);
@@ -206,5 +212,19 @@ test("chapter-boundary behavior is reduced-motion aware and gated on the boundar
   assert.ok(
     /autoDelayMs\(\s*reducedMotion\s*\)/.test(hookSource),
     "the pause/beat must be reduced-motion aware via autoDelayMs(reducedMotion)",
+  );
+});
+
+test("useAutoNarrator fires ui.auto_toggle {on} when autoOn flips", () => {
+  assert.ok(
+    /import\s*\{\s*recordUiEvent\s*\}\s*from\s*["']\.\.\/lib\/uiAnalytics["']/.test(hookSource),
+    "hook must import the best-effort telemetry wrapper",
+  );
+  // An autoOn-keyed effect emits {on} on every flip, seeded by prevAutoRef so
+  // the default-OFF mount render does NOT fire, and is dropped (`void`).
+  assert.ok(/prevAutoRef/.test(hookSource), "must track the previous autoOn to skip mount");
+  assert.ok(
+    /void recordUiEvent\("ui\.auto_toggle",\s*\{\s*on:\s*autoOn\s*\}\)/.test(hookSource),
+    "must emit ui.auto_toggle {on: autoOn}",
   );
 });

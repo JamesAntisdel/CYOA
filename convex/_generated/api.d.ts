@@ -103,6 +103,7 @@ import type * as seeds from "../seeds.js";
 import type * as tales from "../tales.js";
 import type * as talesFunctions from "../talesFunctions.js";
 import type * as turn from "../turn.js";
+import type * as uiAnalytics from "../uiAnalytics.js";
 
 import type {
   ApiFromModules,
@@ -206,6 +207,7 @@ declare const fullApi: ApiFromModules<{
   tales: typeof tales;
   talesFunctions: typeof talesFunctions;
   turn: typeof turn;
+  uiAnalytics: typeof uiAnalytics;
 }>;
 
 /**

@@ -1,11 +1,13 @@
+import { useEffect, useState } from "react";
 import { View } from "react-native";
 
 import { AppNav } from "../navigation";
 import { Text } from "../primitives";
 import { useAppTheme } from "../../theme";
 import type { RemoteDailyToday } from "../../lib/dailyApi";
-import type { RemoteDailyTurnState } from "../../lib/dailyTurnApi";
+import { getRemoteDailyTurnState, type RemoteDailyTurnState } from "../../lib/dailyTurnApi";
 import type { RemoteLibrarianRank } from "../../lib/gameApi";
+import { guestAuthArgs, useGuestSession } from "../../hooks/useGuestSession";
 import {
   librarianRankChipLabel,
   librarianRankProgressLine,
@@ -33,8 +35,15 @@ import { StartHere } from "./desk/StartHere";
  *              the Door (discover).
  *
  * HARD rules honored here:
- *  - DK4 — data is PROPS ONLY. Every value below is already computed by
- *    `app/index.tsx`; DeskHome introduces NO hooks/queries.
+ *  - DK4 — HOME data is PROPS ONLY. Every home value below (continue, daily
+ *    tale, library, rank, tutorial) is already computed by `app/index.tsx`;
+ *    DeskHome owns none of it. The SINGLE exception is the Candle's live turn
+ *    budget: the route does not compute it, so DeskHome wires the previously-
+ *    unwired `turnState` itself by calling the EXISTING `getRemoteDailyTurnState`
+ *    (a REUSED transport, not a new query) when a guest session is present. It
+ *    is best-effort — no session / no data leaves the Candle on its static
+ *    full-candle cue (never a crash), and an explicit `turnState` prop (tests /
+ *    a future route hand-off) always overrides the internal fetch.
  *  - DK6 — the mandatory funnel objects ALL render: continue (tome) + StartHere
  *    (tutorial), Daily (letter), library (shelf), the rank/progress read, and
  *    the guest soft-signup path (the AppNav "Login" pill, exactly as the card
@@ -125,6 +134,36 @@ export function DeskHome({
   const { tokens } = useAppTheme();
   const hasSave = Boolean(continueSave);
 
+  // The Candle's live turn budget (DK4 exception — see the file header). HOME
+  // data stays props; the turn-state is the one reused call DeskHome makes so
+  // the previously-unwired candle burns down to the reader's real remaining
+  // turns. Best-effort: fetched only when a guest session/accountId exists,
+  // via the EXISTING getRemoteDailyTurnState (a reused transport, not a new
+  // query). No session / no data => `fetchedTurnState` stays null and the
+  // Candle falls back to its static full-candle cue. Reduced-motion safe: the
+  // Candle renders a still Bar either way (DK8).
+  const guest = useGuestSession();
+  const accountId = guest.session?.accountId;
+  const [fetchedTurnState, setFetchedTurnState] = useState<RemoteDailyTurnState | null>(null);
+  useEffect(() => {
+    if (!accountId) {
+      setFetchedTurnState(null);
+      return;
+    }
+    let cancelled = false;
+    void getRemoteDailyTurnState({ accountId, ...guestAuthArgs() }).then((next) => {
+      if (!cancelled) setFetchedTurnState(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [accountId]);
+
+  // An explicitly-passed prop (tests / a future route hand-off) wins; otherwise
+  // use what DeskHome fetched. Either way this is RemoteDailyTurnState | null —
+  // never undefined — so the Candle sees a concrete value.
+  const candleTurnState = turnState !== undefined ? turnState : fetchedTurnState;
+
   return (
     <View
       style={{
@@ -206,10 +245,7 @@ export function DeskHome({
         {/* Right column — turn budget, the Daily letter (self-hides when there
             is no daily today — R2.3), and the door to discovery. */}
         <View style={{ flex: COL_RIGHT_FLEX, gap: tokens.spacing.lg }}>
-          <Candle
-            onPress={onNavPaywall}
-            {...(turnState !== undefined ? { turnState } : {})}
-          />
+          <Candle onPress={onNavPaywall} turnState={candleTurnState} />
           <Letter
             daily={dailyToday}
             onOpenReader={onOpenSave}

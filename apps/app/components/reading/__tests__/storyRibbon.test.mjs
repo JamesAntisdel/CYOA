@@ -65,3 +65,14 @@ test("no banned control emoji in StoryRibbon (RC5)", () => {
     assert.ok(!src.includes(glyph), `StoryRibbon must not contain the banned glyph ${glyph}`);
   }
 });
+
+// --- P3 UI-event telemetry (analytics) ---------------------------------------
+
+test("StoryRibbon fires ui.ribbon_expand only on the collapse→expand edge", () => {
+  assert.match(src, /import\s*\{\s*recordUiEvent\s*\}\s*from\s*"\.\.\/\.\.\/\.\.\/lib\/uiAnalytics"/);
+  // Fires on the pre-toggle `!expanded` (true only when this tap opens the
+  // detail), passes the anonymous accountId when available, and is dropped
+  // (`void`) so it never blocks / throws into render.
+  assert.match(src, /if \(!expanded\)/);
+  assert.match(src, /void recordUiEvent\("ui\.ribbon_expand", undefined, auth\?\.accountId\)/);
+});

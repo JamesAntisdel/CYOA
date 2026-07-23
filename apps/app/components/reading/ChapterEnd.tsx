@@ -1,6 +1,6 @@
 import { View } from "react-native";
 
-import { Button, Stamp, Surface, Text } from "../primitives";
+import { Button, Chip, Icon, Stamp, Surface, Text } from "../primitives";
 import { useAppTheme } from "../../theme";
 import type { ChoiceHistoryEntry } from "../../hooks/useTurn";
 import type { RemoteCinematicView } from "../../lib/cinematicApi";
@@ -90,6 +90,7 @@ export function ChapterEnd({
     <Surface
       accessibilityLabel={`${chapterLabel} ended. Your choices echoed.`}
       padded
+      paper
       style={{ gap: tokens.spacing.lg }}
       variant="muted"
     >
@@ -125,6 +126,41 @@ export function ChapterEnd({
           </Text>
         ) : null}
         <Stamp>End of {chapterLabel.toLowerCase()}</Stamp>
+        {/* Chapter headpiece — a centered hairline flourish framing an
+            icon-font ornament, so the recap reads as a printed chapter head.
+            Static by construction (no Animated, no transition) ⇒ inherently
+            reduced-motion safe. Uses the icon font (Icon), never an emoji. */}
+        <View
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
+          style={{
+            alignItems: "center",
+            flexDirection: "row",
+            gap: tokens.spacing.sm,
+            justifyContent: "center",
+            paddingVertical: tokens.spacing.xs,
+          }}
+        >
+          <View
+            style={{
+              backgroundColor: tokens.colors.borderMuted,
+              flex: 1,
+              height: tokens.borderWidths.hairline,
+            }}
+          />
+          <Icon
+            color={tokens.colors.accent}
+            name="candle"
+            size={tokens.typography.subtitle}
+          />
+          <View
+            style={{
+              backgroundColor: tokens.colors.borderMuted,
+              flex: 1,
+              height: tokens.borderWidths.hairline,
+            }}
+          />
+        </View>
         <Text
           style={{
             fontFamily: tokens.typography.families.serif,
@@ -134,9 +170,13 @@ export function ChapterEnd({
         >
           A pause between pages.
         </Text>
-        <Text muted variant="caption">
-          {storyTitle} · {entries.length} {entries.length === 1 ? "decision" : "decisions"}
-        </Text>
+        {/* Read-only recap facts ride the canonical `status` pill from the
+            pill grammar — a quiet, un-pressable state chip (not free caption
+            text or an ad-hoc badge). */}
+        <Chip variant="status">
+          {storyTitle} · {entries.length}{" "}
+          {entries.length === 1 ? "decision" : "decisions"}
+        </Chip>
       </View>
 
       <ConsequenceReel entries={entries} />

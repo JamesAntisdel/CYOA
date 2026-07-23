@@ -167,11 +167,32 @@ test("DeskHome: surfaces the guest soft-signup path via AppNav (DK6)", () => {
   assert.match(deskHome, /<AppNav\b/, "AppNav (the Login/soft-signup path) is on the desk");
 });
 
-test("DeskHome: data is props-only — no hooks/queries introduced (DK4)", () => {
+test("DeskHome: HOME data is props-only; the ONLY self-fetch is the reused turn-state call (DK4)", () => {
+  // DeskHome still owns NO home data — continue/daily-tale/library/profile all
+  // arrive as props. The single sanctioned exception is the Candle's live turn
+  // budget: the route never computes it, so DeskHome wires the previously-
+  // unwired `turnState` by calling the EXISTING getRemoteDailyTurnState (a
+  // reused transport, not a new query) once a guest session exists.
   assert.doesNotMatch(
     deskHome,
-    /useLibrary\(|useAccountProfile\(|getRemoteDailyToday\(|getRemoteDailyTurnState\(|useGuestSession\(/,
-    "DeskHome must not fetch/own home data — it takes props (DK4)",
+    /useLibrary\(|useAccountProfile\(|getRemoteDailyToday\(/,
+    "DeskHome must not own home data — library/profile/daily-tale stay props (DK4)",
+  );
+  assert.match(
+    deskHome,
+    /getRemoteDailyTurnState\(\{\s*accountId/,
+    "DeskHome wires the Candle's live budget via the reused getRemoteDailyTurnState call",
+  );
+  assert.match(
+    deskHome,
+    /const guest = useGuestSession\(\)/,
+    "the turn-state fetch is gated on a present guest session/accountId",
+  );
+  // Best-effort: no session / no data falls back to the static candle cue.
+  assert.match(
+    deskHome,
+    /setFetchedTurnState\(null\)/,
+    "no accountId => the fetched turn-state is cleared to null (static candle cue)",
   );
 });
 

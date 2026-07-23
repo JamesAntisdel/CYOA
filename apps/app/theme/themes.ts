@@ -95,6 +95,14 @@ export type ThemeColors = {
   danger: string;
   shadow: string;
   overlay: string;
+  /**
+   * Manuscript "paper" edge — the candlelight glow drawn around a reading
+   * Surface when it opts into `paper`. Day keeps a neutral drop (paper under
+   * daylight casts a plain shadow); Night and Sepia warm it to a candle glow
+   * so a lit page reads as lit. Consumed ONLY by `Surface` in paper mode, so
+   * surfaces that don't opt in never reference it.
+   */
+  paperEdge: string;
 };
 
 // Each palette is hand-tuned to meet WCAG targets enforced by
@@ -124,6 +132,8 @@ const dayColors: ThemeColors = {
   danger: p.color.ember[600], // #7a2218 → 8.62:1
   shadow: withAlpha(p.color.ink[900], 0.14),
   overlay: withAlpha(p.color.ink[900], 0.08),
+  // Day: no candle — paper under daylight just casts a plain neutral drop.
+  paperEdge: withAlpha(p.color.ink[900], 0.14),
 };
 
 const nightColors: ThemeColors = {
@@ -142,6 +152,8 @@ const nightColors: ThemeColors = {
   danger: p.color.ember[300], // #dc8678 → 6.93:1
   shadow: withAlpha(p.color.night[900], 0.4),
   overlay: withAlpha(p.color.paper[50], 0.08),
+  // Night: a warm candle glow around a lit page.
+  paperEdge: withAlpha(p.color.candle[400], 0.35),
 };
 
 const sepiaColors: ThemeColors = {
@@ -162,6 +174,8 @@ const sepiaColors: ThemeColors = {
   danger: p.color.ember[700], // #5c1a14 → 9.91:1
   shadow: withAlpha(p.color.ink[800], 0.16),
   overlay: withAlpha(p.color.ink[800], 0.08),
+  // Sepia: a softer candle glow, tuned a stop deeper than Night's.
+  paperEdge: withAlpha(p.color.candle[500], 0.3),
 };
 
 export const themeColorMap: Record<ThemeMode, ThemeColors> = {

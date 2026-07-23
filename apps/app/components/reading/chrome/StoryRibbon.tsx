@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Pressable, View } from "react-native";
 
 import type { RemoteArc, RemoteRecentDiff } from "../../../lib/gameApi";
+import { recordUiEvent } from "../../../lib/uiAnalytics";
 import { useAppTheme } from "../../../theme";
 import { DailyPulseChip } from "../../daily/DailyPulseChip";
 import { Button, Text } from "../../primitives";
@@ -107,7 +108,17 @@ export function StoryRibbon({
         accessibilityLabel={`The tale's margins: ${segments.map((s) => s.label).join(", ")}`}
         accessibilityHint={expanded ? "Hide the details" : "Show the details"}
         accessibilityState={{ expanded }}
-        onPress={() => setExpanded((v) => !v)}
+        onPress={() => {
+          // Best-effort telemetry: fire only on the collapse→expand edge (P3
+          // UI-event path). `!expanded` reads the pre-toggle value, so it's
+          // true exactly when this tap opens the detail. Fire-and-forget —
+          // `recordUiEvent` never throws into render. `auth.accountId` is the
+          // only (anonymous) identifier, passed when trivially available.
+          if (!expanded) {
+            void recordUiEvent("ui.ribbon_expand", undefined, auth?.accountId);
+          }
+          setExpanded((v) => !v);
+        }}
         style={({ pressed }) => ({
           alignItems: "center",
           flexDirection: "row",

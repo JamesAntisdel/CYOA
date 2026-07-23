@@ -128,6 +128,84 @@ test("Candle: reuses the existing turn-state model, not a new query (DK4)", () =
   assert.doesNotMatch(code, /getRemoteDailyTurnState/, "the object does not fetch — DK-HOME passes props");
 });
 
+// The Candle view is two branches (source-pinned below, then exercised via a
+// lock-step MIRROR — the object imports React Native so it can't be rendered
+// under `node --test`, matching resolveMediaPlateViewMirror in
+// components/reading/__tests__/illustratedBook.test.mjs):
+//   - turnState present (capped tier)  -> LIVE remaining-of-allowed count + a
+//     partly-burned bar (fillPct = round((1 - fraction) * 100));
+//   - turnState absent / unlimited     -> the STATIC full-candle cue
+//     (fillPct = 100, destination "Turns ->").
+test("Candle: pins both view branches in source (lock-step with the mirror)", () => {
+  const code = sources.Candle;
+  // Live branch: only for a capped, non-unlimited tier with a positive cap.
+  assert.match(
+    code,
+    /turnState\s*&&\s*!turnState\.unlimited\s*&&\s*turnState\.turnsAllowed\s*>\s*0/,
+    "the live-count branch is gated on a capped (non-unlimited) tier",
+  );
+  assert.match(
+    code,
+    /Math\.round\(\(1 - model\.fraction\) \* 100\)/,
+    "the bar fills with what REMAINS (1 - burn fraction)",
+  );
+  assert.match(
+    code,
+    /\$\{model\.remaining\} of \$\{turnState\.turnsAllowed\} turns left/,
+    "the live destination reads 'N of M turns left'",
+  );
+  // Static fallback defaults.
+  assert.match(code, /fillPct = 100/, "static cue: a full candle");
+  assert.match(code, /destination = "Turns ->"/, "static cue: the neutral destination");
+});
+
+// --- Lock-step MIRROR of the Candle view (keep in sync with Candle.tsx) -----
+function candleViewMirror(turnState) {
+  // Mirror of candleBurnModel's fields the view reads.
+  const model =
+    turnState && !turnState.unlimited && turnState.turnsAllowed > 0
+      ? {
+          fraction: Math.min(1, Math.max(0, turnState.turnsUsed / turnState.turnsAllowed)),
+          remaining: Math.max(0, turnState.turnsAllowed - turnState.turnsUsed),
+        }
+      : { fraction: 0, remaining: 0 };
+  let fillPct = 100;
+  let destination = "Turns ->";
+  if (turnState && !turnState.unlimited && turnState.turnsAllowed > 0) {
+    fillPct = Math.round((1 - model.fraction) * 100);
+    destination = `${model.remaining} of ${turnState.turnsAllowed} turns left`;
+  }
+  return { fillPct, destination };
+}
+
+test("Candle: shows a LIVE remaining-turns cue when turnState is present", () => {
+  const view = candleViewMirror({
+    turnsUsed: 3,
+    turnsAllowed: 10,
+    resetsAtUtc: 0,
+    unlimited: false,
+  });
+  assert.equal(view.destination, "7 of 10 turns left", "live count is remaining-of-allowed");
+  assert.equal(view.fillPct, 70, "bar shows the 70% that remains after 3/10 burned");
+});
+
+test("Candle: shows the STATIC full-candle cue when turnState is absent", () => {
+  const view = candleViewMirror(null);
+  assert.equal(view.destination, "Turns ->", "no live count without state");
+  assert.equal(view.fillPct, 100, "a full, static candle as a budget cue");
+});
+
+test("Candle: unlimited tiers keep the static cue (never a live burn)", () => {
+  const view = candleViewMirror({
+    turnsUsed: 0,
+    turnsAllowed: 0,
+    resetsAtUtc: 0,
+    unlimited: true,
+  });
+  assert.equal(view.destination, "Turns ->", "unlimited tier is not metered");
+  assert.equal(view.fillPct, 100, "unlimited tier shows a full candle");
+});
+
 // ---------------------------------------------------------------------------
 // KeyRing -> /endings ; Door -> /discover. Plain-words labels (R2.2).
 // ---------------------------------------------------------------------------

@@ -5,17 +5,78 @@ import { useAppTheme } from "../../theme";
 import { Text } from "./Text";
 
 /**
- * Canonical Chip variants. `muted` chips sit on top of a muted surface
- * (still legible in every theme); `accent` chips draw the eye for status
- * pills. See contract test for the exhaustive list.
+ * THE PILL GRAMMAR (manuscript design-language pass, brainstorm §5).
+ *
+ * The app grew ≥4 ad-hoc pill styles. The canonical grammar is exactly TWO
+ * semantic roles, plus the legacy visual variants they map onto:
+ *
+ *   • `control` — an ACTIONABLE pill (a tap target: a filter, a toggle, a
+ *     "begin" affordance). Draws the eye with the accent treatment.
+ *   • `status`  — a READ-ONLY state pill (a count, a tier, a label the reader
+ *     can't press). Stays quiet: muted surface, muted ink.
+ *
+ * Author new pills with `control` / `status` — the semantic role, not the
+ * paint. The three visual variants below are retained (byte-identical) so
+ * existing call sites keep working; a follow-up sweeps them onto the grammar.
+ *
+ *   default → surface bg / border / text     (retained)
+ *   muted   → muted surface / border / text   (retained)
+ *   accent  → accent tint / accent / accent   (retained; === `control`)
+ *   control → accent tint / accent / accent   (actionable)
+ *   status  → muted surface / border / muted  (read-only)
+ *
+ * See `chipGrammar.test.mjs` for the exhaustive drift contract.
  */
-export type ChipVariant = "default" | "muted" | "accent";
+export type ChipVariant = "default" | "muted" | "accent" | "control" | "status";
 
 export const CHIP_VARIANTS: readonly ChipVariant[] = [
   "default",
   "muted",
   "accent",
+  "control",
+  "status",
 ] as const;
+
+/** The subset of theme colors the pill grammar paints from. */
+type ChipColors = {
+  surface: string;
+  surfaceMuted: string;
+  accent: string;
+  accentMuted: string;
+  border: string;
+  text: string;
+  textMuted: string;
+};
+
+export type ChipTones = {
+  backgroundColor: string;
+  borderColor: string;
+  labelColor: string;
+};
+
+/**
+ * Pure resolver for the pill grammar — no React, no theme hook — so the
+ * contract test can assert every variant's exact token treatment. `accent`
+ * and `control` are deliberately identical (actionable = eye-drawing);
+ * `default`/`muted`/`accent` are byte-identical to the pre-grammar Chip.
+ */
+export function resolveChipTones(variant: ChipVariant, colors: ChipColors): ChipTones {
+  const isControl = variant === "accent" || variant === "control";
+  const isQuiet = variant === "muted" || variant === "status";
+  return {
+    backgroundColor: isControl
+      ? colors.accentMuted
+      : isQuiet
+        ? colors.surfaceMuted
+        : colors.surface,
+    borderColor: isControl ? colors.accent : colors.border,
+    labelColor: isControl
+      ? colors.accent
+      : variant === "status"
+        ? colors.textMuted
+        : colors.text,
+  };
+}
 
 type ChipProps = PropsWithChildren<ViewProps> & {
   icon?: ReactNode;
@@ -31,16 +92,10 @@ export function Chip({
 }: ChipProps) {
   const { tokens } = useAppTheme();
 
-  const backgroundColor =
-    variant === "accent"
-      ? tokens.colors.accentMuted
-      : variant === "muted"
-        ? tokens.colors.surfaceMuted
-        : tokens.colors.surface;
-  const borderColor =
-    variant === "accent" ? tokens.colors.accent : tokens.colors.border;
-  const labelColor =
-    variant === "accent" ? tokens.colors.accent : tokens.colors.text;
+  const { backgroundColor, borderColor, labelColor } = resolveChipTones(
+    variant,
+    tokens.colors,
+  );
 
   return (
     <View

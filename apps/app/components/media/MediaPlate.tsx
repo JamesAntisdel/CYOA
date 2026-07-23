@@ -17,11 +17,10 @@ export type MediaPlateProps = {
  * scene-media projection ONLY for the `illustrated_book` strategy — every
  * other reader keeps the byte-identical delete-and-skeleton path and never
  * carries this field. Reacting to it here is therefore mode-scoped by
- * construction. Read defensively (widened) until the projection type carries
- * it end-to-end (reported to the integrator / RM-MEDIA).
+ * construction. The signal is now declared on the client media projection
+ * (`StreamingScene["media"]` → `SceneMedia`), so it is read directly off
+ * `media` with no defensive cast.
  */
-type MediaWithOutOfCreditsSignal = SceneMedia & { outOfCredits?: boolean };
-
 export type MediaPlateView = "idle" | "skeleton" | "image" | "placeholder";
 
 /**
@@ -71,7 +70,7 @@ export function resolveMediaPlateView(input: {
  */
 export function MediaPlate({ media, reducedMotion }: MediaPlateProps) {
   const plate = useMediaPlate({ media });
-  const outOfCredits = (media as MediaWithOutOfCreditsSignal | undefined)?.outOfCredits === true;
+  const outOfCredits = media?.outOfCredits === true;
   const hasPoster = Boolean(plate.posterUri && plate.posterUri.length > 0);
   const view = resolveMediaPlateView({ state: plate.state, outOfCredits, hasPoster });
 

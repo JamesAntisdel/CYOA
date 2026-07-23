@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { Modal, Platform, Pressable, ScrollView, View } from "react-native";
 
 import { useBreakpoint } from "../../../lib/responsive";
+import { recordUiEvent } from "../../../lib/uiAnalytics";
 import { useAppTheme } from "../../../theme";
 import { Divider, Icon, type IconName, Stamp, Text } from "../../primitives";
 
@@ -67,6 +68,14 @@ export function TomeSheet({ open, onClose, rows, reducedMotion = false }: TomeSh
   // the re-run yanks it back to the sheet's first focusable.
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+
+  // Best-effort telemetry: the Tome opened (P3 UI-event path). Fire-and-forget
+  // — `recordUiEvent` never throws into render. Keyed on `open` so it fires
+  // once per open transition, cross-platform (the focus-trap effect below is
+  // web-only, so this can't ride it).
+  useEffect(() => {
+    if (open) void recordUiEvent("ui.tome_open");
+  }, [open]);
 
   useEffect(() => {
     if (!WEB || !open) return;

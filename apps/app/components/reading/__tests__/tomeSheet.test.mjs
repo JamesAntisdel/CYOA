@@ -75,3 +75,14 @@ test("no banned control emoji in TomeSheet (RC5)", () => {
     assert.ok(!src.includes(glyph), `TomeSheet must not contain the banned glyph ${glyph}`);
   }
 });
+
+// --- P3 UI-event telemetry (analytics) ---------------------------------------
+
+test("TomeSheet fires ui.tome_open when it opens (fire-and-forget)", () => {
+  // Best-effort import of the client wrapper.
+  assert.match(src, /import\s*\{\s*recordUiEvent\s*\}\s*from\s*"\.\.\/\.\.\/\.\.\/lib\/uiAnalytics"/);
+  // An `open`-keyed effect fires the event once per open transition, and the
+  // call is dropped (`void`) so it never blocks / throws into render.
+  assert.match(src, /if \(open\) void recordUiEvent\("ui\.tome_open"\)/);
+  assert.match(src, /\}, \[open\]\);/);
+});
