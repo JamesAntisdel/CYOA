@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { deleteAccount, exportAccount } from "../accountFunctions";
+import { claimGuest, deleteAccount, exportAccount, getProfile } from "../accountFunctions";
 
 type AnyDoc = Record<string, any>;
 
@@ -207,3 +207,195 @@ describe("accountFunctions — exportAccount (M2)", () => {
 function byId(tables: Map<string, AnyDoc[]>, table: string, id: string): AnyDoc | undefined {
   return (tables.get(table) ?? []).find((row) => String(row._id) === id);
 }
+
+// ---------------------------------------------------------------------------
+// Act-mementos (task 3.1): getProfile projection additions (rankProgress +
+// capped mementos, AM3 / R2.4 / R3.2) and the lifecycle loop (deleteAccount
+// purge R2.3, exportAccount inclusion R2.3, save-deletion survival R2.1,
+// post-claim survival R2.2).
+// ---------------------------------------------------------------------------
+
+let mementoSeq = 0;
+function memento(overrides: AnyDoc = {}): AnyDoc {
+  mementoSeq += 1;
+  return {
+    _id: `mem${mementoSeq}`,
+    _creationTime: mementoSeq,
+    accountId: "acct1",
+    saveId: "save1",
+    storyId: "story-1",
+    act: 2,
+    label: "Act II — The Drowned Bell Tolls",
+    description: "You crossed into the second act.",
+    storyTitle: "The Drowned Bell",
+    createdAt: mementoSeq,
+    ...overrides,
+  };
+}
+
+async function callProfile(ctx: any, args: AnyDoc = {}) {
+  return (getProfile as any)._handler(ctx, {
+    accountId: "acct1",
+    guestTokenHash: "t1",
+    ...args,
+  });
+}
+
+describe("accountFunctions — getProfile rankProgress ticker (AM3 / R3.2)", () => {
+  it("derives rankProgress from the SAME metrics as the librarian rank chip", async () => {
+    // One ending, no beats, no tales ⇒ Novice, whose next rung is Keeper at 3
+    // endings. The chip and the ticker must agree on that single endings count.
+    const { ctx } = makeCtx({
+      accounts: [guestOwner()],
+      endings_unlocked: [{ _id: "e1", accountId: "acct1", storyId: "s" }],
+    });
+
+    const profile = await callProfile(ctx);
+
+    expect(profile.librarianRank.tier).toBe("novice");
+    expect(profile.librarianRank.endings).toBe(1);
+    expect(profile.rankProgress).toEqual({
+      nextTier: "keeper",
+      nextLabel: "Keeper",
+      needsEndings: 2, // 3 (keeper threshold) − 1 (the chip's endings count)
+      needsBeats: 0,
+      needsTales: 0,
+    });
+    // No mementos ⇒ the shelf field is null-for-absent (R4.2), never [] or undefined.
+    expect(profile.mementos).toBeNull();
+  });
+
+  it("emits rankProgress null at the top tier (The Unwritten)", async () => {
+    const endings = Array.from({ length: 30 }, (_, i) => ({
+      _id: `e${i}`,
+      accountId: "acct1",
+      storyId: `s${i}`,
+    }));
+    const tales = Array.from({ length: 10 }, (_, i) => ({
+      _id: `t${i}`,
+      ownerAccountId: "acct1",
+    }));
+    const firedBeats = Array.from({ length: 10 }, (_, i) => ({
+      id: `b${i}`,
+      status: "fired",
+    }));
+    const { ctx } = makeCtx({
+      accounts: [guestOwner()],
+      endings_unlocked: endings,
+      published_tales: tales,
+      saves: [{ _id: "save1", accountId: "acct1", state: { arc: { beats: firedBeats } } }],
+    });
+
+    const profile = await callProfile(ctx);
+
+    expect(profile.librarianRank.tier).toBe("unwritten");
+    expect(profile.rankProgress).toBeNull();
+  });
+});
+
+describe("accountFunctions — getProfile mementos projection (R2.4)", () => {
+  it("caps the shelf at the newest 12 and reports the true total", async () => {
+    mementoSeq = 0;
+    const rows = Array.from({ length: 15 }, (_, i) =>
+      memento({ _id: `mem${i}`, createdAt: i + 1, act: (i % 2) + 2 }),
+    );
+    const { ctx } = makeCtx({ accounts: [guestOwner()], mementos: rows });
+
+    const profile = await callProfile(ctx);
+
+    expect(profile.mementos.total).toBe(15);
+    expect(profile.mementos.items).toHaveLength(12);
+    // Newest first, and only the newest 12 survive the cap (createdAt 15…4).
+    expect(profile.mementos.items[0].createdAt).toBe(15);
+    expect(profile.mementos.items[11].createdAt).toBe(4);
+    const times = profile.mementos.items.map((m: AnyDoc) => m.createdAt);
+    expect(times).toEqual([...times].sort((a, b) => b - a));
+    // Only the display fields ride out to the client (design §3 wire shape).
+    expect(Object.keys(profile.mementos.items[0]).sort()).toEqual([
+      "act",
+      "createdAt",
+      "description",
+      "label",
+      "storyTitle",
+    ]);
+  });
+});
+
+describe("accountFunctions — mementos lifecycle (R2.1 / R2.2 / R2.3)", () => {
+  it("deleteAccount purges the account's mementos and leaves other accounts' rows (R2.3)", async () => {
+    mementoSeq = 0;
+    const { ctx, tables } = makeCtx({
+      accounts: [guestOwner()],
+      mementos: [memento(), memento(), memento({ accountId: "acct2" })],
+    });
+
+    await (deleteAccount as any)._handler(ctx, {
+      accountId: "acct1",
+      guestTokenHash: "t1",
+      confirm: "DELETE",
+    });
+
+    expect(tables.get("mementos")!.map((r) => r.accountId)).toEqual(["acct2"]);
+  });
+
+  it("exportAccount carries the mementos in the bundle, system fields stripped (R2.3)", async () => {
+    mementoSeq = 0;
+    const { ctx } = makeCtx({
+      accounts: [guestOwner()],
+      mementos: [memento({ act: 3, label: "Act III — The Last Peal" })],
+    });
+
+    const bundle = await (exportAccount as any)._handler(ctx, {
+      accountId: "acct1",
+      guestTokenHash: "t1",
+    });
+
+    expect(bundle.mementos).toHaveLength(1);
+    expect(bundle.mementos[0]).toMatchObject({
+      accountId: "acct1",
+      act: 3,
+      label: "Act III — The Last Peal",
+      storyTitle: "The Drowned Bell",
+    });
+    expect(bundle.mementos[0]).not.toHaveProperty("_id");
+    expect(bundle.mementos[0]).not.toHaveProperty("_creationTime");
+  });
+
+  it("save deletion leaves mementos intact — they read by accountId, not saveId (R2.1)", async () => {
+    mementoSeq = 0;
+    const { ctx, tables } = makeCtx({
+      accounts: [guestOwner()],
+      saves: [{ _id: "save1", accountId: "acct1" }],
+      mementos: [memento({ saveId: "save1" })],
+    });
+
+    // The save row is gone (rewind purge / hardcore permadeath happen elsewhere),
+    // but the memento — keyed by accountId — must survive and still project.
+    await ctx.db.delete("save1");
+    const profile = await callProfile(ctx);
+
+    expect(tables.get("saves")).toEqual([]);
+    expect(profile.mementos.total).toBe(1);
+    expect(profile.mementos.items[0].label).toBe("Act II — The Drowned Bell Tolls");
+  });
+
+  it("guest claim leaves mementos in place — rows keyed by stable accountId (R2.2)", async () => {
+    mementoSeq = 0;
+    const { ctx, tables } = makeCtx({
+      accounts: [guestOwner()],
+      mementos: [memento(), memento()],
+    });
+
+    await (claimGuest as any)._handler(ctx, {
+      accountId: "acct1",
+      guestTokenHash: "t1",
+      userId: "reader@example.com",
+    });
+
+    // No migration, no touch: the two rows still hang off acct1 …
+    expect(tables.get("mementos")!.map((r) => r.accountId)).toEqual(["acct1", "acct1"]);
+    // … and the profile still surfaces them after the claim.
+    const profile = await callProfile(ctx);
+    expect(profile.mementos.total).toBe(2);
+  });
+});

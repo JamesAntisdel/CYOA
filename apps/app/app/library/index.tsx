@@ -7,6 +7,10 @@ import { AgeGate } from "../../components/account/AgeGate";
 import { ContinueReading } from "../../components/library";
 import { AppNav } from "../../components/navigation";
 import { Text } from "../../components/primitives";
+import { ReadingModeChooser } from "../../components/reading/ReadingModeChooser";
+import type { ReadingMode } from "../../lib/readingMode";
+import { isIllustratedBookUnlocked } from "../../lib/readerSettingsGroups";
+import { useAccountProfile } from "../../hooks/useAccountProfile";
 import { hasRemoteGameApi, listRemotePublishedCreatorSeeds, type RemoteCreatorSeedItem } from "../../lib/gameApi";
 import { getStoryCoverSource } from "../../lib/designAssets";
 import { useBreakpoint } from "../../lib/responsive";
@@ -33,6 +37,11 @@ export default function LibraryRoute() {
   const guest = useGuestSession();
   const library = useLibrary(guest.session);
   const { tokens } = useAppTheme();
+  // Reading-modes cleanup — Novel is a Pro mode. Same pro-media gate the rest
+  // of the app uses (dev-force flag OR active pro/unlimited) so a non-Pro
+  // reader who taps Novel routes to the paywall instead of a silent downgrade.
+  const { profile } = useAccountProfile();
+  const novelUnlocked = isIllustratedBookUnlocked(profile);
   // Responsive: every story card on the shelf collapses cover+body to a
   // single stacked column on phones (<520px). Without this the title+meta
   // pane has ~211px to work with at 375 viewport — well below the
@@ -42,6 +51,16 @@ export default function LibraryRoute() {
   // No active save here, so we read the last-used voice and forward it on
   // the createRemoteSave call. Matches the cover-screen flow at app/index.tsx.
   const narrator = useNarratorVoice(null);
+  // Reading-modes cleanup — the reader picks how the next starter tale reads
+  // (Branching vs Novel) through the shared ReadingModeChooser, matching the
+  // cover screen. Replaces the old inline segmented toggle + reveal-on-change
+  // caption (the chooser owns the always-visible blurb now). Chosen at create
+  // (posture A); the server re-gates Novel on entitlement (dev-force-unlocked
+  // locally). Default: branching. `novelMode` stays the local state so the
+  // createSave threading below is untouched.
+  const [novelMode, setNovelMode] = useState(false);
+  const readingMode: ReadingMode = novelMode ? "novel" : "branching";
+  const chooseReadingMode = (mode: ReadingMode) => setNovelMode(mode === "novel");
   const [creatorSeeds, setCreatorSeeds] = useState<LocalCreatorSeed[]>([]);
   const [remoteCreatorSeeds, setRemoteCreatorSeeds] = useState<RemoteCreatorSeedItem[]>([]);
 
@@ -271,9 +290,28 @@ export default function LibraryRoute() {
       ) : null}
 
       <View style={{ gap: tokens.spacing.sm, maxWidth: 900, width: "100%" }}>
-        <Text style={{ fontWeight: "800" }} variant="subtitle">
-          Starters
-        </Text>
+        <View
+          style={{
+            alignItems: "center",
+            flexDirection: "row",
+            flexWrap: "wrap",
+            gap: tokens.spacing.sm,
+            justifyContent: "space-between",
+          }}
+        >
+          <Text style={{ fontWeight: "800" }} variant="subtitle">
+            Starters
+          </Text>
+        </View>
+        {/* Reading-modes cleanup — the shared two-option chooser with its
+            always-visible blurbs replaces the compact segmented toggle +
+            reveal-on-change caption. Applies to the tale you start next. */}
+        <ReadingModeChooser
+          isPro={novelUnlocked}
+          onChange={chooseReadingMode}
+          onNovelLocked={() => router.push("/paywall?reason=pro_media")}
+          value={readingMode}
+        />
         <View style={{ gap: tokens.spacing.sm }}>
           {library.starterStories.map((story: StorySummary) => (
             <Pressable
@@ -285,6 +323,8 @@ export default function LibraryRoute() {
                   "story",
                   undefined,
                   narrator.voiceId,
+                  undefined,
+                  { readingMode: novelMode ? "novel" : "branching" },
                 );
                 openSave(save.saveId);
               }}

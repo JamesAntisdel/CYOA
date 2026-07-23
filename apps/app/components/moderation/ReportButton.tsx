@@ -23,6 +23,20 @@ type ReportButtonProps = {
   variant?: "link" | "pill";
   /** Visible label; defaults to "Report". */
   label?: string;
+  /**
+   * Controlled-open (optional). When provided, the CALLER drives the reason
+   * picker's visibility — used by the reader Tome menu's "Flag this scene" row,
+   * which reuses this same report action from a menu row instead of a visible
+   * pill. Omit for the default self-contained (trigger-owns-state) behavior.
+   */
+  open?: boolean;
+  /** Fires whenever the picker opens/closes — pairs with the controlled `open`. */
+  onOpenChange?: (open: boolean) => void;
+  /**
+   * Hide the built-in trigger Pressable and render only the modal. The caller
+   * opens the picker via the controlled `open` prop (Tome-menu Flag row).
+   */
+  hideTrigger?: boolean;
 };
 
 type SubmitState = "idle" | "submitting" | "done" | "error" | "no_session";
@@ -43,10 +57,21 @@ export function ReportButton({
   targetLabel,
   variant = "link",
   label = "Report",
+  open,
+  onOpenChange,
+  hideTrigger = false,
 }: ReportButtonProps) {
   const { tokens } = useAppTheme();
   const guest = useGuestSession();
-  const [open, setOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
+  // Controlled when the caller passes `open` (the Tome-menu Flag row); otherwise
+  // the trigger owns the picker's visibility (every other call site — BC).
+  const isControlled = open !== undefined;
+  const actualOpen = isControlled ? open : internalOpen;
+  const setOpen = (next: boolean) => {
+    if (!isControlled) setInternalOpen(next);
+    onOpenChange?.(next);
+  };
   const [reason, setReason] = useState<ReportReason | null>(null);
   const [state, setState] = useState<SubmitState>("idle");
 
@@ -103,28 +128,30 @@ export function ReportButton({
 
   return (
     <>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`Report ${targetLabel ?? "this content"}`}
-        onPress={() => setOpen(true)}
-        style={triggerStyle}
-      >
-        <Text
-          style={{
-            color: tokens.colors.textMuted,
-            fontWeight: variant === "pill" ? "800" : "700",
-          }}
-          variant="bodySmall"
+      {hideTrigger ? null : (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Report ${targetLabel ?? "this content"}`}
+          onPress={() => setOpen(true)}
+          style={triggerStyle}
         >
-          {variant === "pill" ? `⚑ ${label}` : label}
-        </Text>
-      </Pressable>
+          <Text
+            style={{
+              color: tokens.colors.textMuted,
+              fontWeight: variant === "pill" ? "800" : "700",
+            }}
+            variant="bodySmall"
+          >
+            {variant === "pill" ? `⚑ ${label}` : label}
+          </Text>
+        </Pressable>
+      )}
 
       <Modal
         animationType="fade"
         onRequestClose={close}
         transparent
-        visible={open}
+        visible={actualOpen}
       >
         <SafeAreaView
           style={{

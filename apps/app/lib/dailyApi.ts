@@ -143,6 +143,8 @@ export const DAILY_PATHS = {
   getToday: "dailyFunctions:getToday",
   startDaily: "dailyFunctions:startDaily",
   getResults: "dailyFunctions:getResults",
+  // Daily Killcam (R2). Full registered path — BC1/DK5.
+  getChoicePulse: "dailyFunctions:getChoicePulse",
 } as const;
 
 /** Server AppError code raised when the reader already started today's Daily. */
@@ -318,4 +320,237 @@ export function buildDistributionModel(
 export function distributionShareLine(bar: DailyDistributionEntry): string {
   const pct = Math.round(bar.pct);
   return `${pct}% of readers found this`;
+}
+
+// ---------------------------------------------------------------------------
+// Daily Killcam — the mid-run pulse (design daily-killcam §3 / R2, R3).
+//
+// The reader's OWN bucket per early turn: "62% of today's readers chose this".
+// Spoiler discipline (BC10 / DK): the server returns ONLY the reader's own
+// committed choice bucket — never other readers' labels or the full
+// distribution — so there is nothing sensitive to filter here, only presence/
+// type tolerance (BC2). Percentages are server-computed and rounded (DK5); the
+// client renders `sharePct` VERBATIM — no percentage math client-side.
+// ---------------------------------------------------------------------------
+
+/**
+ * One early-turn pulse bucket (adapted 1:1 from the server `PulseEntry`). It
+ * carries only the reader's own committed choice for that turn — no foreign
+ * keys or labels ever cross the wire (BC10).
+ */
+export type RemotePulseEntry = {
+  turnNumber: number;
+  /** Share of today's readers who made the same choice, 0–100 (server-rounded, DK5). */
+  sharePct: number;
+  sameCount: number;
+  totalReaders: number;
+  /** Server-authored book-voice phrase (R2.4 tier table). */
+  phrase: string;
+};
+
+// Raw server bucket — no optional/null-for-absent fields (design §3), so the
+// adapter only validates presence + types and tolerates a missing payload.
+type ServerPulseEntry = {
+  turnNumber: number;
+  sharePct: number;
+  sameCount: number;
+  totalReaders: number;
+  phrase: string;
+};
+
+/**
+ * Map the raw `getChoicePulse` server value to the client pulse list. Tolerant
+ * by design: ANY malformed / missing payload → empty array, and each malformed
+ * bucket is dropped rather than surfaced (the chip/strip simply stays dark —
+ * design §6 "malformed pulse payload at the client → adapter returns empty
+ * array"). Entries are sorted by `turnNumber` so "newest" is deterministic.
+ */
+export function adaptChoicePulse(
+  raw: { pulses: ServerPulseEntry[] | null } | null | undefined,
+): RemotePulseEntry[] {
+  const pulses = raw?.pulses;
+  if (!Array.isArray(pulses)) return [];
+  return pulses
+    .filter(
+      (e): e is ServerPulseEntry =>
+        Boolean(e) &&
+        Number.isFinite(e.turnNumber) &&
+        Number.isFinite(e.sharePct) &&
+        typeof e.phrase === "string",
+    )
+    .map((e) => ({
+      turnNumber: Math.floor(e.turnNumber),
+      // Rendered verbatim — clamp only for defensiveness, never re-derive (DK5).
+      sharePct: Math.max(0, Math.min(100, e.sharePct)),
+      sameCount: Number.isFinite(e.sameCount) ? Math.max(0, Math.floor(e.sameCount)) : 0,
+      totalReaders: Number.isFinite(e.totalReaders) ? Math.max(0, Math.floor(e.totalReaders)) : 0,
+      phrase: e.phrase,
+    }))
+    .sort((a, b) => a.turnNumber - b.turnNumber);
+}
+
+/**
+ * Fetch the reader's early-turn pulse buckets for a Daily. Always resolves to a
+ * model (empty array) so the surfaces degrade to "no chip" on any failure —
+ * transport error (`null`), deploy skew (query throws → `null`), or malformed
+ * payload all collapse to `[]` (design §6, decorative-never-fatal / BC5).
+ */
+export async function getRemoteChoicePulse(input: {
+  dailyId: string;
+  accountId: string;
+  guestTokenHash?: string;
+}): Promise<RemotePulseEntry[]> {
+  const result = await convexHttp<{ pulses: ServerPulseEntry[] | null }>(
+    "query",
+    DAILY_PATHS.getChoicePulse,
+    input as unknown as Record<string, unknown>,
+  );
+  return adaptChoicePulse(result);
+}
+
+/**
+ * The pulse buckets PLUS the reader's own daily save id (daily-killcam 4.3).
+ * `readerSaveId` is the reader's OWN winning-run save — never a foreign one — so
+ * the results route can fetch their OWN turn-1..3 choice labels for the
+ * "Opening forks" join (BC10-safe). `null` when the reader has no recorded rows.
+ */
+export type RemoteChoicePulse = {
+  pulses: RemotePulseEntry[];
+  readerSaveId: string | null;
+};
+
+// Raw server value for `getChoicePulse` — pulses (null-for-absent tolerated) and
+// the reader's own save id (string or null).
+type ServerChoicePulse = { pulses: ServerPulseEntry[] | null; readerSaveId: string | null };
+
+/**
+ * Map the raw `getChoicePulse` server value to the pulses + reader save id.
+ * Reuses `adaptChoicePulse` for the buckets (same BC2/BC5 tolerance) and
+ * coerces `readerSaveId` to a non-empty string or `null` (missing/garbage →
+ * `null`, so the OpeningForks fetch is simply skipped).
+ */
+export function adaptChoicePulseResult(
+  raw: ServerChoicePulse | null | undefined,
+): RemoteChoicePulse {
+  const readerSaveId =
+    raw && typeof raw.readerSaveId === "string" && raw.readerSaveId.length > 0
+      ? raw.readerSaveId
+      : null;
+  return { pulses: adaptChoicePulse(raw), readerSaveId };
+}
+
+/**
+ * Fetch the reader's pulse buckets AND their own daily save id in one query
+ * (daily-killcam 4.3). Always resolves to a model (empty pulses + `null` save)
+ * so the results route degrades to "no strip" on any failure (BC5). The save id
+ * lets the route fetch the reader's OWN opening labels for the OpeningForks join.
+ */
+export async function getRemoteChoicePulseWithSave(input: {
+  dailyId: string;
+  accountId: string;
+  guestTokenHash?: string;
+}): Promise<RemoteChoicePulse> {
+  const result = await convexHttp<ServerChoicePulse>(
+    "query",
+    DAILY_PATHS.getChoicePulse,
+    input as unknown as Record<string, unknown>,
+  );
+  return adaptChoicePulseResult(result);
+}
+
+/**
+ * The one-line chip copy: `"62% of today's readers · the well-worn path"`. Copy
+ * is ALWAYS scoped to "today's readers" — never "all readers" — because buckets
+ * are approximate by design (R3.4). `sharePct` is rendered verbatim (DK5).
+ */
+export function pulseChipLabel(entry: RemotePulseEntry): string {
+  return `${entry.sharePct}% of today's readers · ${entry.phrase}`;
+}
+
+/**
+ * Pick the NEWEST pulse entry whose turn has actually been committed (its
+ * `turnNumber` is at or below the reader's latest completed turn). Returns
+ * `null` when the pulse is empty or every entry is for an uncommitted turn — the
+ * chip self-hides in both cases (design §4 "self-hides … when the turn is not
+ * yet committed"). Pure + deterministic (`adaptChoicePulse` sorts by turn).
+ */
+export function newestCommittedPulse(
+  pulses: readonly RemotePulseEntry[],
+  completedTurn: number,
+): RemotePulseEntry | null {
+  let newest: RemotePulseEntry | null = null;
+  for (const entry of pulses) {
+    if (entry.turnNumber > completedTurn) continue;
+    if (!newest || entry.turnNumber > newest.turnNumber) newest = entry;
+  }
+  return newest;
+}
+
+/**
+ * One "Opening forks" tile: the reader's OWN choice label (client-known from
+ * their history) joined to its server pulse bucket.
+ */
+export type OpeningForkTile = {
+  turnNumber: number;
+  /** The reader's own committed label for that turn (never another reader's). */
+  label: string;
+  entry: RemotePulseEntry;
+};
+
+/**
+ * Build the OpeningForks strip model: inner-join the reader's own early-turn
+ * choice labels with the pulse buckets that met the server threshold, keyed by
+ * `turnNumber`. Only turns for which BOTH a reader label AND a qualifying pulse
+ * exist become tiles; the result is sorted by turn and capped by the pulses the
+ * server returned (already ≤ KILLCAM_TURN_CAP). Empty result ⇒ the strip hides.
+ * Pure + total.
+ */
+export function buildOpeningForkTiles(
+  choiceHistory: readonly { turnNumber: number; choiceLabel: string }[],
+  pulses: readonly RemotePulseEntry[],
+): OpeningForkTile[] {
+  // Last-write-wins per turn so a rewind→re-choose label supersedes the old one.
+  const labelByTurn = new Map<number, string>();
+  for (const h of choiceHistory) {
+    if (typeof h?.choiceLabel === "string" && h.choiceLabel.length > 0) {
+      labelByTurn.set(h.turnNumber, h.choiceLabel);
+    }
+  }
+  const tiles: OpeningForkTile[] = [];
+  for (const entry of pulses) {
+    const label = labelByTurn.get(entry.turnNumber);
+    if (!label) continue;
+    tiles.push({ turnNumber: entry.turnNumber, label, entry });
+  }
+  return tiles.sort((a, b) => a.turnNumber - b.turnNumber);
+}
+
+/**
+ * Derive the reader's OWN opening-fork choice labels from their run history
+ * (daily-killcam 4.3). Each `getRunHistory` turn carries the choice that LED
+ * INTO it (`choice.choiceLabel`) — the SAME string the killcam recorded under
+ * that turn number — so the pair `{turnNumber, choiceLabel}` joins 1:1 to the
+ * pulse buckets in `buildOpeningForkTiles`. Only turns with a non-empty own
+ * label survive; the pulse side already caps to KILLCAM_TURN_CAP, so no cap is
+ * imposed here. Pure + total: tolerates a missing history / turns / choice
+ * (BC2) — a malformed history yields an empty list and the strip self-hides.
+ * The labels are the reader's OWN — never another reader's — so no spoiler
+ * crosses the wire (BC10).
+ */
+export function openingChoicesFromRunHistory(
+  history:
+    | { turns?: readonly { turnNumber: number; choice?: { choiceLabel: string } | undefined }[] }
+    | null
+    | undefined,
+): { turnNumber: number; choiceLabel: string }[] {
+  const turns = history?.turns;
+  if (!Array.isArray(turns)) return [];
+  const out: { turnNumber: number; choiceLabel: string }[] = [];
+  for (const turn of turns) {
+    if (!turn || !Number.isFinite(turn.turnNumber)) continue;
+    const label = turn.choice?.choiceLabel;
+    if (typeof label !== "string" || label.length === 0) continue;
+    out.push({ turnNumber: Math.floor(turn.turnNumber), choiceLabel: label });
+  }
+  return out;
 }

@@ -157,14 +157,16 @@ test("AppNav `current` accepts only valid tab keys (no orphan 'home')", () => {
 });
 
 test("BackToSceneButton owns the back-pill label and accessibilityLabel", () => {
-  // Single source of truth for the "← Back to current scene" wording
+  // Single source of truth for the "Back to current scene" wording
   // and pill treatment. Routes import this primitive — they don't
   // copy-paste the styling. The defaults below are checked so a
-  // route that omits the props still gets parity.
+  // route that omits the props still gets parity. The leading "←"
+  // glyph was retired by the R5 glyph-discipline sweep
+  // (reader-chrome-declutter task 3.2) — the label is now plain text.
   assert.match(
     backButtonSource,
-    /label\s*=\s*"← Back to current scene"/,
-    "BackToSceneButton must default to '← Back to current scene'",
+    /label\s*=\s*"Back to current scene"/,
+    "BackToSceneButton must default to 'Back to current scene'",
   );
   assert.match(
     backButtonSource,

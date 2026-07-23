@@ -1,0 +1,432 @@
+<title>Reader Chrome Declutter — Visual Mocks</title>
+<style>
+  /* ————— shell tokens (docs chrome around the mocks) ————— */
+  :root {
+    --shell-bg: #efe9dc;
+    --shell-ink: #1c1914;
+    --shell-ink-muted: #55503f;
+    --shell-rule: rgba(28, 25, 20, 0.25);
+    --shell-card: #f7f3e8;
+    --key-bg: #1c1914;
+    --key-ink: #efe9dc;
+    --good: #3d6b43;
+    --bad: #8a2f24;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --shell-bg: #171410;
+      --shell-ink: #e8e1d0;
+      --shell-ink-muted: #a89f88;
+      --shell-rule: rgba(232, 225, 208, 0.22);
+      --shell-card: #201b14;
+      --key-bg: #e8e1d0;
+      --key-ink: #171410;
+      --good: #8fbf95;
+      --bad: #dc8678;
+    }
+  }
+  :root[data-theme="dark"] {
+    --shell-bg: #171410;
+    --shell-ink: #e8e1d0;
+    --shell-ink-muted: #a89f88;
+    --shell-rule: rgba(232, 225, 208, 0.22);
+    --shell-card: #201b14;
+    --key-bg: #e8e1d0;
+    --key-ink: #171410;
+    --good: #8fbf95;
+    --bad: #dc8678;
+  }
+  :root[data-theme="light"] {
+    --shell-bg: #efe9dc;
+    --shell-ink: #1c1914;
+    --shell-ink-muted: #55503f;
+    --shell-rule: rgba(28, 25, 20, 0.25);
+    --shell-card: #f7f3e8;
+    --key-bg: #1c1914;
+    --key-ink: #efe9dc;
+    --good: #3d6b43;
+    --bad: #8a2f24;
+  }
+
+  /* ————— The Unwritten app tokens (frames are committed to the app themes) ————— */
+  .night {
+    --bg: #14110b; --surface: #1d1812; --surface-muted: #403727;
+    --ink: #ece4d2; --ink-muted: #b2a88f; --ink-faint: rgba(236,228,210,0.55);
+    --border: rgba(236,228,210,0.5); --border-muted: rgba(236,228,210,0.24);
+    --accent: #d8b158; --accent-muted: rgba(216,177,88,0.18);
+    --ember: #dc8678;
+  }
+  .sepia {
+    --bg: #f4ecd8; --surface: #faf6ec; --surface-muted: #c9b683;
+    --ink: #13110d; --ink-muted: #33302a; --ink-faint: rgba(19,17,13,0.6);
+    --border: rgba(19,17,13,0.75); --border-muted: rgba(19,17,13,0.4);
+    --accent: #a83232; --accent-muted: rgba(168,50,50,0.15);
+    --ember: #7a2218;
+  }
+
+  body { margin: 0; }
+  .wrap {
+    background: var(--shell-bg); color: var(--shell-ink);
+    font: 16px/1.55 Iowan Old Style, Palatino Linotype, Palatino, Georgia, serif;
+    padding: 48px 20px 96px;
+  }
+  .inner { max-width: 1080px; margin: 0 auto; display: flex; flex-direction: column; gap: 56px; }
+
+  header.doc h1 {
+    font-size: clamp(26px, 4vw, 38px); line-height: 1.15; margin: 0 0 10px; text-wrap: balance;
+    font-weight: 650; letter-spacing: 0.01em;
+  }
+  .doc .eyebrow, .lbl {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--shell-ink-muted);
+  }
+  .doc p.lede { max-width: 62ch; margin: 8px 0 0; color: var(--shell-ink-muted); }
+  .doc p.lede strong { color: var(--shell-ink); font-weight: 650; }
+
+  section { display: flex; flex-direction: column; gap: 18px; }
+  section > h2 {
+    font-size: 21px; margin: 0; font-weight: 650; letter-spacing: 0.01em;
+    border-top: 1px solid var(--shell-rule); padding-top: 22px; text-wrap: balance;
+  }
+  section > .note { max-width: 68ch; margin: 0; color: var(--shell-ink-muted); font-size: 15px; }
+
+  .frames { display: flex; gap: 28px; flex-wrap: wrap; align-items: flex-start; }
+  .frame-col { display: flex; flex-direction: column; gap: 10px; }
+  .frame-cap { display: flex; align-items: baseline; gap: 10px; }
+  .frame-cap .verdict { font-size: 13px; font-weight: 650; }
+  .verdict.bad { color: var(--bad); } .verdict.good { color: var(--good); }
+
+  /* keyed annotation chips */
+  .key {
+    display: inline-block; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 10px; letter-spacing: 0.08em; background: var(--key-bg); color: var(--key-ink);
+    border-radius: 3px; padding: 1px 5px 2px; vertical-align: 2px;
+  }
+  ul.legend { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; max-width: 46ch; font-size: 14.5px; }
+  ul.legend li { padding-left: 0; color: var(--shell-ink-muted); }
+  ul.legend b { color: var(--shell-ink); font-weight: 650; }
+
+  /* ————— phone frame ————— */
+  .phone {
+    width: 375px; border-radius: 22px; border: 1px solid var(--shell-rule);
+    overflow: hidden; box-shadow: 0 18px 40px -24px rgba(0,0,0,0.55);
+    background: var(--bg); color: var(--ink);
+    font: 14px/1.5 Iowan Old Style, Palatino Linotype, Palatino, Georgia, serif;
+  }
+  .screen { display: flex; flex-direction: column; gap: 9px; padding: 12px; }
+
+  /* app pieces */
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .cap  { font-size: 11px; letter-spacing: 0.06em; }
+  .pill {
+    border: 1px dashed var(--border-muted); border-radius: 999px;
+    padding: 8px 13px; color: var(--ink-muted); font-weight: 700; font-size: 12.5px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .strip {
+    border: 1px solid var(--border-muted); border-radius: 10px; background: var(--surface);
+    padding: 8px 11px; color: var(--ink-muted); font-size: 12.5px;
+  }
+  .row { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; }
+  .plate {
+    background: linear-gradient(160deg, var(--surface-muted), var(--surface) 70%);
+    border: 1px solid var(--border-muted); border-radius: 12px;
+    height: 118px; display: flex; align-items: flex-end; padding: 10px;
+    color: var(--ink-faint); font-size: 11px;
+  }
+  .plate.tall { height: 170px; }
+  .prose { color: var(--ink); font-size: 14.5px; }
+  .prose .dropcap::first-letter {
+    color: var(--accent); font-size: 200%; line-height: 0.8; padding-right: 2px; font-weight: 600;
+  }
+  .choice {
+    border: 1px solid var(--border-muted); border-radius: 10px; background: var(--surface);
+    padding: 10px 12px; font-size: 13.5px; color: var(--ink);
+  }
+  .disclosure { color: var(--ink-faint); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+  /* AFTER top bar + ribbon */
+  .topbar {
+    display: flex; align-items: center; gap: 9px;
+    border-bottom: 1px solid var(--border-muted); padding: 2px 2px 9px;
+  }
+  .glyph {
+    width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center;
+    color: var(--accent); border: 1px solid var(--border-muted); font-size: 14px; flex: none;
+  }
+  .topbar .title {
+    flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11.5px; letter-spacing: 0.12em; color: var(--ink-muted);
+  }
+  .wick { display: flex; gap: 2px; align-items: center; flex: none; }
+  .wick i { width: 4px; height: 12px; background: var(--accent); border-radius: 1px; display: block; }
+  .wick i.spent { background: var(--surface-muted); }
+  .tome {
+    display: flex; align-items: center; gap: 6px; flex: none;
+    border: 1px solid var(--border-muted); border-radius: 999px; padding: 5px 11px;
+    color: var(--ink); font-size: 12px; font-weight: 700;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .tome .g { color: var(--accent); }
+  .ribbon {
+    display: flex; align-items: center; gap: 8px;
+    color: var(--ink-muted); font-size: 12.5px; padding: 1px 2px;
+    white-space: nowrap; overflow: hidden;
+  }
+  .ribbon .pursuit { color: var(--ink); font-style: italic; overflow: hidden; text-overflow: ellipsis; }
+  .ribbon .dim { color: var(--ink-faint); flex: none; }
+  .ribbon .chev { color: var(--accent); flex: none; }
+  .ribbon.low .pursuit { color: var(--accent); font-style: normal; }
+
+  /* sheets */
+  .sheet {
+    width: 300px; border-radius: 14px; border: 1px solid var(--border-muted);
+    background: var(--surface); color: var(--ink); overflow: hidden;
+    box-shadow: 0 18px 40px -20px rgba(0,0,0,0.6);
+    font: 13px/1.45 Iowan Old Style, Palatino Linotype, Georgia, serif;
+  }
+  .sheet .hd {
+    text-align: center; padding: 10px; color: var(--ink-faint);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 10.5px; letter-spacing: 0.2em; text-transform: uppercase;
+    border-bottom: 1px solid var(--border-muted);
+  }
+  .sheet .r {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 11px 14px; border-bottom: 1px solid var(--border-muted);
+  }
+  .sheet .r:last-child { border-bottom: 0; }
+  .sheet .r .st { color: var(--ink-faint); font-size: 12px; }
+  .sheet .r.quiet { color: var(--ink-muted); font-size: 12px; }
+
+  /* desktop frame */
+  .desktop {
+    width: 100%; max-width: 1040px; border-radius: 14px; border: 1px solid var(--shell-rule);
+    background: var(--bg); color: var(--ink); overflow: hidden;
+    box-shadow: 0 18px 40px -24px rgba(0,0,0,0.5);
+    font: 14px/1.5 Iowan Old Style, Palatino Linotype, Georgia, serif;
+  }
+  .desktop .hairline { border-bottom: 1px solid var(--border-muted); }
+  .desktop .col { max-width: 560px; margin: 0 auto; padding: 12px 16px; display: flex; flex-direction: column; gap: 9px; }
+  .desktop .margin-note {
+    position: absolute; right: 24px; top: 130px; width: 130px;
+    color: var(--ink-faint); font-size: 11px; font-style: italic; text-align: right;
+  }
+  .desktop .stage { position: relative; }
+
+  .scrolly { overflow-x: auto; padding-bottom: 6px; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="wrap"><div class="inner">
+
+<header class="doc">
+  <div class="eyebrow">The Unwritten · spec reader-chrome-declutter · 2026-07-20</div>
+  <h1>Reader Chrome Declutter — visual mocks</h1>
+  <p class="lede">Authoritative visual companion to
+  <strong>.spec-workflow/specs/reader-chrome-declutter/</strong>. Every callout is keyed
+  to a requirement (<span class="key">R1.1</span>) or review finding (<span class="key">U1</span>) —
+  where a frame and the written spec disagree, the written spec wins. Frames render in the
+  app's own Night and Sepia token values.</p>
+</header>
+
+<section>
+  <h2>1 · The reader, before and after — phone 375px, Night theme</h2>
+  <p class="note">Before: six-plus rows of chrome; prose starts around row nine, and the
+  action pills wrap. After: prose within ~3 rows. The ribbon leads with the reader's
+  pursuit <span class="key">U1</span>, the tome trigger is labeled <span class="key">U2</span>,
+  and the AI disclosure stays visible as a page footer <span class="key">U3 R2.5</span>.</p>
+  <div class="frames">
+
+    <div class="frame-col">
+      <div class="frame-cap"><span class="lbl">Before</span> <span class="verdict bad">9 rows to prose · pills wrap</span></div>
+      <div class="phone night"><div class="screen">
+        <div class="row" style="justify-content:space-between">
+          <span class="mono cap" style="color:var(--accent)">☰ &nbsp;The Unwritten</span>
+        </div>
+        <div class="strip">The Drowned Bell — Act II &nbsp;●●○○ ▾</div>
+        <div class="strip">2 threads yet to pull</div>
+        <div class="strip">62% of today's readers · the well-worn path</div>
+        <div class="strip">🚪 3 doors the tome remembers</div>
+        <div class="strip">🕯 ▮▮▮▯ &nbsp;the candle burns low</div>
+        <div class="row" style="justify-content:space-between">
+          <span class="mono cap" style="color:var(--ink-faint)">✦ AI-GENERATED</span>
+          <span class="pill">Flag scene</span>
+        </div>
+        <div class="row">
+          <span class="pill">▶ Auto</span><span class="pill">⚙ Reading</span><span class="pill">Path map</span>
+        </div>
+        <div class="row"><span class="pill">Run history</span></div>
+        <div class="plate">scene illustration</div>
+        <p class="prose" style="margin:0">The floor beneath my boots is fused marrow, smooth and pale…</p>
+      </div></div>
+    </div>
+
+    <div class="frame-col">
+      <div class="frame-cap"><span class="lbl">After</span> <span class="verdict good">prose at row 3 · nothing wraps</span></div>
+      <div class="phone night"><div class="screen">
+        <div class="topbar">
+          <span class="glyph" title="Leave the tale">🕯︎</span>
+          <span class="title">THE DROWNED BELL</span>
+          <span class="wick" title="candle wick — R1.1"><i></i><i></i><i></i><i class="spent"></i></span>
+          <span class="tome"><span class="g">▤</span> Tome</span>
+        </div>
+        <div class="ribbon">
+          <span class="pursuit">Find the bell before dawn</span>
+          <span class="dim">· 2 threads · 3 doors</span>
+          <span class="chev">▾</span>
+        </div>
+        <div class="plate tall">scene illustration</div>
+        <p class="prose dropcap" style="margin:0">The floor beneath my boots is fused marrow, smooth and
+        pale as river stones polished by eons of silence. I take a step, and the sound does not echo…</p>
+        <div class="disclosure">AI-generated tale</div>
+        <div class="choice">1 · Answer the signal</div>
+        <div class="choice">2 · Row toward the dark</div>
+        <div class="choice" style="color:var(--ink-muted)">Write your own…</div>
+      </div></div>
+      <ul class="legend">
+        <li><b>Top bar</b> <span class="key">R1.1</span> — candle glyph exits, mono title truncates, wick appears only ≥50% burn, trigger is glyph + “Tome”.</li>
+        <li><b>Ribbon</b> <span class="key">R3.1 U1</span> — pursuit phrase first, counts after; renders nothing on arc-less saves.</li>
+        <li><b>Disclosure footer</b> <span class="key">R2.5 U3</span> — always visible on generated scenes; the flag <em>action</em> lives in the Tome.</li>
+      </ul>
+    </div>
+
+  </div>
+</section>
+
+<section>
+  <h2>2 · Ribbon states — auto-read on, and the ≥80% candle stage</h2>
+  <p class="note">When auto-read is on, the top bar gains a pause affordance
+  <span class="key">R1.2</span> (one tap to grab the wheel; enabling lives in the Tome).
+  At ≥80% burn the ribbon leads with a book-voice candle segment
+  <span class="key">R3.4 U4</span> whose tap opens the meter and the patronage door.</p>
+  <div class="frames">
+    <div class="frame-col">
+      <div class="frame-cap"><span class="lbl">Auto-read on</span></div>
+      <div class="phone night"><div class="screen" style="gap:8px">
+        <div class="topbar">
+          <span class="glyph">🕯︎</span>
+          <span class="title">THE DROWNED BELL</span>
+          <span class="tome" style="color:var(--accent);border-color:var(--accent)">Auto ‖</span>
+          <span class="tome"><span class="g">▤</span> Tome</span>
+        </div>
+      </div></div>
+    </div>
+    <div class="frame-col">
+      <div class="frame-cap"><span class="lbl">Candle ≥80% burned</span></div>
+      <div class="phone night"><div class="screen" style="gap:8px">
+        <div class="topbar">
+          <span class="glyph">🕯︎</span>
+          <span class="title">THE DROWNED BELL</span>
+          <span class="wick"><i class="spent"></i><i class="spent"></i><i class="spent"></i><i></i></span>
+          <span class="tome"><span class="g">▤</span> Tome</span>
+        </div>
+        <div class="ribbon low">
+          <span class="pursuit">the candle burns low — 3 turns left</span>
+          <span class="dim">· 2 threads</span>
+          <span class="chev">▾</span>
+        </div>
+      </div></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>3 · The two sheets — Tome menu and ribbon detail</h2>
+  <p class="note">Bottom sheets under 768px; anchored popovers (max-width ≈400) on desktop
+  <span class="key">R7.4</span>. Escape closes on web; focus returns to the trigger
+  <span class="key">R2.3 U5</span>. The ribbon detail mounts the <em>existing</em>
+  QuestLine / Threads / Doors / DailyPulse components unchanged <span class="key">RC2</span>.</p>
+  <div class="frames">
+    <div class="sheet night">
+      <div class="hd">The Tome</div>
+      <div class="r"><span>Auto-read</span><span class="st">off ▸</span></div>
+      <div class="r"><span>Path map</span><span class="st">▸</span></div>
+      <div class="r"><span>Run history</span><span class="st">▸</span></div>
+      <div class="r"><span>Read as book</span><span class="st">▸</span></div>
+      <div class="r"><span>Reading settings</span><span class="st">▸</span></div>
+      <div class="r quiet"><span>AI-generated scene</span><span class="st">Flag ▸</span></div>
+      <div class="r quiet"><span>Leave the tale</span><span class="st">▸</span></div>
+    </div>
+    <div class="sheet night">
+      <div class="hd">The Margins</div>
+      <div class="r"><span style="font-style:italic">Find the bell before dawn</span><span class="st">●●○○</span></div>
+      <div class="r"><span>2 threads yet to pull</span><span class="st"></span></div>
+      <div class="r"><span>3 doors the tome remembers</span><span class="st">▸</span></div>
+      <div class="r"><span>62% of today's readers walked this way</span><span class="st"></span></div>
+      <div class="r"><span>The candle</span><span class="st" style="color:var(--accent)">▮▮▮▯ 9 of 12</span></div>
+    </div>
+    <div class="sheet sepia">
+      <div class="hd">The Tome · Sepia</div>
+      <div class="r"><span>Auto-read</span><span class="st">off ▸</span></div>
+      <div class="r"><span>Path map</span><span class="st">▸</span></div>
+      <div class="r quiet"><span>AI-generated scene</span><span class="st">Flag ▸</span></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>4 · Desktop ≥1024 — the page column</h2>
+  <p class="note">Today every chrome row stretches the full viewport while prose sits in a
+  narrow column. After: all chrome lives inside the same centered 760px page column
+  <span class="key">R7.1 RC9</span>; the top bar's hairline may run full width, its content
+  may not. Empty margins are reserved for the phase-2 marginalia rail <span class="key">R7.5</span>.</p>
+  <div class="scrolly">
+  <div class="desktop night"><div class="stage">
+    <div class="hairline"></div>
+    <div class="col">
+      <div class="topbar" style="border-bottom:0;padding-bottom:2px">
+        <span class="glyph">🕯︎</span>
+        <span class="title">THE DROWNED BELL</span>
+        <span class="wick"><i></i><i></i><i></i><i class="spent"></i></span>
+        <span class="tome"><span class="g">▤</span> Tome</span>
+      </div>
+      <div class="ribbon">
+        <span class="pursuit">Find the bell before dawn</span>
+        <span class="dim">· 2 threads · 3 doors · 62% walked this way</span>
+        <span class="chev">▾</span>
+      </div>
+      <div class="plate tall">scene illustration</div>
+      <p class="prose dropcap" style="margin:0">The floor beneath my boots is fused marrow, smooth and pale
+      as river stones polished by eons of silence…</p>
+      <div class="disclosure">AI-generated tale</div>
+      <div class="choice">1 · Answer the signal</div>
+    </div>
+    <div class="margin-note">← these margins stay empty in phase 1;<br>phase 2 “Open Book” claims them<br>for marginalia (R7.5)</div>
+  </div></div>
+  </div>
+</section>
+
+<section>
+  <h2>5 · Home — starter header segmented control</h2>
+  <p class="note">The reading-mode toggle joins the “Starter adventures” header
+  <span class="key">R6.1</span>; selected state is a filled chip, no ✓ glyph
+  <span class="key">R5.3</span>. The duplicate rank chip on the continue-lead is dropped
+  <span class="key">R6.2</span>.</p>
+  <div class="phone night" style="width:375px"><div class="screen" style="gap:10px">
+    <div class="row" style="justify-content:space-between;align-items:baseline">
+      <span style="font-weight:700">Starter adventures</span>
+      <span class="row" style="gap:6px">
+        <span class="tome" style="background:var(--accent-muted);color:var(--accent);border-color:var(--accent)">Branching</span>
+        <span class="tome" style="color:var(--ink-faint)">Novel</span>
+        <span class="mono cap" style="color:var(--accent)">See all</span>
+      </span>
+    </div>
+    <div class="strip" style="height:52px;display:flex;align-items:center">Ashfall — a survival tale</div>
+    <div class="strip" style="height:52px;display:flex;align-items:center">The Bone Cathedral</div>
+  </div></div>
+</section>
+
+<footer class="doc" style="border-top:1px solid var(--shell-rule); padding-top:18px">
+  <span class="lbl">Build key</span>
+  <p class="note" style="margin-top:8px">Wave 1 builds frames 1–4 (chrome). Wave 3 builds frame 5 (home) and the
+  glyph sweep — note the mock uses placeholder glyphs (🕯︎ ▤) where the app's icon font
+  (<code class="mono">primitives/Icon.tsx</code>: candle, book) must be used
+  <span class="key">RC5</span>. Nothing in these frames adds a server call
+  <span class="key">RC2</span>.</p>
+</footer>
+
+</div></div>

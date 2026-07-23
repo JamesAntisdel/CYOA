@@ -1,4 +1,9 @@
-import { llmEffectSchema, llmSceneOutputSchema, type LlmSceneProposal } from "@cyoa/engine";
+import {
+  llmEffectSchema,
+  llmSceneOutputSchema,
+  sceneSchemaFor,
+  type LlmSceneProposal,
+} from "@cyoa/engine";
 import { z } from "zod";
 
 import type { ParsedScene } from "./types";
@@ -110,7 +115,10 @@ function stripLlmFencingAndPreamble(raw: string): string {
  *     layered over an authored node graph.
  *  3. Plain text. The author-mode reader falls back to seed-text choices.
  */
-export function parseSceneOutput(raw: string): ParsedScene {
+export function parseSceneOutput(
+  raw: string,
+  readingMode?: "branching" | "novel",
+): ParsedScene {
   const stripped = stripLlmFencingAndPreamble(raw);
   if (!stripped.startsWith("{")) return { prose: stripped, choiceMetadata: [] };
   // Even after fence-stripping, Gemini sometimes appends trailing text
@@ -118,7 +126,15 @@ export function parseSceneOutput(raw: string): ParsedScene {
   // first complete object so JSON.parse doesn't fail on trailing junk.
   const trimmed = extractFirstJsonObject(stripped);
   const candidate = JSON.parse(trimmed);
-  const llmDriven = llmSceneOutputSchema.safeParse(candidate);
+  // RM3 — the LIVE SSE gate (the fifth parse site). Select the additive novel
+  // schema (choices min(0).max(1)) for novel saves so a valid 0/1-choice novel
+  // payload is not rejected here (which would fall through to
+  // `authoredSceneSchema` → no proposal → `completeSceneStream` throws before it
+  // ever sees the payload). Absent/branching ⇒ the byte-identical branching
+  // schema (min(2)); the mode is threaded from `LlmRouter.generateScene` via
+  // `request.readingMode`.
+  const sceneSchema = sceneSchemaFor(readingMode);
+  const llmDriven = sceneSchema.safeParse(candidate);
   if (llmDriven.success) {
     return projectFromLlmDrivenProposal(llmDriven.data);
   }

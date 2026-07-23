@@ -46,6 +46,14 @@ type SceneMediaProps = {
    * scenes and sessions. Omit to suppress the picker entirely.
    */
   onNarratorPlaybackRateChange?: (rate: number) => void;
+  /**
+   * Reports whether the TTS narration is actively playing, so an ancestor
+   * (ReaderScreen's auto-narrator) can hold the hands-free page-turn until the
+   * narrator finishes instead of skipping over it. Fires on every play/pause
+   * transition; stays `false` when audio is off / there's no narration clip /
+   * on native (narration is web-only). Omit to ignore narration state.
+   */
+  onNarrationActiveChange?: (active: boolean) => void;
 };
 
 /**
@@ -64,6 +72,7 @@ export function SceneMedia({
   muted,
   narratorPlaybackRate = 1,
   onNarratorPlaybackRateChange,
+  onNarrationActiveChange,
   reducedMotion,
   sceneId,
 }: SceneMediaProps) {
@@ -119,6 +128,20 @@ export function SceneMedia({
     volume: 1,
     playbackRate: narratorPlaybackRate,
   });
+
+  // Report narration play/pause up so the auto-narrator waits for the narrator
+  // to finish before turning the page (never skips over it). Fire-on-change; a
+  // ref-free effect keyed on the boolean keeps it to real transitions.
+  const reportNarrationActive = onNarrationActiveChange;
+  const narratorIsPlaying = narratorPlayback.isPlaying;
+  useEffect(() => {
+    reportNarrationActive?.(narratorIsPlaying);
+  }, [reportNarrationActive, narratorIsPlaying]);
+  // On unmount (scene/layout change) narration is no longer playing — clear the
+  // flag so a lingering `true` never permanently blocks auto.
+  useEffect(() => {
+    return () => reportNarrationActive?.(false);
+  }, [reportNarrationActive]);
 
   // Audio-only scenes with a ready narrator clip should still render the
   // audio layers even if `media.status === "idle"` for the visual plate.

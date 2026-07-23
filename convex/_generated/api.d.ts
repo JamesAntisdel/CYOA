@@ -17,6 +17,7 @@ import type * as analyticsEvents from "../analyticsEvents.js";
 import type * as assets from "../assets.js";
 import type * as betterAuth_accountLink from "../betterAuth/accountLink.js";
 import type * as betterAuth_auth from "../betterAuth/auth.js";
+import type * as betterAuth_emailNode from "../betterAuth/emailNode.js";
 import type * as betterAuth_providers from "../betterAuth/providers.js";
 import type * as billing_apple from "../billing/apple.js";
 import type * as billing_config from "../billing/config.js";
@@ -88,12 +89,14 @@ import type * as media_omniClient from "../media/omniClient.js";
 import type * as media_proMediaGate from "../media/proMediaGate.js";
 import type * as media_sceneMedia from "../media/sceneMedia.js";
 import type * as media_veo from "../media/veo.js";
+import type * as mementos from "../mementos.js";
 import type * as memory from "../memory.js";
 import type * as migrations from "../migrations.js";
 import type * as moderation from "../moderation.js";
 import type * as operatorDashboardFunctions from "../operatorDashboardFunctions.js";
 import type * as pushNotifications from "../pushNotifications.js";
 import type * as ratelimit from "../ratelimit.js";
+import type * as readingModeFunctions from "../readingModeFunctions.js";
 import type * as safety from "../safety.js";
 import type * as saves from "../saves.js";
 import type * as seasons from "../seasons.js";
@@ -101,6 +104,7 @@ import type * as seeds from "../seeds.js";
 import type * as tales from "../tales.js";
 import type * as talesFunctions from "../talesFunctions.js";
 import type * as turn from "../turn.js";
+import type * as uiAnalytics from "../uiAnalytics.js";
 
 import type {
   ApiFromModules,
@@ -118,6 +122,7 @@ declare const fullApi: ApiFromModules<{
   assets: typeof assets;
   "betterAuth/accountLink": typeof betterAuth_accountLink;
   "betterAuth/auth": typeof betterAuth_auth;
+  "betterAuth/emailNode": typeof betterAuth_emailNode;
   "betterAuth/providers": typeof betterAuth_providers;
   "billing/apple": typeof billing_apple;
   "billing/config": typeof billing_config;
@@ -189,12 +194,14 @@ declare const fullApi: ApiFromModules<{
   "media/proMediaGate": typeof media_proMediaGate;
   "media/sceneMedia": typeof media_sceneMedia;
   "media/veo": typeof media_veo;
+  mementos: typeof mementos;
   memory: typeof memory;
   migrations: typeof migrations;
   moderation: typeof moderation;
   operatorDashboardFunctions: typeof operatorDashboardFunctions;
   pushNotifications: typeof pushNotifications;
   ratelimit: typeof ratelimit;
+  readingModeFunctions: typeof readingModeFunctions;
   safety: typeof safety;
   saves: typeof saves;
   seasons: typeof seasons;
@@ -202,6 +209,7 @@ declare const fullApi: ApiFromModules<{
   tales: typeof tales;
   talesFunctions: typeof talesFunctions;
   turn: typeof turn;
+  uiAnalytics: typeof uiAnalytics;
 }>;
 
 /**

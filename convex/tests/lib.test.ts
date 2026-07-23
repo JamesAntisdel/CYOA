@@ -65,6 +65,34 @@ describe("convex helpers", () => {
     ).rejects.toThrow("resource_not_owned");
   });
 
+  it("authorizes a bridged user account by matching email claim (userId = email)", async () => {
+    // BetterAuth accounts are keyed by userId = normalized email while the JWT
+    // `subject` is the (different) provider user id. The email claim must
+    // authorize, case/space-insensitively.
+    const ctxEmail = (email?: string, subject?: string) => ({
+      auth: {
+        getUserIdentity: async () =>
+          email || subject ? { ...(email ? { email } : {}), ...(subject ? { subject } : {}) } : null,
+      },
+    });
+
+    await expect(
+      assertAccountSessionAccess(ctxEmail("Reader@Example.com", "provider_sub_123"), {
+        _id: "acct",
+        kind: "user",
+        userId: "reader@example.com",
+      }),
+    ).resolves.toBeUndefined();
+    // Wrong email → still rejected (no guest-token fallback present).
+    await expect(
+      assertAccountSessionAccess(ctxEmail("someone@else.com", "provider_sub_123"), {
+        _id: "acct",
+        kind: "user",
+        userId: "reader@example.com",
+      }),
+    ).rejects.toThrow("resource_not_owned");
+  });
+
   it("creates stable day keys and app errors", () => {
     expect(makeDayKey(new Date("2026-04-26T12:00:00.000Z"))).toBe("2026-04-26");
     expect(forbidden("x").code).toBe("forbidden");

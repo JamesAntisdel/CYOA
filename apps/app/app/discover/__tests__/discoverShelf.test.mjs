@@ -53,13 +53,57 @@ test("loading, unreachable-with-retry, and empty shelf states all render", () =>
 test("public seeds launch as fresh runs via the existing createSave path", () => {
   assert.match(
     discoverSrc,
-    /library\.createSave\(seed\.storyId, "story", seed\.title\)/,
+    /library\.createSave\(\s*seed\.storyId,\s*"story",\s*seed\.title,/,
     "launch must go through useLibrary.createSave with the seed storyId + title override",
   );
   assert.match(
     discoverSrc,
     /router\.push\(`\/read\/\$\{save\.saveId\}`\)/,
     "a successful launch must land in the reader",
+  );
+});
+
+test("the shared ReadingModeChooser renders and threads into launch createSave", () => {
+  // Reading-modes-cleanup (B1): the retired inline segmented toggle is replaced
+  // by the SHARED <ReadingModeChooser> (Wave 1), which owns the two option rows
+  // and their always-visible blurbs, matching the cover screen.
+  assert.match(
+    discoverSrc,
+    /import \{ ReadingModeChooser \} from "\.\.\/\.\.\/components\/reading\/ReadingModeChooser"/,
+    "the discover route imports the shared chooser",
+  );
+  assert.match(
+    discoverSrc,
+    /<ReadingModeChooser[\s\S]*?onChange=\{chooseReadingMode\}[\s\S]*?value=\{readingMode\}[\s\S]*?\/>/,
+    "the chooser renders with value + onChange bound to the discover state",
+  );
+  // Novel is a Pro mode — the chooser is gated + wired to the paywall (finding
+  // #3: no more silent downgrade at create).
+  assert.match(
+    discoverSrc,
+    /const novelUnlocked = isIllustratedBookUnlocked\(profile\)/,
+    "discover resolves Novel entitlement through the shared pro-media gate",
+  );
+  assert.match(discoverSrc, /isPro=\{novelUnlocked\}/, "the chooser receives the resolved entitlement");
+  assert.match(
+    discoverSrc,
+    /onNovelLocked=\{\(\) => router\.push\("\/paywall\?reason=pro_media"\)\}/,
+    "a locked Novel tap routes to the pro_media paywall",
+  );
+  // The retired inline toggle is gone.
+  assert.doesNotMatch(discoverSrc, /accessibilityLabel="Reading mode"/, "no inline radiogroup remains");
+  assert.doesNotMatch(discoverSrc, /<Chip variant=\{novelMode/, "the Chip-based segments are gone");
+  assert.doesNotMatch(discoverSrc, /✓/, "no check-mark glyph on the discover surface (RC5)");
+  // The chosen mode must reach createSave.
+  assert.match(
+    discoverSrc,
+    /readingMode: novelMode \? "novel" : "branching"/,
+    "the selected reading mode must thread into library.createSave",
+  );
+  assert.match(
+    discoverSrc,
+    /const chooseReadingMode = \(mode: ReadingMode\) => setNovelMode\(mode === "novel"\)/,
+    "chooseReadingMode bridges the chooser onChange back to the boolean",
   );
 });
 

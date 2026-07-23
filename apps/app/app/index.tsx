@@ -5,9 +5,15 @@ import type { StorySummary } from "@cyoa/stories";
 
 import { AgeGate } from "../components/account/AgeGate";
 import { DailyCard } from "../components/daily";
+import { DeskHome } from "../components/home/DeskHome";
+import { resolveDeskEnabled } from "../components/home/deskGate";
 import { AppNav } from "../components/navigation";
-import { Button, Chip, Text } from "../components/primitives";
+import { Button, Text } from "../components/primitives";
+import { ReadingModeChooser } from "../components/reading/ReadingModeChooser";
+import type { ReadingMode } from "../lib/readingMode";
+import { isIllustratedBookUnlocked } from "../lib/readerSettingsGroups";
 import { useAccountProfile } from "../hooks/useAccountProfile";
+import { useReaderSettings } from "../hooks/useReaderSettings";
 import {
   librarianRankChipLabel,
   librarianRankProgressLine,
@@ -42,8 +48,14 @@ export default function IndexRoute() {
   // progress we lead with their story (continue + daily + rank) and demote the
   // acquisition hero below the fold; first-visit readers keep the original
   // Chapter-Zero-hero-first layout untouched.
-  const { librarianRank } = useAccountProfile();
-  const { tokens } = useAppTheme();
+  const { librarianRank, profile } = useAccountProfile();
+  // Reading-modes cleanup — Novel is a Pro mode. Mirror the SAME gate the rest
+  // of the app uses for pro-media (dev-force flag OR active pro/unlimited) so a
+  // non-Pro reader who taps Novel is routed to the paywall instead of being
+  // silently downgraded to Branching server-side.
+  const novelUnlocked = isIllustratedBookUnlocked(profile);
+  const { settings } = useReaderSettings();
+  const { reduceMotion, tokens } = useAppTheme();
   // Responsive breakpoints: phone (<520) stacks every multi-column row.
   // Hero cover and starter-tale story cards both branch off `isPhone`.
   const { isPhone, width: viewportWidth } = useBreakpoint();
@@ -53,6 +65,18 @@ export default function IndexRoute() {
   // can pin it to the new save record.
   const narrator = useNarratorVoice(null);
   const tutorialStory = getTutorialStory(library.starterStories);
+
+  // Reading-modes cleanup — the reader picks how the next starter tale reads
+  // (Branching vs Novel) through the shared ReadingModeChooser, which replaces
+  // the old inline segmented toggle + reveal-on-change caption (the chooser
+  // owns the always-visible blurb now). Chosen at create (posture A); the
+  // server re-gates Novel on entitlement (dev-force-unlocked locally). Default:
+  // branching. `novelMode` stays the local state so the createSave threading
+  // below is untouched; `chooseReadingMode` bridges the chooser's ReadingMode
+  // onChange back to that boolean.
+  const [novelMode, setNovelMode] = useState(false);
+  const readingMode: ReadingMode = novelMode ? "novel" : "branching";
+  const chooseReadingMode = (mode: ReadingMode) => setNovelMode(mode === "novel");
 
   const handleAgeSubmit = (selection: AgeSelection) => {
     void guest.createGuestSession(selection);
@@ -120,6 +144,54 @@ export default function IndexRoute() {
           onSubmit={handleAgeSubmit}
         />
       </ScrollView>
+    );
+  }
+
+  // the-desk (R1/R2, DK1/DK7) — the SINGLE gated branch. Placed AFTER the
+  // loading + AgeGate guards (so a no-session reader always hits the age gate,
+  // R4.1) and BEFORE the returning/first-visit card blocks below. When the desk
+  // is opted in AND the viewport is wide enough (>=768, not phone — DK7) we
+  // return the diegetic desk home; in EVERY other case (flag off, phone, or
+  // <768) control falls through to the EXACT current card home, byte-identical
+  // to today (R7.1/DK1). The env flag is read as a LITERAL so Expo web inlines
+  // it (DK2). Do NOT restructure the blocks below.
+  const deskEnabled = resolveDeskEnabled({
+    envFlag: process.env.EXPO_PUBLIC_DESK_HOME,
+    settingOn: settings.deskHome,
+  });
+  if (deskEnabled && !isPhone && viewportWidth >= 768) {
+    const deskContinue = library.continueSave;
+    return (
+      <DeskHome
+        continueSave={
+          deskContinue
+            ? {
+                saveId: deskContinue.saveId,
+                storyId: deskContinue.storyId,
+                title: deskContinue.title,
+              }
+            : null
+        }
+        dailyToday={dailyToday}
+        onLaunchTutorial={() => {
+          void launchTutorial();
+        }}
+        onNavDiscover={() => router.push("/discover")}
+        onNavEndings={() => router.push("/endings")}
+        onNavLibrary={() => router.push("/library")}
+        onNavPaywall={() => router.push("/paywall")}
+        onOpenDailyResults={(dailyId) => router.push(`/daily/${dailyId}`)}
+        onOpenSave={openSave}
+        onStartDaily={() =>
+          accountId
+            ? startRemoteDaily({ accountId, ...guestAuthArgs() })
+            : Promise.resolve(null)
+        }
+        reducedMotion={reduceMotion || settings.reduceMotion}
+        starterStoryIds={library.starterStories.map((story: StorySummary) => story.id)}
+        tutorialTitle={tutorialStory?.title ?? null}
+        {...(librarianRank ? { librarianRank } : {})}
+      />
     );
   }
 
@@ -280,21 +352,18 @@ export default function IndexRoute() {
         Continue reading →
       </Text>
       {librarianRank ? (
-        <View
+        // R6.2 — the rank CHIP lives on the profile only; the home continue-
+        // lead keeps just the progress line (no duplicate rank chip). The a11y
+        // label still announces the rank name so the surface stays legible to
+        // screen readers.
+        <Text
+          muted
           accessibilityLabel={`Librarian rank: ${librarianRankChipLabel(librarianRank)}. ${librarianRankProgressLine(librarianRank)}.`}
-          style={{
-            alignItems: "center",
-            flexDirection: "row",
-            flexWrap: "wrap",
-            gap: tokens.spacing.sm,
-            marginTop: tokens.spacing.xs,
-          }}
+          style={{ marginTop: tokens.spacing.xs }}
+          variant="caption"
         >
-          <Chip variant="accent">{`▣ ${librarianRankChipLabel(librarianRank)}`}</Chip>
-          <Text muted variant="caption">
-            {librarianRankProgressLine(librarianRank)}
-          </Text>
-        </View>
+          {librarianRankProgressLine(librarianRank)}
+        </Text>
       ) : null}
     </Pressable>
   ) : null;
@@ -330,6 +399,10 @@ export default function IndexRoute() {
           style={{
             alignItems: "center",
             flexDirection: "row",
+            // Wrap so "See all" drops to the next line rather than clipping on a
+            // narrow phone header.
+            flexWrap: "wrap",
+            gap: tokens.spacing.sm,
             justifyContent: "space-between",
           }}
         >
@@ -342,6 +415,15 @@ export default function IndexRoute() {
             </Text>
           </Pressable>
         </View>
+        {/* Reading-modes cleanup — the shared two-option chooser with its
+            always-visible blurbs replaces the compact segmented toggle +
+            reveal-on-change caption. Applies to the tale you start next. */}
+        <ReadingModeChooser
+          isPro={novelUnlocked}
+          onChange={chooseReadingMode}
+          onNovelLocked={() => router.push("/paywall?reason=pro_media")}
+          value={readingMode}
+        />
         <View style={{ gap: tokens.spacing.sm }}>
           {library.starterStories.slice(0, 3).map((story: StorySummary) => (
             <Pressable
@@ -353,6 +435,8 @@ export default function IndexRoute() {
                   "story",
                   undefined,
                   narrator.voiceId,
+                  undefined,
+                  { readingMode: novelMode ? "novel" : "branching" },
                 );
                 openSave(save.saveId);
               }}

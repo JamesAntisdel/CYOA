@@ -72,3 +72,45 @@ export function librarianRank(input: {
 
   return { tier: matched.tier, label: matched.label, endings, beats, tales };
 }
+
+/** The reader's distance to the NEXT tier of the Librarian ladder (R3.1). */
+export type RankProgress = {
+  /** The tier immediately ABOVE the current one in `TIERS` order. */
+  nextTier: LibrarianTier;
+  /** Human-facing display name for that next tier. */
+  nextLabel: string;
+  /** Zero-floored deficits against the next tier's OWN thresholds. */
+  needsEndings: number;
+  needsBeats: number;
+  needsTales: number;
+};
+
+/**
+ * Distance from a `LibrarianRank` to the NEXT tier above it in `TIERS` order
+ * (R3.1). Deficits are computed against that next tier's own thresholds and
+ * zero-floored, so a metric already at or above its next-tier requirement lists
+ * nothing (the ladder is intentionally non-monotonic per metric — e.g. the jump
+ * to `librarian` needs tales rather than more beats). Returns `null` at the top
+ * tier ("The Unwritten"), where there is no next rung. Pure and total: the
+ * rank's echoed metrics are re-floored via `floorMetric`, and an unrecognized
+ * tier is treated as the floor, so this never throws.
+ */
+export function rankProgress(rank: LibrarianRank): RankProgress | null {
+  let currentIndex = TIERS.findIndex((spec) => spec.tier === rank.tier);
+  if (currentIndex < 0) currentIndex = 0;
+
+  const next = TIERS[currentIndex + 1];
+  if (!next) return null;
+
+  const endings = floorMetric(rank.endings);
+  const beats = floorMetric(rank.beats);
+  const tales = floorMetric(rank.tales);
+
+  return {
+    nextTier: next.tier,
+    nextLabel: next.label,
+    needsEndings: Math.max(0, next.minEndings - endings),
+    needsBeats: Math.max(0, next.minBeats - beats),
+    needsTales: Math.max(0, next.minTales - tales),
+  };
+}

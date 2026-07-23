@@ -106,7 +106,7 @@ export function TrophyCrypt({ endings }: TrophyCryptProps) {
                   variant="caption"
                 >
                   {isOpen
-                    ? "▣ Close"
+                    ? "Close"
                     : cinematicReady
                       ? "❖ Watch legend"
                       : "◷ Rendering…"}

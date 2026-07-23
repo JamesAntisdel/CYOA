@@ -1,12 +1,24 @@
+import { useRouter } from "expo-router";
+import { useMemo } from "react";
 import { Modal, Pressable, ScrollView, View } from "react-native";
 
 import { Text } from "../primitives";
 import { useAccountProfile } from "../../hooks/useAccountProfile";
 import {
-  NARRATOR_PLAYBACK_RATES,
   useReaderSettings,
+  type ReaderLayoutVariant,
   type ReaderSettings,
 } from "../../hooks/useReaderSettings";
+import {
+  readerSettingsSections,
+  isIllustratedBookUnlocked,
+  selectIllustratedBook,
+  ILLUSTRATED_BOOK_LABEL,
+  ILLUSTRATED_BOOK_LAYOUT,
+  type SettingsOption,
+} from "../../lib/readerSettingsGroups";
+import { ModeMark, READING_MODE_META, type ReadingMode } from "../../lib/readingMode";
+import { ReadingModeChooser } from "./ReadingModeChooser";
 import { useBreakpoint } from "../../lib/responsive";
 import { markLayoutAsExplicitlyChosen } from "./ReaderScreen";
 import { useAppTheme } from "../../theme";
@@ -21,23 +33,21 @@ import { useAppTheme } from "../../theme";
  * have to bounce out to /settings and back to flip a theme or mute the
  * narrator mid-scene.
  *
- * Subset (covers ~80% of in-tale tweaks):
- *   - Theme               (Day / Night / Sepia / System)
- *   - Text size           (Compact / Default / Large)
- *   - Reading layout      (Book / Mobile / Modern app / Journal /
- *                          Graphic novel)
- *   - Illustrations       (on / off)         — also writes server prefs
- *   - Narration & ambient (on / off)         — also writes server prefs
- *   - Narrator speed      (0.75 / 1 / 1.25 / 1.5)
- *   - Scene cinematics    (on / off)         — also writes server prefs
- *   - Reduce motion       (on / off)
+ * Both surfaces now render from ONE shared definition list
+ * (`lib/readerSettingsGroups.ts`, reader-chrome-declutter R4.1/RC7): the
+ * drawer maps over the groups tagged for the "drawer" surface — the strict
+ * mid-tale subset (R4.4) — and renders each with its OWN `PillGroup`
+ * primitive (a data-model extraction, not a visual merge). The
+ * Illustrated-Book Pro-gate + coupling live in the shared module too, so the
+ * gate fires identically here and on /settings.
  *
- * What this drawer does NOT show (use /settings):
- *   - Reader HUD mode, Chrome, Dialog blocks (rarely toggled mid-tale)
- *   - Mature content opt-in (account-level, not reading)
- *   - Narrator voice picker + continuity (per-save concern; lives on the
- *     reader chrome already via `<NarratorControl>`)
- *   - Account export / delete (not reading)
+ * Subset (the shared groups — R4.4; + Candlelight focus, a phase-2 quick-win
+ * offered mid-tale so a reader can flip the chrome dimming off without leaving
+ * the story):
+ *   Theme · Text size · Reading layout · Illustrations · Narration & ambient
+ *   · Narrator speed · Scene cinematics · Reduce motion · Candlelight focus
+ * (Reader HUD, Audio, Cinematic mode, Dialog blocks, Mature content, and the
+ * Narrator voice picker stay /settings-only.)
  *
  * Mobile UX: full-width Modal that anchors to the bottom of the screen on
  * phone (sheet-style) and to the right on tablet/desktop (drawer-style).
@@ -46,13 +56,70 @@ import { useAppTheme } from "../../theme";
 export type ReaderSettingsDrawerProps = {
   visible: boolean;
   onClose: () => void;
+  // Reading-modes cleanup (B3): the CURRENT content axis for the open save +
+  // a live switch. Optional so a caller with no save in scope (or that hasn't
+  // resolved the save's mode yet) simply omits the "How you read" section.
+  // B2 wires these from the reader screen; the switch round-trips through the
+  // server mutation and stays disabled while `switchPending`.
+  currentReadingMode?: ReadingMode;
+  onSwitchReadingMode?: (mode: ReadingMode) => void;
+  switchPending?: boolean;
+  // SWITCH-UX #4 — the mode a just-succeeded switch moved TO (readingModeConfirmed
+  // in the reader). The chooser binds to this over the current-scene stamp so a
+  // landed switch stays selected (the scene keeps its shape till the next page)
+  // instead of snapping back and looking rejected.
+  confirmedMode?: ReadingMode | null;
+  // SWITCH-UX #5 — false for local/demo saves with no remote saves row, where a
+  // switch no-ops. Then the section shows the mode as a LABEL only, no chooser.
+  switchable?: boolean;
 };
 
-export function ReaderSettingsDrawer({ visible, onClose }: ReaderSettingsDrawerProps) {
+// Surface-local help text (presentation, not definition — kept out of the
+// shared module which is definitions-only). Keyed by the shared group key.
+const DRAWER_HELP: Record<string, string> = {
+  imagesEnabled: "The scene image plate above the prose.",
+  audioEnabled: "Narrator voice + scene soundscape.",
+  videoEnabled: "Short Veo clip below the prose. Image still shows.",
+  focusMode: "Dims the chrome while you read; any input restores it.",
+};
+
+export function ReaderSettingsDrawer({
+  visible,
+  onClose,
+  currentReadingMode,
+  onSwitchReadingMode,
+  switchPending = false,
+  confirmedMode = null,
+  switchable = true,
+}: ReaderSettingsDrawerProps) {
   const { tokens } = useAppTheme();
   const { isPhone } = useBreakpoint();
   const { resetSettings, settings, updateSettings } = useReaderSettings();
   const account = useAccountProfile();
+  const router = useRouter();
+
+  // Illustrated Book (R3.7): Pro-gated so a non-Pro reader can never select
+  // the image-first skin into a permanently empty plate — locked → paywall
+  // until the account is Pro (or the dev override previews it). ONE gate,
+  // shared with /settings (R4.1).
+  const illustratedBookUnlocked = isIllustratedBookUnlocked(account.profile);
+
+  // The mid-tale subset (R4.4), now filed under the three honest sections (B3):
+  // "How you read" (the reading MODE — rendered as a live switch below, no
+  // backing group), "How it looks", "Illustrations & narration".
+  const drawerSections = useMemo(
+    () =>
+      readerSettingsSections({
+        illustratedUnlocked: illustratedBookUnlocked,
+        surface: "drawer",
+      }),
+    [illustratedBookUnlocked],
+  );
+
+  // The reading-mode switch only appears when the caller passed BOTH the
+  // current mode and a handler (i.e. a save is in scope). exactOptional
+  // propertyTypes: guard on the values, never render an inert control.
+  const canSwitchMode = currentReadingMode != null && onSwitchReadingMode != null;
 
   // Best-effort server sync for the three media gates. Mirrors the same
   // pattern /settings uses — localStorage is the authoritative client
@@ -70,6 +137,66 @@ export function ReaderSettingsDrawer({ visible, onClose }: ReaderSettingsDrawerP
     } catch {
       // Silent — the next hydrate will reconcile.
     }
+  };
+
+  // Illustrated Book's coupling (RM7) also round-trips the still-guaranteeing
+  // `cinematicMode` — unlike the plain media-gate toggles above — so the
+  // server strategy tracks the image-first skin. Separate from the gate sync
+  // so the ordinary toggles keep their byte-identical three-field payload.
+  const syncMediaPrefsWithStrategy = async (next: ReaderSettings) => {
+    if (!account.profile) return;
+    try {
+      await account.setMediaPrefs({
+        imagesEnabled: next.imagesEnabled,
+        audioEnabled: next.audioEnabled,
+        videoEnabled: next.videoEnabled,
+        cinematicMode: next.cinematicMode,
+      });
+    } catch {
+      // Silent — the next hydrate will reconcile.
+    }
+  };
+
+  // ONE per-group dispatch. Media gates round-trip through mediaPrefs; the
+  // Reading-layout group additionally offers the coupled Illustrated Book pill
+  // (appended below) routed through the shared `selectIllustratedBook` so the
+  // coupling + paywall fire identically to /settings.
+  const handleSelect = (key: string, value: unknown) => {
+    if (key === "layout") {
+      if (value === ILLUSTRATED_BOOK_LAYOUT) {
+        const result = selectIllustratedBook({ illustratedUnlocked: illustratedBookUnlocked });
+        if (result.kind === "paywall") {
+          // R3.7: a non-Pro reader can never select into a permanent skeleton.
+          // Close the sheet BEFORE routing so the paywall isn't rendered under
+          // the modal.
+          onClose();
+          router.push(result.route);
+          return;
+        }
+        // RM7 / R3.8 coupling: set the image-first skin, force images-ON, and
+        // the stills-guaranteeing strategy TOGETHER — `layout` is client-only
+        // localStorage while `cinematicMode` round-trips through mediaPrefs, so
+        // the two axes must move as one or the reader gets a full-bleed plate
+        // that never fills.
+        markLayoutAsExplicitlyChosen();
+        updateSettings({ ...result.settings }, (next) => {
+          void syncMediaPrefsWithStrategy(next);
+        });
+        return;
+      }
+      // Mirror /settings: mark as an explicit user choice so the phone-aware
+      // auto-default doesn't override later.
+      markLayoutAsExplicitlyChosen();
+      updateSettings({ layout: value as ReaderLayoutVariant });
+      return;
+    }
+    if (key === "imagesEnabled" || key === "audioEnabled" || key === "videoEnabled") {
+      updateSettings({ [key]: value } as Partial<ReaderSettings>, (next) => {
+        void syncMediaPrefs(next);
+      });
+      return;
+    }
+    updateSettings({ [key]: value } as Partial<ReaderSettings>);
   };
 
   return (
@@ -132,7 +259,9 @@ export function ReaderSettingsDrawer({ visible, onClose }: ReaderSettingsDrawerP
                 opacity: pressed ? 0.6 : 1,
               })}
             >
-              <Text style={{ fontSize: 22, fontWeight: "800" }}>×</Text>
+              <Text style={{ fontWeight: "800" }} variant="subtitle">
+                Close
+              </Text>
             </Pressable>
           </View>
 
@@ -142,111 +271,119 @@ export function ReaderSettingsDrawer({ visible, onClose }: ReaderSettingsDrawerP
               padding: tokens.spacing.lg,
             }}
           >
-            <PillGroup
-              label="Theme"
-              options={[
-                { label: "System", value: "system" },
-                { label: "Day", value: "day" },
-                { label: "Night", value: "night" },
-                { label: "Sepia", value: "sepia" },
-              ]}
-              selected={settings.theme}
-              onSelect={(theme) => updateSettings({ theme })}
-            />
+            {drawerSections.map((view) => {
+              const { section } = view;
 
-            <PillGroup
-              label="Text size"
-              options={[
-                { label: "Compact", value: "compact" },
-                { label: "Default", value: "default" },
-                { label: "Large", value: "large" },
-              ]}
-              selected={settings.fontScale}
-              onSelect={(fontScale) => updateSettings({ fontScale })}
-            />
+              // "How you read" (Axis 1): the per-save reading MODE. No backing
+              // group — render the live two-option switch. Skip the whole
+              // section (header included) when no save is in scope so the reader
+              // never sees an inert control.
+              if (section.key === "read") {
+                if (!canSwitchMode) return null;
+                const current = currentReadingMode as ReadingMode;
+                // SWITCH-UX #4 — bind the chooser to the CONFIRMED target (the
+                // landed-but-not-yet-live switch) over the current-scene stamp,
+                // so a successful switch stays selected instead of snapping back.
+                const selectedMode = confirmedMode ?? current;
+                const pendingNextPage =
+                  confirmedMode != null && confirmedMode !== current;
+                // SWITCH-UX #5 — no remote saves row: the switch would no-op, so
+                // show the mode as a LABEL-only indicator, never a dead chooser.
+                if (!switchable) {
+                  return (
+                    <View key={section.key} style={{ gap: tokens.spacing.sm }}>
+                      <SectionHeader label={section.label} blurb={section.blurb} />
+                      <View
+                        style={{
+                          alignItems: "center",
+                          flexDirection: "row",
+                          gap: tokens.spacing.sm,
+                        }}
+                      >
+                        <ModeMark mode={current} size={20} />
+                        <Text style={{ fontWeight: "800" }} variant="bodySmall">
+                          {READING_MODE_META[current].label}
+                        </Text>
+                      </View>
+                      <Text muted variant="caption">
+                        Mode switching isn&apos;t available for this tale.
+                      </Text>
+                    </View>
+                  );
+                }
+                return (
+                  <View key={section.key} style={{ gap: tokens.spacing.sm }}>
+                    <SectionHeader label={section.label} blurb={section.blurb} />
+                    {/*
+                     * Disable the switch while a change is in flight by making
+                     * the whole radiogroup non-interactive + dimmed — the
+                     * pinned ReadingModeChooser contract has no `disabled`
+                     * prop, so we gate at the wrapper (reduced-motion-safe: no
+                     * animation, just opacity + pointerEvents).
+                     */}
+                    <View
+                      pointerEvents={switchPending ? "none" : "auto"}
+                      style={{ opacity: switchPending ? 0.5 : 1 }}
+                    >
+                      <ReadingModeChooser
+                        value={selectedMode}
+                        onChange={(mode) => onSwitchReadingMode?.(mode)}
+                      />
+                    </View>
+                    {switchPending ? (
+                      <Text muted variant="caption">
+                        Switching…
+                      </Text>
+                    ) : pendingNextPage ? (
+                      // SWITCH-UX #4 — quiet confirmation mirroring the ModeChip:
+                      // the switch landed; it applies from the next page.
+                      <Text tone="accent" variant="caption">
+                        {`${READING_MODE_META[selectedMode].label} takes effect on the next page.`}
+                      </Text>
+                    ) : null}
+                  </View>
+                );
+              }
 
-            <PillGroup
-              label="Reading layout"
-              options={[
-                { label: "Book", value: "book" },
-                { label: "Mobile", value: "mobile" },
-                { label: "Modern", value: "modernApp" },
-                { label: "Journal", value: "journal" },
-                { label: "Comic", value: "graphicNovel" },
-              ]}
-              selected={settings.layout}
-              onSelect={(layout) => {
-                // Mirror /settings: mark as an explicit user choice so
-                // the phone-aware auto-default doesn't override later.
-                markLayoutAsExplicitlyChosen();
-                updateSettings({ layout });
-              }}
-            />
-
-            <PillGroup
-              label="Illustrations"
-              helpText="The scene image plate above the prose."
-              options={[
-                { label: "On", value: true },
-                { label: "Off", value: false },
-              ]}
-              selected={settings.imagesEnabled}
-              onSelect={(imagesEnabled) => {
-                updateSettings({ imagesEnabled }, (next) => {
-                  void syncMediaPrefs(next);
-                });
-              }}
-            />
-
-            <PillGroup
-              label="Narration & ambient"
-              helpText="Narrator voice + scene soundscape."
-              options={[
-                { label: "On", value: true },
-                { label: "Off", value: false },
-              ]}
-              selected={settings.audioEnabled}
-              onSelect={(audioEnabled) => {
-                updateSettings({ audioEnabled }, (next) => {
-                  void syncMediaPrefs(next);
-                });
-              }}
-            />
-
-            <PillGroup
-              label="Narrator speed"
-              options={NARRATOR_PLAYBACK_RATES.map((rate) => ({
-                label: `${rate}×`,
-                value: rate,
-              }))}
-              selected={settings.narratorPlaybackRate}
-              onSelect={(narratorPlaybackRate) => updateSettings({ narratorPlaybackRate })}
-            />
-
-            <PillGroup
-              label="Scene cinematics"
-              helpText="Short Veo clip below the prose. Image still shows."
-              options={[
-                { label: "On", value: true },
-                { label: "Off", value: false },
-              ]}
-              selected={settings.videoEnabled}
-              onSelect={(videoEnabled) => {
-                updateSettings({ videoEnabled }, (next) => {
-                  void syncMediaPrefs(next);
-                });
-              }}
-            />
-
-            <PillGroup
-              label="Reduce motion"
-              options={[
-                { label: "Motion on", value: false },
-                { label: "Reduce", value: true },
-              ]}
-              selected={settings.reduceMotion}
-              onSelect={(reduceMotion) => updateSettings({ reduceMotion })}
-            />
+              // "How it looks" / "Illustrations & narration": the pill groups,
+              // under an honest section heading.
+              return (
+                <View key={section.key} style={{ gap: tokens.spacing.md }}>
+                  <SectionHeader label={section.label} blurb={section.blurb} />
+                  {view.groups.map((group) => {
+                    // The Reading-layout group appends the coupled Illustrated
+                    // Book pill using the shared constants (design §1 — offered
+                    // as a layout skin on the drawer, and as the cinematicMode
+                    // strategy on /settings). `locked` drives the paywall route
+                    // (RC5 — no glyph). Illustrated Book is a LOOK here; its
+                    // media coupling is spelled out under Illustrations &
+                    // narration.
+                    const options: SettingsOption<unknown>[] =
+                      group.key === "layout"
+                        ? [
+                            ...group.options,
+                            {
+                              label: ILLUSTRATED_BOOK_LABEL,
+                              value: ILLUSTRATED_BOOK_LAYOUT,
+                              locked: !illustratedBookUnlocked,
+                            },
+                          ]
+                        : group.options;
+                    const help = DRAWER_HELP[group.key];
+                    return (
+                      <PillGroup
+                        key={group.key}
+                        label={group.label}
+                        {...(help ? { helpText: help } : {})}
+                        options={options}
+                        selected={(settings as Record<string, unknown>)[group.key]}
+                        onSelect={(value) => handleSelect(group.key, value)}
+                      />
+                    );
+                  })}
+                </View>
+              );
+            })}
 
             <View
               style={{
@@ -282,17 +419,34 @@ export function ReaderSettingsDrawer({ visible, onClose }: ReaderSettingsDrawerP
   );
 }
 
-type Option<T extends string | boolean | number> = {
-  label: string;
-  value: T;
-};
+/**
+ * Section heading (B3). One honest name per axis + a one-line blurb so a reader
+ * can tell the content mode from the cosmetic skin from the media. Rendered
+ * above each section's controls on the drawer; mirrors the /settings surface.
+ */
+function SectionHeader({ label, blurb }: { label: string; blurb: string }) {
+  const { tokens } = useAppTheme();
+  return (
+    <View style={{ gap: tokens.spacing.xs }}>
+      <Text style={{ fontWeight: "800" }} variant="subtitle">
+        {label}
+      </Text>
+      <Text muted variant="caption">
+        {blurb}
+      </Text>
+    </View>
+  );
+}
 
 /**
  * Pill row group. Same visual treatment as the SettingGroup on /settings
  * so the two surfaces feel like one product. Active state changes fill +
- * text color only — no padding/border drift on selection.
+ * text color only — no padding/border drift on selection. A `locked` option
+ * (the Pro-gated Illustrated Book) renders a plain-text " · Pro" suffix and a
+ * muted border — never a lock emoji (RC5) — and routes selection to the
+ * paywall via the shared handler.
  */
-function PillGroup<T extends string | boolean | number>({
+function PillGroup({
   label,
   helpText,
   options,
@@ -301,9 +455,9 @@ function PillGroup<T extends string | boolean | number>({
 }: {
   label: string;
   helpText?: string;
-  options: ReadonlyArray<Option<T>>;
-  selected: T;
-  onSelect: (value: T) => void;
+  options: ReadonlyArray<SettingsOption<unknown>>;
+  selected: unknown;
+  onSelect: (value: unknown) => void;
 }) {
   const { tokens } = useAppTheme();
   return (
@@ -325,10 +479,12 @@ function PillGroup<T extends string | boolean | number>({
       >
         {options.map((option) => {
           const active = option.value === selected;
+          const locked = option.locked === true;
+          const displayLabel = locked ? `${option.label} · Pro` : option.label;
           return (
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={`${label}: ${option.label}`}
+              accessibilityLabel={`${label}: ${option.label}${locked ? " (locked)" : ""}`}
               accessibilityState={{ selected: active }}
               key={String(option.value)}
               onPress={() => onSelect(option.value)}
@@ -341,7 +497,7 @@ function PillGroup<T extends string | boolean | number>({
                 justifyContent: "center",
                 minHeight: 44,
                 minWidth: 64,
-                opacity: pressed ? 0.75 : 1,
+                opacity: pressed ? 0.75 : locked ? 0.7 : 1,
                 paddingHorizontal: tokens.spacing.md,
                 paddingVertical: tokens.spacing.sm,
               })}
@@ -353,7 +509,7 @@ function PillGroup<T extends string | boolean | number>({
                 }}
                 variant="caption"
               >
-                {option.label}
+                {displayLabel}
               </Text>
             </Pressable>
           );

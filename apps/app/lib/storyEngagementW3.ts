@@ -161,6 +161,148 @@ export function librarianRankProgressLine(rank: RemoteLibrarianRank): string {
 }
 
 // ---------------------------------------------------------------------------
+// Act-mementos (R3.3, R4) — rank-progress ticker + memento shelf models.
+//
+// Both projections widen `accountFunctions:getProfile` (act-mementos design
+// §3). The wire types live here (not `gameApi.ts`, which this feature does not
+// own) and are consumed by the profile adapters in `useAccountProfile.ts`.
+// Server emits null-for-absent; adapters map that to optional/empty so a fresh
+// account or a pre-mementos server renders nothing (BC2/BC9).
+// ---------------------------------------------------------------------------
+
+/**
+ * The server-computed rank-progress projection (act-mementos design §3): the
+ * NEXT tier above the reader's current one plus the zero-floored per-metric
+ * deficits against that tier's own thresholds. Null at the top tier — the
+ * ticker then hides and the totals line stays (R3.3).
+ */
+export type RemoteRankProgress = {
+  nextTier: string;
+  nextLabel: string;
+  needsEndings: number;
+  needsBeats: number;
+  needsTales: number;
+};
+
+/** One memento the reader has pressed at an act boundary (design §3). */
+export type RemoteMemento = {
+  act: number;
+  label: string;
+  description: string;
+  storyTitle: string;
+  createdAt: number;
+};
+
+/** The capped mementos projection: the newest rows plus a lifetime total. */
+export type RemoteMementoList = {
+  total: number;
+  items: RemoteMemento[];
+};
+
+/** The adapted mementos shelf model — always concrete (empty when absent). */
+export type MementoShelfModel = {
+  total: number;
+  items: RemoteMemento[];
+};
+
+/**
+ * Normalize the wire rank-progress (null-for-absent) into an optional model.
+ * Absent / malformed → `undefined` so the ticker self-hides (BC2/BC4). Deficits
+ * are zero-floored defensively even though the server already floors them.
+ */
+export function adaptRankProgress(
+  raw: RemoteRankProgress | null | undefined,
+): RemoteRankProgress | undefined {
+  if (!raw || typeof raw.nextLabel !== "string" || typeof raw.nextTier !== "string") {
+    return undefined;
+  }
+  const floor = (n: number) => (Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0);
+  return {
+    nextTier: raw.nextTier,
+    nextLabel: raw.nextLabel,
+    needsEndings: floor(raw.needsEndings),
+    needsBeats: floor(raw.needsBeats),
+    needsTales: floor(raw.needsTales),
+  };
+}
+
+/**
+ * Normalize the wire mementos projection (null-for-absent) into a concrete
+ * shelf model. Malformed entries are dropped; the total falls back to the
+ * surviving item count when the server omits or corrupts it. An empty model
+ * tells `MementoShelf` to render nothing (R4.2).
+ */
+export function adaptMementos(
+  raw: RemoteMementoList | null | undefined,
+): MementoShelfModel {
+  const items = Array.isArray(raw?.items)
+    ? raw!.items.filter(
+        (m): m is RemoteMemento =>
+          Boolean(m) &&
+          typeof m.label === "string" &&
+          typeof m.description === "string" &&
+          typeof m.storyTitle === "string" &&
+          Number.isFinite(m.act) &&
+          Number.isFinite(m.createdAt),
+      )
+    : [];
+  const rawTotal = raw?.total;
+  const total =
+    typeof rawTotal === "number" && Number.isFinite(rawTotal)
+      ? Math.max(items.length, Math.floor(rawTotal))
+      : items.length;
+  return { total, items };
+}
+
+/**
+ * The rank-progress ticker line under the rank chip and at the act-boundary
+ * ChapterEnd, e.g. `Next: Keeper — 2 more endings`. A single remaining metric
+ * reads "N more <unit>"; multiple remaining metrics list each as "N <unit>"
+ * joined by " · " (`Next: The Unwritten — 12 endings · 4 tales`). Only non-zero
+ * deficits are listed (R3.3).
+ */
+export function rankTickerLine(progress: RemoteRankProgress): string {
+  const plural = (n: number, unit: string) => `${n} ${unit}${n === 1 ? "" : "s"}`;
+  const deficits: string[] = [];
+  if (progress.needsEndings > 0) deficits.push(plural(progress.needsEndings, "ending"));
+  if (progress.needsBeats > 0) deficits.push(plural(progress.needsBeats, "beat"));
+  if (progress.needsTales > 0) deficits.push(plural(progress.needsTales, "tale"));
+  if (deficits.length === 0) return `Next: ${progress.nextLabel}`;
+  const remaining =
+    deficits.length === 1 ? `${deficits[0]!.replace(" ", " more ")}` : deficits.join(" · ");
+  return `Next: ${progress.nextLabel} — ${remaining}`;
+}
+
+/**
+ * The fixed book-voice acknowledgement shown at an act-boundary ChapterEnd when
+ * a memento is minted server-side (R3.4). Narrative, not a receipt — the client
+ * never waits on the best-effort mint.
+ */
+export function mementoStampLine(): string {
+  return "A memento is pressed between the pages";
+}
+
+/**
+ * A quiet relative-date label for a memento card ("today", "yesterday",
+ * "3 days ago", "2 weeks ago", else an absolute short date). Pure — `now` is
+ * passed so the derivation is deterministic under test. A non-finite or future
+ * `createdAt` degrades to "today" rather than a negative count.
+ */
+export function mementoRelativeDate(createdAt: number, now: number): string {
+  if (!Number.isFinite(createdAt) || !Number.isFinite(now)) return "today";
+  const dayMs = 24 * 60 * 60 * 1000;
+  const days = Math.floor((now - createdAt) / dayMs);
+  if (days <= 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 7) return `${days} days ago`;
+  if (days < 30) {
+    const weeks = Math.floor(days / 7);
+    return `${weeks} ${weeks === 1 ? "week" : "weeks"} ago`;
+  }
+  return new Date(createdAt).toISOString().slice(0, 10);
+}
+
+// ---------------------------------------------------------------------------
 // Hardcore mode (R15) — consent gate + downgrade caveat copy.
 // ---------------------------------------------------------------------------
 

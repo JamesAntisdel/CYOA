@@ -1,16 +1,28 @@
 import { createClient } from "@convex-dev/better-auth";
 import { convex } from "@convex-dev/better-auth/plugins";
 import { betterAuth } from "better-auth";
+import { makeFunctionReference } from "convex/server";
 import type { GenericCtx } from "@convex-dev/better-auth";
 
 import { components } from "../_generated/api";
 import type { DataModel } from "../_generated/dataModel";
 import authConfig from "../auth.config";
-import { buildMagicLinkPlugin, buildSocialProviders } from "./providers";
+import { buildMagicLinkPlugin, buildSocialProviders, type GmailScheduler } from "./providers";
 
 export const authComponent = createClient<DataModel>(components.betterAuth);
 
 const basePath = "/api/auth";
+
+/**
+ * Return a usable static JWKS or `undefined`. Rejects the `[]` placeholder and
+ * blank/whitespace so a stale-but-truthy env value can't force the static-JWKS
+ * path (which throws "Not implemented" when the private half is missing).
+ */
+function validStaticJwks(): string | undefined {
+  const raw = (process.env.JWKS ?? "").trim();
+  if (raw.length === 0 || raw === "[]") return undefined;
+  return raw;
+}
 
 export function createAuth(ctx: GenericCtx<DataModel>) {
   const siteUrl = getSiteUrl();
@@ -18,7 +30,7 @@ export function createAuth(ctx: GenericCtx<DataModel>) {
   // secrets are present, so the config stays valid without OAuth/email creds and
   // becomes functional the moment they are supplied. See ./providers.ts.
   const socialProviders = buildSocialProviders(process.env);
-  const magicLinkPlugin = buildMagicLinkPlugin(process.env);
+  const magicLinkPlugin = buildMagicLinkPlugin(process.env, makeGmailScheduler(ctx));
   return betterAuth({
     basePath,
     baseURL: siteUrl,
@@ -42,17 +54,43 @@ export function createAuth(ctx: GenericCtx<DataModel>) {
         // what scripts/dev/convex-local-dev.sh enforces by stripping the `[]`
         // placeholder) makes the component manage the keypair in its own DB —
         // signing AND verification both work with no external coordination.
-        ...(process.env.JWKS ? { jwks: process.env.JWKS } : {}),
+        // Treat the `[]` placeholder (and blank) as UNSET — env removal on the
+        // local backend is unreliable, so guard here rather than trusting the
+        // deployment env. A truthy-but-invalid JWKS made createJwk throw
+        // "Not implemented" and killed /api/auth/convex/token.
+        ...(validStaticJwks() ? { jwks: validStaticJwks() as string } : {}),
         // Self-heal token generation when the signing key's alg no longer
         // matches a stored key (e.g. after a BETTER_AUTH_SECRET rotation): roll
         // the DB keys and retry once instead of hard-failing the token endpoint.
         // Only active on the DB-managed (non-static-JWKS) path.
-        ...(process.env.JWKS ? {} : { jwksRotateOnTokenGenerationError: true }),
+        ...(validStaticJwks() ? {} : { jwksRotateOnTokenGenerationError: true }),
         options: { basePath },
       }),
       ...(magicLinkPlugin ? [magicLinkPlugin] : []),
     ],
   });
+}
+
+/**
+ * Build the Gmail-send scheduler passed to the magic-link plugin, or `undefined`
+ * when this ctx has no scheduler (e.g. `createAuth` invoked from a query context
+ * for token verification). The magic-link SEND path only runs inside the
+ * `/sign-in/magic-link` HTTP action, whose ctx IS an action ctx with a
+ * scheduler — so Gmail delivery is scheduled there. Scheduling (not `runAction`)
+ * keeps it fire-and-forget: a delivery failure never blocks the sign-in
+ * response. The plugin degrades to Resend/dev-log when this returns undefined.
+ */
+function makeGmailScheduler(ctx: GenericCtx<DataModel>): GmailScheduler | undefined {
+  const scheduler = (ctx as { scheduler?: { runAfter: (delayMs: number, ref: unknown, args: unknown) => Promise<unknown> } })
+    .scheduler;
+  if (!scheduler || typeof scheduler.runAfter !== "function") return undefined;
+  return async ({ email, url }) => {
+    await scheduler.runAfter(
+      0,
+      makeFunctionReference<"action">("betterAuth/emailNode:sendMagicLinkEmail"),
+      { email, url },
+    );
+  };
 }
 
 export const { getAuthUser } = authComponent.clientApi();

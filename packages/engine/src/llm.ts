@@ -333,122 +333,193 @@ const rawStoryArcSchema = z
 
 export type LlmStoryArcProposal = z.infer<typeof rawStoryArcSchema>;
 
-export const llmSceneOutputSchema = z
-  .object({
-    prose: z.string().min(1).max(MAX_PROSE_CHARS),
-    choices: z.array(llmChoiceSchema).min(MIN_CHOICES).max(MAX_CHOICES),
-    terminal: llmTerminalSchema.nullable().optional(),
-    /**
-     * Turn-1 story arc (Requirement 1.1). Validated later via
-     * `validateProposedArc`; malformed arcs are dropped here (`.catch`) so the
-     * scene survives and the server synthesizes a fallback. Ignored on turns
-     * >1 (same one-time contract as `protagonistAnchor`).
-     */
-    storyArc: rawStoryArcSchema.optional().catch(undefined),
-    /**
-     * Beat id the model claims this scene landed (Requirement 1.4). The engine
-     * marks it fired (idempotent; unknown/already-fired ids are no-ops). Clamped
-     * to a bounded slug-ish string; tolerant — a stray value is simply not
-     * matched against the arc.
-     */
-    beatFired: clampedString({ min: 1, max: 48 }).optional(),
-    /**
-     * Twist id the model claims this scene fired (story-bible twist loop —
-     * exact mirror of `beatFired`). The convex turn integration slug-matches it
-     * against the bible's PENDING twists and folds a `twist_fired` event so the
-     * digest stops re-demanding an already-revealed twist. Clamped + tolerant:
-     * an unknown / already-fired id is simply never matched (BC5). Ignored on
-     * bible-less saves.
-     */
-    twistFired: clampedString({ min: 1, max: 48 }).optional(),
-    /**
-     * Keepsake earned at this ending (Requirement 12.1, W3). Honored ONLY on
-     * terminal scenes — the transform below strips it when `terminal` is
-     * absent/null so a non-terminal scene can never mint a keepsake (the engine
-     * clamps it, per the W3 contract). Malformed keepsakes are dropped
-     * (`.catch`) so the scene still parses (BC5). Persisted onto the
-     * `endings_unlocked` row by `recordEndingUnlock` (convex), which derives a
-     * default from the ending when this is absent.
-     */
-    keepsake: keepsakeSchema.optional().catch(undefined),
-    /**
-     * NPC ids the model believes were mentioned in this scene's prose.
-     * Optional — the model is encouraged to populate this but legacy
-     * proposals (and providers that don't yet honor the contract) simply
-     * omit it. Persisted by `convex/game.ts` as `turn_history.mentionsExtracted`
-     * so the next turn's prompt-builder can surface the relevant NPC sheets
-     * without re-parsing prose (Requirement 31.3 / 31.4).
-     *
-     * Bounded at 10 to keep the recent-mentions window small enough that
-     * `loadRecentNpcMentions` doesn't pull a runaway list back into the
-     * prompt; the convex helper still de-dupes / orders by recency.
-     */
-    npcMentions: z.array(clampedString({ min: 1, max: 64 })).max(10).optional(),
-    /**
-     * Concrete scene description optimized for image and video generation.
-     * One short sentence naming the subject, setting, key objects, and
-     * composition — e.g. "Boeing 737 cockpit at dawn, captain slumped over
-     * the yoke, snow blowing through a cracked windshield, wide shot from
-     * the first officer's seat." When present, the convex media queue uses
-     * this verbatim instead of truncating the prose. Bounded at 320 chars
-     * so prompt-hash stability and Imagen/Veo token budgets both hold.
-     *
-     * Why this exists: prose truncation produces incoherent images (the
-     * model that draws does not know what the model that wrote was thinking).
-     * Asking the writer to articulate the visual closes that gap.
-     */
-    visualDescription: clampedString({ min: 8, max: 1000 }).optional(),
-    /**
-     * One-time character anchor written at scene 1. Describes the protagonist
-     * for portrait generation: face/build/clothing/era. The image pipeline
-     * uses this to generate the protagonist anchor that gets passed as a
-     * reference image to every subsequent scene's image call.
-     * Optional — only meaningful on the first turn; ignored thereafter.
-     */
-    protagonistAnchor: clampedString({ min: 8, max: 1000 }).optional(),
-    /**
-     * One-time setting anchor written at scene 1. Establishing shot of the
-     * primary location (or the most defining one if the story has multiple).
-     * Same purpose as protagonistAnchor — referenced in subsequent calls
-     * to keep the world visually consistent.
-     */
-    settingAnchor: clampedString({ min: 8, max: 1000 }).optional(),
-  })
-  .superRefine((value, ctx) => {
-    const ids = new Set<string>();
-    value.choices.forEach((choice, index) => {
-      if (ids.has(choice.id)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["choices", index, "id"],
-          message: `duplicate_choice_id:${choice.id}`,
-        });
-      }
-      ids.add(choice.id);
+// Scene fields shared by BOTH the branching scene schema and the additive
+// novel-mode sibling (R4.3 / RM2). Only `choices` differs between the two
+// (min(MIN_CHOICES=2) for branching vs min(0).max(1) for novel), so `choices`
+// is injected per-schema by `buildSceneOutputSchema` below rather than living
+// here. Every OTHER field — prose / terminal / storyArc / beatFired /
+// twistFired / keepsake / npcMentions / visualDescription / protagonist- and
+// settingAnchor — is byte-identical across the two schemas by construction.
+const sceneOutputFields = {
+  prose: z.string().min(1).max(MAX_PROSE_CHARS),
+  terminal: llmTerminalSchema.nullable().optional(),
+  /**
+   * Turn-1 story arc (Requirement 1.1). Validated later via
+   * `validateProposedArc`; malformed arcs are dropped here (`.catch`) so the
+   * scene survives and the server synthesizes a fallback. Ignored on turns
+   * >1 (same one-time contract as `protagonistAnchor`).
+   */
+  storyArc: rawStoryArcSchema.optional().catch(undefined),
+  /**
+   * Beat id the model claims this scene landed (Requirement 1.4). The engine
+   * marks it fired (idempotent; unknown/already-fired ids are no-ops). Clamped
+   * to a bounded slug-ish string; tolerant — a stray value is simply not
+   * matched against the arc.
+   */
+  beatFired: clampedString({ min: 1, max: 48 }).optional(),
+  /**
+   * Twist id the model claims this scene fired (story-bible twist loop —
+   * exact mirror of `beatFired`). The convex turn integration slug-matches it
+   * against the bible's PENDING twists and folds a `twist_fired` event so the
+   * digest stops re-demanding an already-revealed twist. Clamped + tolerant:
+   * an unknown / already-fired id is simply never matched (BC5). Ignored on
+   * bible-less saves.
+   */
+  twistFired: clampedString({ min: 1, max: 48 }).optional(),
+  /**
+   * Keepsake earned at this ending (Requirement 12.1, W3). Honored ONLY on
+   * terminal scenes — the transform below strips it when `terminal` is
+   * absent/null so a non-terminal scene can never mint a keepsake (the engine
+   * clamps it, per the W3 contract). Malformed keepsakes are dropped
+   * (`.catch`) so the scene still parses (BC5). Persisted onto the
+   * `endings_unlocked` row by `recordEndingUnlock` (convex), which derives a
+   * default from the ending when this is absent.
+   */
+  keepsake: keepsakeSchema.optional().catch(undefined),
+  /**
+   * NPC ids the model believes were mentioned in this scene's prose.
+   * Optional — the model is encouraged to populate this but legacy
+   * proposals (and providers that don't yet honor the contract) simply
+   * omit it. Persisted by `convex/game.ts` as `turn_history.mentionsExtracted`
+   * so the next turn's prompt-builder can surface the relevant NPC sheets
+   * without re-parsing prose (Requirement 31.3 / 31.4).
+   *
+   * Bounded at 10 to keep the recent-mentions window small enough that
+   * `loadRecentNpcMentions` doesn't pull a runaway list back into the
+   * prompt; the convex helper still de-dupes / orders by recency.
+   */
+  npcMentions: z.array(clampedString({ min: 1, max: 64 })).max(10).optional(),
+  /**
+   * Concrete scene description optimized for image and video generation.
+   * One short sentence naming the subject, setting, key objects, and
+   * composition — e.g. "Boeing 737 cockpit at dawn, captain slumped over
+   * the yoke, snow blowing through a cracked windshield, wide shot from
+   * the first officer's seat." When present, the convex media queue uses
+   * this verbatim instead of truncating the prose. Bounded at 320 chars
+   * so prompt-hash stability and Imagen/Veo token budgets both hold.
+   *
+   * Why this exists: prose truncation produces incoherent images (the
+   * model that draws does not know what the model that wrote was thinking).
+   * Asking the writer to articulate the visual closes that gap.
+   */
+  visualDescription: clampedString({ min: 8, max: 1000 }).optional(),
+  /**
+   * One-time character anchor written at scene 1. Describes the protagonist
+   * for portrait generation: face/build/clothing/era. The image pipeline
+   * uses this to generate the protagonist anchor that gets passed as a
+   * reference image to every subsequent scene's image call.
+   * Optional — only meaningful on the first turn; ignored thereafter.
+   */
+  protagonistAnchor: clampedString({ min: 8, max: 1000 }).optional(),
+  /**
+   * One-time setting anchor written at scene 1. Establishing shot of the
+   * primary location (or the most defining one if the story has multiple).
+   * Same purpose as protagonistAnchor — referenced in subsequent calls
+   * to keep the world visually consistent.
+   */
+  settingAnchor: clampedString({ min: 8, max: 1000 }).optional(),
+} as const;
+
+// Duplicate-choice-id refinement + the ≤1-skill-check / terminal-only-keepsake
+// transform, both shared verbatim by the branching and novel schemas so the two
+// differ ONLY in choice cardinality. Factored into `buildSceneOutputSchema` so
+// there is exactly one definition of the scene shape (RM2: the novel schema is
+// an ADDITIVE sibling, not a divergent fork).
+function buildSceneOutputSchema<C extends z.ZodTypeAny>(choices: C) {
+  return z
+    .object({ ...sceneOutputFields, choices })
+    .superRefine((value, ctx) => {
+      const ids = new Set<string>();
+      (value.choices as LlmChoiceProposal[]).forEach((choice, index) => {
+        if (ids.has(choice.id)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["choices", index, "id"],
+            message: `duplicate_choice_id:${choice.id}`,
+          });
+        }
+        ids.add(choice.id);
+      });
+    })
+    // ≤1 checked choice per scene (Requirement 7.1): keep the first choice that
+    // carries a `skillCheck` (array order), strip the check from any others.
+    // W3 (Requirement 12.1): a `keepsake` is honored ONLY on terminal scenes — a
+    // keepsake proposed on a non-terminal scene is clamped away here so it can
+    // never be minted mid-run.
+    .transform((scene) => {
+      let checkSeen = false;
+      const choices = (scene.choices as LlmChoiceProposal[]).map((choice) => {
+        if (!choice.skillCheck) return choice;
+        if (checkSeen) return { ...choice, skillCheck: undefined };
+        checkSeen = true;
+        return choice;
+      });
+      const { keepsake, ...base } = scene;
+      const honoredKeepsake = base.terminal ? keepsake : undefined;
+      return { ...base, choices, ...(honoredKeepsake ? { keepsake: honoredKeepsake } : {}) };
     });
-  })
-  // ≤1 checked choice per scene (Requirement 7.1): keep the first choice that
-  // carries a `skillCheck` (array order), strip the check from any others.
-  // W3 (Requirement 12.1): a `keepsake` is honored ONLY on terminal scenes — a
-  // keepsake proposed on a non-terminal scene is clamped away here so it can
-  // never be minted mid-run.
-  .transform((scene) => {
-    let checkSeen = false;
-    const choices = scene.choices.map((choice) => {
-      if (!choice.skillCheck) return choice;
-      if (checkSeen) return { ...choice, skillCheck: undefined };
-      checkSeen = true;
-      return choice;
-    });
-    const { keepsake, ...base } = scene;
-    const honoredKeepsake = base.terminal ? keepsake : undefined;
-    return { ...base, choices, ...(honoredKeepsake ? { keepsake: honoredKeepsake } : {}) };
-  });
+}
+
+// The branching scene contract (byte-identical to HEAD): 2–4 choices enforced
+// by MIN_CHOICES/MAX_CHOICES. This is the real gate for every branching / legacy
+// save (RM2). The wire `responseSchema.ts` gates nothing here — do not edit it.
+export const llmSceneOutputSchema = buildSceneOutputSchema(
+  z.array(llmChoiceSchema).min(MIN_CHOICES).max(MAX_CHOICES),
+);
+
+// R4.3 — the ADDITIVE novel-mode sibling. Identical to `llmSceneOutputSchema`
+// in EVERY field EXCEPT `choices`, which relaxes to `max(1)` AND becomes
+// optional with a `[]` default — a linear "Turn the page" scene omits `choices`
+// entirely (the novel prompt emits prose+terminal only), so the field must
+// tolerate being ABSENT, not merely empty. Without the `.default([])` the LLM's
+// choice-less novel payload is rejected with `choices: Required` (invalid_type)
+// and the turn fails. The server stamps the single synthetic `turn-page` choice
+// after validation (R4.2/R4.4). Selected by `sceneSchemaFor` at the five parse
+// sites ONLY when `readingMode === "novel"`; the branching schema stays untouched.
+export const llmNovelSceneOutputSchema = buildSceneOutputSchema(
+  z.array(llmChoiceSchema).max(1).default([]),
+);
+
+// The ONLY place the readingMode → scene-schema mapping lives (design §1.3). A
+// pure, total selector: `"novel"` picks the relaxed novel sibling; everything
+// else (`"branching"`, or absent on a legacy/authored save) picks the
+// byte-identical branching schema. Keeping this in one function keeps the five
+// parse sites honest — none of them re-derives the mapping.
+export function sceneSchemaFor(
+  readingMode: "branching" | "novel" | undefined,
+): typeof llmSceneOutputSchema | typeof llmNovelSceneOutputSchema {
+  return readingMode === "novel" ? llmNovelSceneOutputSchema : llmSceneOutputSchema;
+}
+
+// R4.9 / RM5 — pure, total resolver mirroring `computeMediaStrategy`'s shape: a
+// seam so the founder's Pro gate on novel mode is a one-line change, not a
+// threading job. Posture A (OQ1/OQ9 = LOCKED AT createSave): resolve the
+// desired reading mode ONCE at create and keep it for the save's lifetime, so a
+// lapsed Pro never has a prose-only prompt suddenly asked for 2–4 choices
+// mid-read. `desired` absent ⇒ "branching" (every legacy/default save). A
+// non-Pro reader who asked for "novel" degrades to "branching" HERE, at create
+// only. Flipping to switchable (posture B) is the one-line change of dropping
+// the `isPro` degrade.
+export function resolveReadingMode(input: {
+  desired?: "branching" | "novel";
+  isPro: boolean;
+}): "branching" | "novel" {
+  const { desired, isPro } = input;
+  if (desired !== "novel") return "branching";
+  return isPro ? "novel" : "branching";
+}
 
 export type LlmEffect = z.infer<typeof llmEffectSchema>;
 export type LlmChoiceProposal = z.infer<typeof llmChoiceSchema>;
 export type LlmTerminalProposal = z.infer<typeof llmTerminalSchema>;
 export type LlmSceneProposal = z.infer<typeof llmSceneOutputSchema>;
+/**
+ * R4.3 — the novel-mode proposal shape. Structurally identical to
+ * `LlmSceneProposal` (same fields, same `LlmChoiceProposal[]` element type);
+ * they differ only in runtime choice cardinality (0–1 vs 2–4), so a novel
+ * proposal is assignable wherever a scene proposal is expected.
+ */
+export type LlmNovelSceneProposal = z.infer<typeof llmNovelSceneOutputSchema>;
 
 /**
  * Instruction the terminal gate hands back to the prompt builder when it

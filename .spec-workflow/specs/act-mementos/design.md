@@ -9,19 +9,28 @@ below encode what a fresh code audit (2026-07-11) actually found.
 
 ## 0. SPEC-SPECIFIC BUILD CORRECTIONS (authoritative)
 
-- **AM1 — `act_advanced` is detected at MULTIPLE turn-path sites; mint from a
-  single shared helper.** The diff is emitted in the engine
-  (`packages/engine/src/llm.ts:641`, `:981`) and consumed in game.ts at
-  `:1895`, `:2106-2113` (streaming `completeSceneStream` — chapter-cinematic
-  trigger) and `:4347`, `:4421-4427` (non-streaming mirror). Minting must be
-  ONE exported helper called from BOTH turn-application paths (streaming +
-  non-streaming) or the paths drift — the same class of bug SB1 documents for
-  the story-bible. Follow the daily precedent: helper exported from
-  `convex/mementos.ts`, integrator wires the RESERVED `game.ts` call sites.
+- **AM1 — there is ONE live turn-application site; mint from the streaming
+  path only.** The `act_advanced` diff is emitted in the engine
+  (`applyChoice` / arc rollover — `packages/engine/src/llm.ts:676`, `:1016`,
+  grep `kind: "act_advanced"`) and consumed on the LIVE turn path inside the
+  `completeSceneStream` mutation (`convex/game.ts`, grep
+  `export const completeSceneStream` ≈ :1896), where the act-boundary chapter
+  cinematic already fires (grep `maybeScheduleChapterCinematic` with
+  `force: true` ≈ :2329, gated on the `act_advanced` detection ≈ :2326).
+  Mint the memento HERE, next to that trigger, with the arc / fired-beat /
+  story title already in scope. **Do NOT wire a second "non-streaming
+  mirror".** As of commit be57970 (2026-07-13) the `submitChoice` action
+  routes every llm-driven turn through the streaming
+  `beginStreamingChoice → generateScene → completeSceneStream` flow, and the
+  old non-streaming `runLlmDrivenSubmitChoice` (`convex/game.ts`, grep
+  `@deprecated DEAD CODE` ≈ :4421, decl ≈ :4430) is dead code that must not be
+  re-wired — its own `act_advanced` handling (≈ :4681, :4761) is unreachable.
+  A single live site means a single call: helper exported from
+  `convex/mementos.ts`, integrator wires the ONE RESERVED `game.ts` call site.
 - **AM2 — `actLabel` may be absent at mint time.** The act stamp joins
   `arc.actLabel` opportunistically (`actStampFromDiffs`,
-  `apps/app/lib/storyEngagement.ts:239` — "The label (when known) rides on
-  the arc summary"). Derivation MUST be total with the label absent:
+  `apps/app/lib/storyEngagement.ts` grep `export function actStampFromDiffs`
+  ≈ :243 — "The label (when known) rides on the arc summary", ≈ :241). Derivation MUST be total with the label absent:
   fall back to "Act N of " + story title (R1.1). Never wait, never re-mint
   when the label arrives later.
 - **AM3 — The rank ticker must count from the SAME source as the rank chip.**
@@ -35,7 +44,8 @@ below encode what a fresh code audit (2026-07-11) actually found.
   `memento.granted` fires from the turn mutation via the mint helper.
 - **AM5 — ChapterEnd optional props follow the `actStampProps` pattern.**
   Conditional-spread builders returning empty objects
-  (`ReaderScreen.tsx:104-109`) — never pass `undefined` props
+  (`ReaderScreen.tsx` grep `function actStampProps` ≈ :118-123) — never pass
+  `undefined` props
   (`exactOptionalPropertyTypes`, BC4).
 - **AM6 — `TIERS` stays module-private.** `rank.ts:34-36` declares the table
   "the single source of truth for the progression". Export the pure
@@ -119,7 +129,7 @@ metric simply lists nothing for it in the client line.
 ## 2. Call flow
 
 ```
-turn application (streaming completeSceneStream AND non-streaming mirror — AM1)
+turn application (streaming completeSceneStream — the ONE live site, AM1)
   └─ integrator calls mintActMementoIfDue(ctx, {...}) [exported from convex/mementos.ts]
        ├─ no act_advanced diff / no arc / authored path / follower ⇒ no-op (R1.4)
        ├─ by_save_act(saveId, act) exists ⇒ no-op (idempotent, R1.2)
@@ -142,8 +152,10 @@ client
 ## 3. Wire shapes (BC2 — adapted in `apps/app/hooks/useAccountProfile.ts`)
 
 `getProfile` additions (server emits null-for-absent; adapters map to
-optional fields, following the existing `adaptLibrarianRank` seam at
-`useAccountProfile.ts:328`):
+optional fields, following the existing `adaptLibrarianRank` seam —
+`useAccountProfile.ts` grep `adaptLibrarianRank(remoteProfile?.librarianRank)`
+≈ :371, adapter defined in `storyEngagementW3.ts` grep
+`export function adaptLibrarianRank` ≈ :132):
 
 ```ts
 // server projection additions
@@ -176,8 +188,9 @@ export function mementoStampLine(): string;
 ## 4. Client surfaces
 
 - **Profile ticker (R3.3):** one `Text` line under the existing rank chip in
-  `apps/app/app/profile/index.tsx:45-53`, rendered only when the adapted
-  `rankProgress` is present; top tier keeps today's totals line untouched.
+  `apps/app/app/profile/index.tsx` (grep `librarianRankProgressLine` — rank
+  chip block ≈ :52-59), rendered only when the adapted `rankProgress` is
+  present; top tier keeps today's totals line untouched.
 - **Mementos shelf (R4):** new `MementoShelf` component
   (`apps/app/components/account/MementoShelf.tsx`), mounted in the profile
   screen BELOW the keepsakes shelf. Quiet cards (smaller than keepsake
@@ -185,7 +198,8 @@ export function mementoStampLine(): string;
   N". Renders null when the list is empty (R4.2).
 - **ChapterEnd (R3.4):** two new optional props, `mementoLine?: string` and
   `rankTickerLine?: string`, rendered under the existing act `Stamp`
-  (`ChapterEnd.tsx:29-30` prop block). ReaderScreen builds them ONLY when
+  (`ChapterEnd.tsx` grep `actNumber?: number` ≈ :28-29 prop block; the
+  `Stamp` render is at ≈ :96-99). ReaderScreen builds them ONLY when
   `actStampFromDiffs` returned a stamp, via a conditional-spread builder next
   to `actStampProps` (AM5), sourcing the ticker from `useAccountProfile`
   (already-cached profile data; no new polling loop). The memento line is

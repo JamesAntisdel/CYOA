@@ -7,14 +7,11 @@ import type {
   StoryClock,
 } from "./types";
 
-// W3 barrel bridge: re-export the Librarian Rank helper (Requirement 12.3) so it
-// reaches consumers through `@cyoa/engine` WITHOUT editing the reserved barrel
-// (`index.ts`, BC7). `index.ts` already does `export * from "./arc"`, so this
-// line surfaces `librarianRank` on the package entry. If the integrator later
-// adds a dedicated `export * from "./rank"` to the barrel, REMOVE this line to
-// avoid a duplicate-export conflict (see HANDOFF).
-export { librarianRank } from "./rank";
-export type { LibrarianRank, LibrarianTier } from "./rank";
+// HANDOFF (act-mementos 5.1): the rank module now reaches consumers through the
+// reserved barrel directly — `index.ts` carries `export * from "./rank"`, which
+// surfaces `librarianRank`, `rankProgress`, and their types on the package
+// entry. The former W3 bridge lines were removed here to avoid a
+// duplicate-export conflict with that barrel line.
 
 // =============================================================================
 // Story Arc engine module (Requirement 1). Pure — no `console`, no Date.now

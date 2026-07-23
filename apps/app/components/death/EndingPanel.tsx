@@ -1,6 +1,8 @@
 import type { JSX } from "react";
 import { useEffect, useMemo, useRef } from "react";
+import { View } from "react-native";
 
+import { Button } from "../primitives";
 import { useAppTheme } from "../../theme";
 import { PATRON_TIERS_BY_ID, type PatronTier } from "../../lib/billingConfig";
 import { Brutal } from "./variants/Brutal";
@@ -50,6 +52,13 @@ type EndingPanelProps = {
   onCinematicSeen?: ((endingId: string) => void) | undefined;
   /** Legacy close handler used by older callers; rendered as "Begin again". */
   onClose?: (() => void) | undefined;
+  /**
+   * Reading-modes R2.7 — "Read this tale as a book" re-read entry. Optional
+   * so the affordance self-hides when no handler is supplied; RM-AUTO wires
+   * it from ReaderScreen (navigating to /read/[saveId]/book). Kept on the
+   * panel (not pushed into a death variant) so every variant surfaces it.
+   */
+  onReadAsBook?: (() => void) | undefined;
 };
 
 const VARIANTS: Record<
@@ -79,8 +88,9 @@ export function EndingPanel({
   onShareEnding,
   onCinematicSeen,
   onClose,
+  onReadAsBook,
 }: EndingPanelProps) {
-  const { reduceMotion } = useAppTheme();
+  const { reduceMotion, tokens } = useAppTheme();
 
   const variant: DeathVariantKind = useMemo(() => {
     if (forceVariant) return forceVariant;
@@ -128,5 +138,21 @@ export function EndingPanel({
     ...(onShareEnding !== undefined ? { onShareEnding } : {}),
   };
 
-  return <Variant {...variantProps} />;
+  // R2.7 — the read-as-book action rides ABOVE the variant so it renders for
+  // every death treatment (brutal/bookish/cinematic) without threading a new
+  // prop through each variant. Self-hides when no handler is wired.
+  if (onReadAsBook === undefined) {
+    return <Variant {...variantProps} />;
+  }
+  return (
+    <View style={{ gap: tokens.spacing.sm }}>
+      <Variant {...variantProps} />
+      <Button
+        accessibilityLabel="Read this tale as a book"
+        onPress={onReadAsBook}
+      >
+        Read this tale as a book
+      </Button>
+    </View>
+  );
 }

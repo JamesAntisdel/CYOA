@@ -1,16 +1,21 @@
 import { useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Pressable, ScrollView, View } from "react-native";
+import { Animated, Platform, ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { AppNav } from "../navigation";
-import { AiSceneFlag } from "../moderation";
+import { ReportButton } from "../moderation";
 import { Text } from "../primitives";
 import { useAccountProfile } from "../../hooks/useAccountProfile";
 import { useLibrary } from "../../hooks/useLibrary";
-import { useReaderSettings } from "../../hooks/useReaderSettings";
+import { useReaderSettings, type ReaderLayoutVariant } from "../../hooks/useReaderSettings";
+import { useCandlelightFocus } from "../../hooks/useCandlelightFocus";
 import { guestAuthArgs, useGuestSession } from "../../hooks/useGuestSession";
 import { hasRemoteGameApi, restartRemoteRun } from "../../lib/gameApi";
+// Reading-modes cleanup (B2) — imported on its own line so the existing
+// beginAgain drift-guard keeps pinning the restartRun import byte-for-byte.
+import { setReadingMode } from "../../lib/gameApi";
+import type { ReadingMode } from "../../lib/readingMode";
+import { routeReadingModeResult } from "../../lib/readingModeRouting";
 import {
   listRemoteSaveCinematics,
   pickChapterCinematic,
@@ -20,25 +25,34 @@ import {
 import { CinematicMoment } from "../media/CinematicMoment";
 import { useSceneMedia } from "../../hooks/useSceneMedia";
 import { useStreamingScene } from "../../hooks/useStreamingScene";
-import { useTurn } from "../../hooks/useTurn";
+import { useTurn, type ChoiceProjection } from "../../hooks/useTurn";
+import { useAutoNarrator } from "../../hooks/useAutoNarrator";
 import { PATRON_TIERS_BY_ID, resolvePatronTier } from "../../lib/billingConfig";
-import { useBreakpoint } from "../../lib/responsive";
+import { SPREAD_MAX, selectReaderLayout, useBreakpoint } from "../../lib/responsive";
 import { useAppTheme } from "../../theme";
 import { ChapterEnd } from "./ChapterEnd";
-import { DoorsJournal } from "./DoorsJournal";
-import { QuestLine } from "./QuestLine";
-import { ThreadsPill } from "./ThreadsPill";
-import { CandleBurnMeter, CandleGutterInterstitial } from "./CandleGutter";
+import { CandleGutterInterstitial } from "./CandleGutter";
 import { SoftSignupRibbon } from "./SoftSignupRibbon";
+import { ModeChip } from "./chrome/ModeChip";
+import { PAGE_COLUMN_MAX, ReaderTopBar } from "./chrome/ReaderTopBar";
+import { StoryRibbon } from "./chrome/StoryRibbon";
+import { TomeSheet } from "./chrome/TomeSheet";
+import { buildTomeRows } from "./chrome/tomeRows";
 import {
   hasDismissedSoftSignup,
   markSoftSignupDismissed,
   SOFT_SIGNUP_TURN,
 } from "./softSignup";
 import { READER_LAYOUTS } from "./layouts";
+import { NovelLayout } from "./layouts/Novel";
 import { liveMediaMatchesScene, mergeLiveMediaIntoProjection } from "./mergeLiveMedia";
 import { ReaderSettingsDrawer } from "./ReaderSettingsDrawer";
 import { actStampFromDiffs } from "../../lib/storyEngagement";
+import {
+  mementoStampLine,
+  rankTickerLine,
+  type RemoteRankProgress,
+} from "../../lib/storyEngagementW3";
 import {
   candleBurnModel,
   getRemoteDailyTurnState,
@@ -67,16 +81,28 @@ const READER_LAYOUT_OVERRIDE_KEY = "cyoa.readerLayoutChosen.v1";
  * picks a layout from the variant picker. When the flag is absent and the
  * viewport is phone-sized, we render Mobile. Desktop and tablet always
  * honor the stored value.
+ *
+ * open-book (OB2/OB3): the SAME auto-override machinery now also selects the
+ * two-page `spread` at a genuinely wide viewport (width ≥ `SPREAD_MIN` 1024,
+ * NOT `isDesktop`'s 768) when the reader has NOT explicitly picked another
+ * layout. Phone→mobile still applies first; an explicit pick always wins.
+ * The pure decision lives in `selectReaderLayout` (lib/responsive) so the
+ * full selection matrix is unit-tested; here we just thread in the viewport
+ * width and read the explicit-override flag. Below 1024 the resolved layout
+ * is byte-identical to today.
  */
 function resolveActiveLayout(
-  storedLayout: keyof typeof READER_LAYOUTS,
-  isPhone: boolean,
-): keyof typeof READER_LAYOUTS {
-  if (!isPhone) return storedLayout;
-  // The user has explicitly picked a layout in /settings — honor it.
-  if (hasExplicitLayoutOverride()) return storedLayout;
-  // Phone, no explicit pick → mobile.
-  return "mobile";
+  storedLayout: ReaderLayoutVariant,
+  { isPhone, width }: { isPhone: boolean; width: number },
+): ReaderLayoutVariant {
+  return selectReaderLayout({
+    storedLayout,
+    isPhone,
+    width,
+    hasExplicitOverride: hasExplicitLayoutOverride(),
+    mobileVariant: "mobile",
+    spreadVariant: "spread",
+  });
 }
 
 function hasExplicitLayoutOverride(): boolean {
@@ -120,6 +146,26 @@ function actStampProps(
 ): { actNumber?: number; actLabel?: string } {
   if (!stamp) return {};
   return { actNumber: stamp.actNumber, ...(stamp.actLabel ? { actLabel: stamp.actLabel } : {}) };
+}
+
+/**
+ * Conditional-spread the ChapterEnd act-boundary lines (act-mementos R3.4, AM5).
+ * ONLY when the boundary turn advanced an act (a stamp) do we surface the
+ * memento acknowledgement and the rank ticker; otherwise `{}` so both optional
+ * props are omitted, never passed as `undefined` (BC4). The ticker is sourced
+ * from the already-fetched profile `rankProgress` — no new polling — and is
+ * dropped at the top tier (absent progress). A non-act boundary returns `{}`,
+ * keeping ChapterEnd byte-identical to today (BC9).
+ */
+function actBoundaryLineProps(
+  stamp: ReturnType<typeof actStampFromDiffs>,
+  rankProgress: RemoteRankProgress | undefined,
+): { mementoLine?: string; rankTickerLine?: string } {
+  if (!stamp) return {};
+  return {
+    mementoLine: mementoStampLine(),
+    ...(rankProgress ? { rankTickerLine: rankTickerLine(rankProgress) } : {}),
+  };
 }
 
 /**
@@ -334,7 +380,7 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
   //  - isFirstFind: TODO(Wave E) — real lookup against `endings_unlocked`.
   //    Until then pass `true` so eligible tier+asset reads can still fire
   //    Cinematic in QA without re-playing on the wrong account.
-  const { profile, claimWithEmail } = useAccountProfile();
+  const { profile, claimWithEmail, rankProgress } = useAccountProfile();
   const endingTier = profile
     ? resolvePatronTier({
         entitlement: profile.entitlementTier,
@@ -463,15 +509,122 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
   // viewports we render Mobile unless the user has explicitly opted into
   // a different layout via /settings. Desktop/tablet readers always see
   // the stored choice. See `resolveActiveLayout` above for the rationale.
-  const { isPhone } = useBreakpoint();
-  const activeLayout = resolveActiveLayout(settings.layout, isPhone);
-  const Layout = READER_LAYOUTS[activeLayout] ?? READER_LAYOUTS.book;
+  const { isPhone, width } = useBreakpoint();
+  const activeLayout = resolveActiveLayout(settings.layout, { isPhone, width });
+  // Reading-modes Wave 3 (R4.6): novel mode is a CONTENT axis orthogonal to the
+  // cosmetic `layout` skin. When the projection carries `readingMode === "novel"`
+  // (a reader-known fact from create) the Novel layout takes over — chapter
+  // prose ending in one "Turn the page" affordance instead of a choice row —
+  // regardless of which of the five cosmetic skins is selected. Absent /
+  // "branching" ⇒ the normal skin dispatch, byte-identical to today (R5.3).
+  //
+  // open-book (OB8, design §2): `spread` WINS the dispatch — checked BEFORE the
+  // Novel override — because the Spread reads `readingMode` itself (a Novel save
+  // at spread renders INSIDE Spread, its footnotes collapsing to the page-turn).
+  // So a wide Novel reader gets the two-page book, not the single-column Novel
+  // layout. Below spread, the dispatch is byte-identical to today.
+  const Layout =
+    activeLayout === "spread"
+      ? READER_LAYOUTS.spread
+      : projection.readingMode === "novel"
+        ? NovelLayout
+        : (READER_LAYOUTS[activeLayout] ?? READER_LAYOUTS.book);
+
+  // Reading-modes cleanup (B2) — content Axis 1 as a persistent, switchable
+  // indicator. The reader's CURRENT mode is a reader-known fact off the same
+  // projection the dispatch above reads: `readingMode === "novel"` ⇒ Novel,
+  // absent/"branching" ⇒ Branching. The ModeChip below shows it always; the
+  // switch calls the server `readingModeFunctions:setReadingMode` seam.
+  const currentReadingMode: ReadingMode =
+    projection.readingMode === "novel" ? "novel" : "branching";
+  // SWITCH-UX #5 — a switch only round-trips for a REAL remote saves row. Local
+  // /demo saves (training-room-demo/creator_seed_*/safe-ending/pro-media) have
+  // no saves row, so `setReadingMode` returns null and the tap is a silent
+  // no-op. `supportsFreeform` from useTurn is exactly that gate — a guest
+  // session + a wired convex client + NOT a local demo save — so we reuse it
+  // rather than re-deriving `isLocalDemoSave` (which useTurn keeps private).
+  // When false the ModeChip/drawer show the mode as a LABEL only, no dead
+  // switch button.
+  const readingModeSwitchable = supportsFreeform;
+  const [readingModeSwitchPending, setReadingModeSwitchPending] = useState(false);
+  // SWITCH-UX #2 — the ModeChip's sheet visibility is lifted here so a
+  // Pro-gated switch can CLOSE the sheet before routing to the paywall (on
+  // native the paywall otherwise renders UNDER the still-open sheet).
+  const [modeChipOpen, setModeChipOpen] = useState(false);
+  // The mode a just-succeeded switch moved TO. The switch applies from the NEXT
+  // page (the current scene keeps its shape — we never force-flip the live
+  // layout), so we surface it as a quiet confirmation and clear it the moment
+  // the reader advances a scene (below).
+  const [readingModeConfirmed, setReadingModeConfirmed] = useState<ReadingMode | null>(null);
+  useEffect(() => {
+    // Retire the "takes effect next page" note once the reader turns the page
+    // (a new scene id) — by then the server-patched mode is live.
+    setReadingModeConfirmed(null);
+  }, [projection.scene.id]);
+  const handleSwitchReadingMode = useCallback(
+    (mode: ReadingMode) => {
+      // SWITCH-UX #4 — guard against the EFFECTIVE selected mode (the pending
+      // confirmed target when there is one, else the current scene's mode), NOT
+      // just `currentReadingMode`. Otherwise a reverting tap back to the current
+      // scene's mode after a forward switch would be silently swallowed as a
+      // "no-op" while a switch to novel is still confirmed-pending.
+      const effectiveMode = readingModeConfirmed ?? currentReadingMode;
+      if (readingModeSwitchPending || mode === effectiveMode) return;
+      setReadingModeSwitchPending(true);
+      void (async () => {
+        try {
+          const result = await setReadingMode({
+            saveId,
+            mode,
+            ...(remoteAuth ? { auth: remoteAuth } : {}),
+          });
+          // SWITCH-UX #7 — the result→action decision is a pure helper so every
+          // arm is unit-tested; the component keeps only the thin dispatch.
+          const action = routeReadingModeResult(result);
+          if (action.kind === "confirm") {
+            // Applies from the next page — surface the quiet confirmation and
+            // leave the current scene untouched.
+            setReadingModeConfirmed(action.mode);
+          } else if (action.kind === "paywall") {
+            // SWITCH-UX #2 — CLOSE any open sheet BEFORE navigating so the
+            // Pro-gated paywall (Novel) isn't rendered UNDER the mode sheet /
+            // settings drawer on native. Mirrors the illustrated-book gate.
+            setModeChipOpen(false);
+            setDrawerOpen(false);
+            router.push("/paywall?reason=pro_media");
+          }
+          // action.kind === "noop" → not_found / unauthorized / null (no remote
+          // backend / local demo save) → quiet no-op.
+        } finally {
+          setReadingModeSwitchPending(false);
+        }
+      })();
+    },
+    // `remoteAuth` is a fresh object each render; the accountId/hash it carries
+    // are the stable identity, so gate the callback on those, not the wrapper.
+    // (setModeChipOpen/setDrawerOpen are stable setState identities.)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      currentReadingMode,
+      readingModeConfirmed,
+      readingModeSwitchPending,
+      remoteAuth?.accountId,
+      remoteAuth?.guestTokenHash,
+      router,
+      saveId,
+    ],
+  );
 
   // Panel-2 Wave 2 — daily turn budget → in-reader candle surfaces. The turn
   // number rides on the scene projection; a new scene means the reader spent a
   // turn, so `useDailyTurnState` refetches. `nowTs` ticks only while the candle
   // has guttered so the re-light countdown stays live without a permanent timer.
   const turnNumber = projection.turnNumber ?? 0;
+  // Daily Killcam (R3.1/R3.3) — the Daily this save belongs to, read off the
+  // scene projection. Typed narrowly here because `ReaderProjection` gains its
+  // own `dailyId?` field in the integrator's useTurn.ts widening; this read is
+  // safe (undefined → chip stays dark) whether or not that has landed yet.
+  const dailyPulseId = (projection as { dailyId?: string }).dailyId;
   const dailyTurnState = useDailyTurnState(remoteAuth, turnNumber);
   const [nowTs, setNowTs] = useState(() => Date.now());
   const burn = candleBurnModel(dailyTurnState, nowTs);
@@ -502,57 +655,253 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
   const showCandleGutter = !isTerminalView && burn.guttered;
   const showCandleMeter = !isTerminalView && burn.showMeter && Boolean(dailyTurnState);
 
+  // Auto-narrator ("the tome reads itself" — R1). Session state ONLY (default
+  // OFF, resets on reader close) — never routed through useReaderSettings
+  // (R1.6). It re-fires the EXISTING `submitChoice` a manual tap uses (RM10),
+  // so every auto-advance is one real metered turn and re-entrancy is safe with
+  // zero change to useTurn. The halt guards (R1.2) are the ReaderScreen facts
+  // already derived above; on a surfaced turn error (incl. the daily-budget
+  // rejection) `freeformError` halts it (R1.7).
+  // Narration playback state, reported up from SceneMedia (deep in the active
+  // layout). While the narrator is speaking, the auto-narrator holds the
+  // page-turn so it never skips over the narration (R1.8 — the "auto skips the
+  // narrator" fix). False when audio is off / no clip / native.
+  const [isNarrating, setIsNarrating] = useState(false);
+  const { autoOn, toggleAuto, setAutoOn } = useAutoNarrator<ChoiceProjection>({
+    sceneId: projection.scene.id,
+    choices: projection.choices,
+    submitChoice,
+    reducedMotion: reduceMotion || settings.reduceMotion,
+    guards: {
+      isStreaming,
+      pendingChoiceId,
+      hasEnding: Boolean(projection.ending),
+      atChapterBoundary: Boolean(chapterBoundary),
+      candleGuttered: showCandleGutter,
+      hasError: Boolean(freeformError),
+      isNarrating,
+    },
+    // OQ8 default: stay hands-free — auto-acknowledge the chapter recap after a
+    // readable beat (reduced-motion shortens it). Seam: drop this line to PAUSE
+    // at chapter interstitials instead (the boundary is already a halt guard).
+    onChapterAdvance: acknowledgeChapter,
+  });
+  // R1.5 / OQ8 default: a manual choice tap "grabs the wheel" — flip auto OFF,
+  // then submit unchanged. Auto itself advances via the RAW `submitChoice`
+  // handed to the hook above (not this wrapper), so lean-back mode keeps running
+  // until the reader taps a choice or toggles auto off. Seam: to keep auto
+  // running THROUGH a manual detour, remove the `setAutoOn(false)` line.
+  const handleManualChoose = useCallback(
+    (choice: ChoiceProjection) => {
+      setAutoOn(false);
+      return submitChoice(choice);
+    },
+    [setAutoOn, submitChoice],
+  );
+
+  // Reader-chrome-declutter Wave 1 (R1/R2/R3) — the consolidated chrome.
+  //   - the Tome menu (bottom sheet <768 / anchored popover ≥768) holds every
+  //     auxiliary action; opened from the top-bar `book` trigger.
+  //   - the in-reader ReaderSettingsDrawer is now opened from the Tome's
+  //     "Reading settings" row (its open state lifted here from the old
+  //     ReaderSaveActions row).
+  //   - the per-scene report picker (moderation/ReportButton) is driven from
+  //     the Tome's "Flag this scene" row — the disclosure text stays a footer
+  //     caption (U3/R2.5), only the flag ACTION moved into the sheet.
+  const [tomeOpen, setTomeOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [flagOpen, setFlagOpen] = useState(false);
+  // Reader-chrome-declutter 3.4 (RB-COUNTS) — synchronous sources for the
+  // COLLAPSED StoryRibbon's doors + daily-pulse segments. DoorsJournal /
+  // DailyPulseChip self-fetch (RC2 forbids re-deriving their predicates or
+  // adding a query), so headless reporter mounts below surface their result
+  // upward into this state; the ribbon then shows "· 3 doors · 62%" (§3 mock).
+  const [ribbonDoorsCount, setRibbonDoorsCount] = useState<number | undefined>(undefined);
+  const [ribbonPulseLine, setRibbonPulseLine] = useState<string | undefined>(undefined);
+
+  // Read-as-book is wired unconditionally onto the ending panel below
+  // (`onReadAsBook`), so its availability predicate is "always" — the Tome row
+  // mirrors that same gate (buildTomeRows omits the row only when false).
+  const readAsBookAvailable = true;
+  // The Flag row + Leave-the-tale row render below a divider in muted type
+  // (design §3 mock). buildTomeRows emits them without `quiet`; we mark them
+  // here at the wiring seam so the sheet renders the divider treatment.
+  const tomeRows = buildTomeRows({
+    autoOn,
+    hasEnding: Boolean(projection.ending),
+    readAsBookAvailable,
+    onToggleAuto: toggleAuto,
+    onPathMap: () => router.push(`/map/${saveId}`),
+    onRunHistory: () => router.push(`/read/${saveId}/history`),
+    onReadAsBook: () => router.push(`/read/${saveId}/book`),
+    // Modal-over-modal handoff (code-review fix): a Tome row press closes the
+    // sheet's Modal in the same commit that these open the follow-on Modal
+    // (drawer / report picker). On iOS, presenting while another modal is
+    // mid-dismiss silently drops the incoming one — so on native we let the
+    // sheet's dismiss animation finish first. Web mounts both fine.
+    onReadingSettings: () =>
+      Platform.OS === "web" ? setDrawerOpen(true) : setTimeout(() => setDrawerOpen(true), 380),
+    onFlagScene: () =>
+      Platform.OS === "web" ? setFlagOpen(true) : setTimeout(() => setFlagOpen(true), 380),
+    onLeave: () => router.push("/"),
+  }).map((row) =>
+    row.key === "flag" || row.key === "leave" ? { ...row, quiet: true } : row,
+  );
+
+  // Persistent AI-disclosure footer (U3 / R2.5). Scenes are LLM-authored on
+  // remote saves (`supportsFreeform` is exactly the "remote LLM-driven" gate);
+  // scripted/tutorial saves are not AI-generated, so the caption self-hides
+  // there. Rendered as a quiet page-footer caption beneath the scene block on
+  // every live generated scene — the flag ACTION lives in the Tome (above).
+  const showDisclosureFooter = supportsFreeform && !isTerminalView;
+
+  // "Candlelight Focus" immersion (phase-2 quick-win). After ~4s of no input
+  // while actively reading, the CHROME (top bar + story ribbon) fades to 0; any
+  // input restores it instantly. The prose + choices NEVER fade. Every guard
+  // below keeps the chrome lit — an open sheet/drawer, a chapter/ending panel,
+  // the candle gutter, the soft-signup ribbon, or a streaming turn. Reduced-
+  // motion snaps instead of animating (honored inside the hook). The hook is
+  // inert on native (no global input target to restore from). Chrome-only, so
+  // it never touches the Novel/daily-pulse/act-boundary/TomeSheet wiring above.
+  const { chromeOpacity, faded: chromeFaded } = useCandlelightFocus({
+    enabled: settings.focusMode,
+    reducedMotion: reduceMotion || settings.reduceMotion,
+    guards: {
+      anySheetOpen: tomeOpen || drawerOpen || flagOpen,
+      atChapterBoundary: Boolean(chapterBoundary),
+      atEnding: Boolean(projection.ending),
+      candleGutterShown: showCandleGutter,
+      softSignupShown: showSoftSignupRibbon,
+      isStreaming,
+    },
+  });
+
   return (
     <SafeAreaView style={{ backgroundColor: tokens.colors.background, flex: 1 }}>
       <ScrollView
         contentContainerStyle={{
           alignItems: "center",
-          // On phone viewports we trim the outer ScrollView gap so the
-          // prose surface gets more vertical real estate before the user
-          // has to scroll. Padding stays at lg (16px) so the inner
-          // content still has comfortable gutters against the rounded
-          // page corners.
-          gap: isPhone ? tokens.spacing.md : tokens.spacing.lg,
           padding: isPhone ? tokens.spacing.md : tokens.spacing.lg,
           width: "100%",
         }}
       >
-        <View style={{ alignSelf: "stretch" }}>
-          <AppNav />
-        </View>
-
-        {/* Story-engagement Wave 1 — the pursuit strip + threads pill live
-            here in ReaderScreen (not per-layout) so all five layouts inherit
-            them for free. Both self-hide on legacy / arc-less saves. */}
-        <View style={{ alignSelf: "stretch", gap: tokens.spacing.xs }}>
-          <QuestLine arc={projection.arc} reducedMotion={reduceMotion || settings.reduceMotion} />
-          {projection.arc ? (
-            <ThreadsPill
-              threadsPending={projection.arc.threadsPending}
-              sceneId={projection.scene.id}
-              {...(projection.recentDiffs ? { recentDiffs: projection.recentDiffs } : {})}
-            />
-          ) : null}
-          {/* DOORS-JOURNAL — the teased-doors pill (story-bible fetch-quest
-              loop, reader half). Self-fetching + zero-state invisible, so
-              legacy / bible-less / local saves render nothing here. */}
-          <DoorsJournal
-            saveId={saveId}
-            sceneId={projection.scene.id}
-            {...(remoteAuth ? { auth: remoteAuth } : {})}
+        {/* Reader-chrome-declutter R7.1/RC9 — ALL ReaderScreen-owned chrome
+            renders inside ONE centered page column (PAGE_COLUMN_MAX = 760),
+            never stretched against the raw viewport. On phone we trim the row
+            gap so prose reaches the top faster; padding gutters stay on the
+            ScrollView. Layouts self-cap smaller within this column. */}
+        <View
+          style={{
+            gap: isPhone ? tokens.spacing.md : tokens.spacing.lg,
+            // OB4/R2.2 — the spread is a two-page layout wider than the single
+            // page column: widen this container to SPREAD_MAX for it, so the
+            // Spread layout (which self-caps at SPREAD_MAX and centers) is not
+            // clamped to 760. The chrome + protected interstitials + ChapterEnd
+            // below cap THEMSELVES at PAGE_COLUMN_MAX so only the layout widens.
+            maxWidth: activeLayout === "spread" ? SPREAD_MAX : PAGE_COLUMN_MAX,
+            width: "100%",
+          }}
+        >
+          {/* Candlelight Focus (phase-2 quick-win) — ONLY the top bar + story
+              ribbon live inside this fading wrapper (chrome only; prose/choices
+              below are untouched). `chromeOpacity` dims to 0 after idle and
+              snaps back on any input. When fully faded we drop pointerEvents so
+              an invisible control never eats a tap — the tap passes through to
+              the prose and the same gesture restores the chrome. The inner gap
+              re-creates the column gap the two rows had as direct children. */}
+          <Animated.View
+            pointerEvents={chromeFaded ? "none" : "auto"}
+            style={{
+              gap: isPhone ? tokens.spacing.md : tokens.spacing.lg,
+              opacity: chromeOpacity,
+              // Chrome stays in the 760 column even when the container widens
+              // for a spread (OB4) — centered within it.
+              alignSelf: "center",
+              maxWidth: PAGE_COLUMN_MAX,
+              width: "100%",
+            }}
+          >
+          {/* R1 — the slim top bar replaces the global AppNav mount: exit/brand
+              candle → home, ellipsized mono title, the inline candle wick (only
+              under today's showCandleMeter rule — RC2), a compact Auto indicator
+              (only when auto is ON — R1.2), and the `book` + "Tome" trigger. */}
+          <ReaderTopBar
+            storyTitle={projection.storyTitle}
+            onExit={() => router.push("/")}
+            onOpenTome={() => setTomeOpen(true)}
+            {...(showCandleMeter && dailyTurnState
+              ? {
+                  wick: {
+                    turnsUsed: dailyTurnState.turnsUsed,
+                    turnsAllowed: dailyTurnState.turnsAllowed,
+                  },
+                }
+              : {})}
+            {...(autoOn ? { auto: { on: true as const, onPause: toggleAuto } } : {})}
           />
-          {/* Panel-2 Wave 2 — the day's candle meter. Appears only once the
-              reader has burned >= 50% of today's turns (Principle 7: no
-              surprise cap) and self-hides for unlimited tiers / local saves. */}
-          {showCandleMeter && dailyTurnState ? (
-            <CandleBurnMeter
-              turnsUsed={dailyTurnState.turnsUsed}
-              turnsAllowed={dailyTurnState.turnsAllowed}
-            />
-          ) : null}
-        </View>
 
-        <ReaderSaveActions saveId={saveId} />
+          {/* Reading-modes cleanup (B2) — the persistent content-mode chip.
+              Always present (both modes), sits under the top bar. Tapping it
+              opens the mode blurb + a live switch; the switch applies from the
+              NEXT page so the current scene keeps its shape. Rendered here (not
+              inside ReaderTopBar) so it shows at every layout incl. spread,
+              where the StoryRibbon below is suppressed. */}
+          <ModeChip
+            mode={currentReadingMode}
+            onSwitch={handleSwitchReadingMode}
+            switchPending={readingModeSwitchPending}
+            confirmedMode={readingModeConfirmed}
+            switchable={readingModeSwitchable}
+            open={modeChipOpen}
+            onOpenChange={setModeChipOpen}
+            reducedMotion={reduceMotion || settings.reduceMotion}
+          />
+
+          {/* R3 — the StoryRibbon replaces the four stacked strips
+              (QuestLine / ThreadsPill / DailyPulseChip / DoorsJournal): it
+              self-composes them in its detail sheet (their toasts still fire
+              while collapsed — R3.3) and renders a single quiet line that LEADS
+              with the pursuit phrase (U1), then counts. The candle rides in
+              under today's showCandleMeter rule (≥50%); the ribbon itself adds
+              the leading book-voice segment only at ≥80% (two-stage — U4). All
+              signals absent ⇒ it renders nothing (RC2).
+
+              open-book (OB5): at `spread` the verso Marginalia rail is the SINGLE
+              mount of these signals (it always-mounts QuestLine/ThreadsPill/
+              DoorsJournal/DailyPulseChip exactly as this ribbon does), so the
+              chrome ribbon is SUPPRESSED there to avoid doubling their
+              self-fetch/toast effects (RC2). The top bar's candle wick stays as
+              the chrome candle. Below spread the ribbon renders exactly as
+              today — byte-identical. */}
+          {activeLayout === "spread" ? null : (
+          <StoryRibbon
+            sceneId={projection.scene.id}
+            saveId={saveId}
+            completedTurn={turnNumber}
+            reducedMotion={reduceMotion || settings.reduceMotion}
+            onOpenPatronage={() => router.push("/paywall?reason=daily_limit")}
+            {...(projection.arc ? { arc: projection.arc } : {})}
+            {...(remoteAuth ? { auth: remoteAuth } : {})}
+            {...(projection.recentDiffs ? { recentDiffs: projection.recentDiffs } : {})}
+            {...(dailyPulseId ? { dailyId: dailyPulseId } : {})}
+            {...(ribbonDoorsCount !== undefined ? { doorsCount: ribbonDoorsCount } : {})}
+            {...(ribbonPulseLine !== undefined ? { pulseLine: ribbonPulseLine } : {})}
+            // RB-COUNTS (code-review fix): the ribbon's OWN detail mounts report
+            // their count/pulse upward — one fetch per surface serves both the
+            // detail and the collapsed segments (no headless twins, RC2).
+            onDoorsCount={setRibbonDoorsCount}
+            onPulseLine={setRibbonPulseLine}
+            {...(showCandleMeter && dailyTurnState
+              ? {
+                  candle: {
+                    turnsUsed: dailyTurnState.turnsUsed,
+                    turnsAllowed: dailyTurnState.turnsAllowed,
+                  },
+                }
+              : {})}
+          />
+          )}
+          </Animated.View>
 
         {/* Panel-2 Wave 2 — the candle-gutter interstitial. The daily cap as a
             narrative event, not an error string (Principle 8). Rendered ABOVE
@@ -560,7 +909,7 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
             its primary door returns home until the candle re-lights, its
             secondary door leads to the daily-limit paywall. */}
         {showCandleGutter ? (
-          <View style={{ alignSelf: "stretch" }}>
+          <View style={{ alignSelf: "center", maxWidth: PAGE_COLUMN_MAX, width: "100%" }}>
             <CandleGutterInterstitial
               turnsUsed={dailyTurnState?.turnsUsed ?? 0}
               resetsInLabel={burn.resetsInLabel}
@@ -572,7 +921,7 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
 
         {/* Panel-2 Wave 2 — turn-3 soft-signup ribbon (guest → account). */}
         {showSoftSignupRibbon ? (
-          <View style={{ alignSelf: "stretch" }}>
+          <View style={{ alignSelf: "center", maxWidth: PAGE_COLUMN_MAX, width: "100%" }}>
             <SoftSignupRibbon onClaim={claimWithEmail} onDismiss={dismissSoftSignup} />
           </View>
         ) : null}
@@ -581,7 +930,7 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
             one, shown ONCE inline then retired by asset id (see markCinematicSeen).
             Skipping or playing to the end dismisses it. Hidden at chapter/ending. */}
         {showInlineMoment && inlineMoment ? (
-          <View style={{ alignSelf: "stretch" }}>
+          <View style={{ alignSelf: "center", maxWidth: PAGE_COLUMN_MAX, width: "100%" }}>
             <CinematicMoment
               cinematic={inlineMoment}
               reducedMotion={reduceMotion || settings.reduceMotion}
@@ -594,6 +943,7 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
         ) : null}
 
         {chapterBoundary ? (
+          <View style={{ alignSelf: "center", maxWidth: PAGE_COLUMN_MAX, width: "100%" }}>
           <ChapterEnd
             chapterIndex={chapterBoundary.index}
             entries={chapterBoundary.entries}
@@ -609,12 +959,27 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
             // (an `act_advanced` diff), stamp the chapter recap with the new
             // act ("Act II — <label>"). Absent on non-arc boundaries (R1.5).
             {...actStampProps(actStampFromDiffs(projection.recentDiffs, projection.arc))}
+            // Act-mementos (R3.4) — memento acknowledgement + rank ticker, only
+            // alongside the act stamp; the ticker reuses the cached profile
+            // rankProgress (no new polling). Non-act boundaries spread `{}`.
+            {...actBoundaryLineProps(
+              actStampFromDiffs(projection.recentDiffs, projection.arc),
+              rankProgress,
+            )}
           />
+          </View>
         ) : (
           <Layout
             hudMode={settings.hudMode}
             isStreaming={isStreaming}
-            onChoose={submitChoice}
+            // Auto-narrator (R1.5): a manual choice tap grabs the wheel (flips
+            // auto OFF) then submits unchanged. Auto advances bypass this and
+            // ride the raw submitChoice, so lean-back mode keeps running.
+            onChoose={handleManualChoose}
+            // Read-as-books (R2.7): the terminal EndingPanel's "Read this tale
+            // as a book" action → the read-only book route. Wired through the
+            // layout's endingPanelHandlers onto <EndingPanel onReadAsBook>.
+            onReadAsBook={() => router.push(`/read/${saveId}/book`)}
             onOpenEndings={() => router.push("/endings")}
             onOpenLibrary={() => router.push("/library")}
             onReturnHome={() => router.push("/")}
@@ -657,6 +1022,7 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
             videoEnabled={settings.videoEnabled}
             narratorPlaybackRate={settings.narratorPlaybackRate}
             onNarratorPlaybackRateChange={setNarratorPlaybackRate}
+            onNarrationActiveChange={setIsNarrating}
             dialogBlocksEnabled={settings.dialogBlocksEnabled}
             // Free-form ("Option D") affordance. Only wired for remote
             // LLM-driven saves — supportsFreeform is false for scripted /
@@ -690,117 +1056,60 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
             onRetryCurrentTurn={retryCurrentTurn}
           />
         )}
+
+          {/* Persistent AI-disclosure footer (U3 / R2.5). A quiet plain-text
+              caption (NO glyph — RC5) beneath the scene block on every live
+              generated scene. The flag ACTION lives in the Tome; this is the
+              always-visible disclosure the GenAI policy requires. */}
+          {showDisclosureFooter ? (
+            <Text
+              accessibilityLabel="This tale is AI-generated"
+              muted
+              style={{ alignSelf: "center", paddingVertical: tokens.spacing.xs }}
+              variant="caption"
+            >
+              AI-generated tale
+            </Text>
+          ) : null}
+        </View>
       </ScrollView>
-    </SafeAreaView>
-  );
-}
 
-/**
- * Save-scoped chrome row: gives the reader an obvious entry into the
- * Path map (/map/[saveId]) and the Run history (/read/[saveId]/history)
- * surfaces. The global AppNav above only exposes top-level routes; these
- * two pages live under a specific save, so they belong here in the
- * reader's per-save chrome — not in AppNav, not buried in a settings
- * menu.
- *
- * Rendered as small ghost pills so they read as auxiliary chrome and
- * don't compete with the primary turn affordances (choices, narrator).
- * Both pills share an identical style block (`saveActionPillStyle`)
- * and a shared min-width so they look like SIBLINGS — the previous
- * version had two near-but-not-identical inline blocks that drifted on
- * close inspection. The visible label and accessibilityLabel match
- * 1-to-1 ("Path map" / "Run history") so screen-reader output mirrors
- * what sighted users see. Each pill carries an accessibilityLabel that
- * the test in `__tests__/readerSaveActions.test.mjs` drift-guards so
- * we don't lose the entry point in a future refactor.
- */
-function ReaderSaveActions({ saveId }: { saveId: string }) {
-  const router = useRouter();
-  const { tokens } = useAppTheme();
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  if (!saveId) return null;
-
-  // Single style factory so both pills land identically. Padding,
-  // border width, and border style are constants — only `pressed`
-  // tweaks opacity. This is the same discipline AppNav follows: no
-  // per-state reflow.
-  //
-  // We deliberately do NOT pin a `minWidth` here: the two labels
-  // ("Path map" / "Run history") are short and naturally similar in
-  // width, and dropping the floor lets the row fit beside its sibling
-  // pills on a 375 px iPhone viewport without overflowing. `minHeight`
-  // is held at 44 px so the touch target meets Apple HIG even when
-  // the row wraps onto its own line on phones.
-  const pillStyle = ({ pressed }: { pressed: boolean }) => ({
-    alignItems: "center" as const,
-    borderColor: tokens.colors.borderMuted,
-    borderRadius: tokens.radii.pill,
-    borderStyle: "dashed" as const,
-    borderWidth: tokens.borderWidths.hairline,
-    justifyContent: "center" as const,
-    minHeight: 44,
-    opacity: pressed ? 0.75 : 1,
-    paddingHorizontal: tokens.spacing.md,
-    paddingVertical: tokens.spacing.sm,
-  });
-  const labelStyle = {
-    color: tokens.colors.textMuted,
-    fontWeight: "800" as const,
-    textAlign: "center" as const,
-  };
-
-  return (
-    <View
-      accessibilityLabel="Save actions"
-      style={{
-        alignItems: "center",
-        alignSelf: "stretch",
-        flexDirection: "row",
-        flexWrap: "wrap",
-        gap: tokens.spacing.xs,
-        justifyContent: "flex-end",
-      }}
-    >
-      {/* AI-generated disclosure + per-scene report flag (Play GenAI + UGC
-          policy). Left-aligned via marginRight:auto so it leads the chrome row. */}
-      <View style={{ marginRight: "auto" }}>
-        <AiSceneFlag saveId={saveId} />
-      </View>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Reader settings"
-        accessibilityState={{ expanded: settingsOpen }}
-        onPress={() => setSettingsOpen(true)}
-        style={pillStyle}
-      >
-        <Text style={labelStyle} variant="bodySmall">
-          ⚙ Reading
-        </Text>
-      </Pressable>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Path map"
-        onPress={() => router.push(`/map/${saveId}`)}
-        style={pillStyle}
-      >
-        <Text style={labelStyle} variant="bodySmall">
-          Path map
-        </Text>
-      </Pressable>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Run history"
-        onPress={() => router.push(`/read/${saveId}/history`)}
-        style={pillStyle}
-      >
-        <Text style={labelStyle} variant="bodySmall">
-          Run history
-        </Text>
-      </Pressable>
-      <ReaderSettingsDrawer
-        onClose={() => setSettingsOpen(false)}
-        visible={settingsOpen}
+      {/* R2 — the Tome menu (bottom sheet <768 / anchored popover ≥768). Rows
+          come from the pure buildTomeRows; nav rows auto-close the sheet, the
+          Auto-read toggle keeps it open. */}
+      <TomeSheet
+        open={tomeOpen}
+        onClose={() => setTomeOpen(false)}
+        rows={tomeRows}
+        reducedMotion={reduceMotion || settings.reduceMotion}
       />
-    </View>
+
+      {/* The in-reader settings drawer, opened from the Tome's "Reading
+          settings" row (state lifted here from the removed ReaderSaveActions). */}
+      {/* B2 passes the reading-mode switch through; B3 renders it inside the
+          drawer as a "How this story reads" group (ReadingModeChooser). The
+          drawer and the top-bar ModeChip drive the SAME handler/state. */}
+      <ReaderSettingsDrawer
+        onClose={() => setDrawerOpen(false)}
+        visible={drawerOpen}
+        currentReadingMode={currentReadingMode}
+        onSwitchReadingMode={handleSwitchReadingMode}
+        switchPending={readingModeSwitchPending}
+        confirmedMode={readingModeConfirmed}
+        switchable={readingModeSwitchable}
+      />
+
+      {/* The per-scene report picker, driven from the Tome's "Flag this scene"
+          row — the same moderation ReportButton action, trigger hidden (U3:
+          only the flag ACTION moved into the menu). */}
+      <ReportButton
+        hideTrigger
+        onOpenChange={setFlagOpen}
+        open={flagOpen}
+        targetId={saveId}
+        targetLabel="this AI-generated scene"
+        targetType="scene"
+      />
+    </SafeAreaView>
   );
 }

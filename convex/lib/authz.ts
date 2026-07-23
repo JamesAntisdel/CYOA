@@ -29,7 +29,7 @@ export function assertOwns(
 }
 
 export async function assertAccountSessionAccess(
-  ctx: { auth: { getUserIdentity: () => Promise<{ subject?: string } | null> } },
+  ctx: { auth: { getUserIdentity: () => Promise<{ subject?: string; email?: string | null } | null> } },
   account: AccountLike | null | undefined,
   guestTokenHash?: string | undefined,
 ): Promise<void> {
@@ -43,6 +43,18 @@ export async function assertAccountSessionAccess(
 
   const identity = await ctx.auth.getUserIdentity();
   if (identity?.subject && identity.subject === account.userId) {
+    return;
+  }
+  // BetterAuth-bridge identity match. `ensureAppAccount` keys a user account by
+  // `userId = <normalized email>` (the natural cross-provider/cross-device key
+  // that `devGrantAdmin({ email })` also uses), NOT the OAuth subject — a
+  // provider subject never equals the email. So the authenticated caller proves
+  // ownership when the JWT's `email` claim matches the account's userId. Both
+  // sides are trimmed + lower-cased so casing differences across devices still
+  // resolve to one account (mirrors normalizeIdentityEmail in accountLink.ts).
+  const identityEmail = typeof identity?.email === "string" ? identity.email.trim().toLowerCase() : "";
+  const accountUserId = typeof account.userId === "string" ? account.userId.trim().toLowerCase() : "";
+  if (identityEmail.length > 0 && accountUserId.length > 0 && identityEmail === accountUserId) {
     return;
   }
   // Claimed-but-not-yet-authenticated fallback. `claimGuest` upgrades a guest

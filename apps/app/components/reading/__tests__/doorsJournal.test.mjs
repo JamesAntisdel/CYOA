@@ -70,13 +70,24 @@ test("gameApi calls the full-path convex query and pins the spoiler-safe wire sh
   );
 });
 
-test("ReaderScreen mounts DoorsJournal adjacent to ThreadsPill", () => {
-  const src = read("components/reading/ReaderScreen.tsx");
-  assert.match(src, /import \{ DoorsJournal \}/, "ReaderScreen must import DoorsJournal");
-  assert.match(src, /<DoorsJournal/, "ReaderScreen must render DoorsJournal");
+test("StoryRibbon mounts DoorsJournal keyed to the scene identity", () => {
+  // reader-chrome-declutter Wave 1 (R3): the four stacked engagement strips were
+  // consolidated into StoryRibbon, which composes the EXISTING DoorsJournal
+  // UNCHANGED inside its always-mounted detail (RC2 — its self-fetch + one-shot
+  // key-arrival nudge still fire while the ribbon is collapsed, R3.3). The mount
+  // moved OUT of ReaderScreen; ReaderScreen feeds StoryRibbon the scene identity.
+  const ribbon = read("components/reading/chrome/StoryRibbon.tsx");
+  assert.match(ribbon, /import \{ DoorsJournal \}/, "StoryRibbon must import DoorsJournal");
+  assert.match(ribbon, /<DoorsJournal/, "StoryRibbon must render DoorsJournal");
   assert.match(
-    src,
-    /<DoorsJournal[\s\S]{0,200}sceneId=\{projection\.scene\.id\}/,
+    ribbon,
+    /<DoorsJournal[\s\S]{0,200}sceneId=\{sceneId\}/,
     "DoorsJournal must be keyed to the scene identity for refetch + one-shot nudges",
+  );
+  const reader = read("components/reading/ReaderScreen.tsx");
+  assert.match(
+    reader,
+    /<StoryRibbon[\s\S]{0,400}sceneId=\{projection\.scene\.id\}/,
+    "ReaderScreen must feed StoryRibbon the live scene identity",
   );
 });

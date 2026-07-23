@@ -1,5 +1,5 @@
 import { useLocalSearchParams } from "expo-router";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { Pressable, ScrollView, View } from "react-native";
 
 import { AppNav, BackToSceneButton } from "../../../../components/navigation";
@@ -8,20 +8,12 @@ import { Chip, Text } from "../../../../components/primitives";
 import { ProseRenderer } from "../../../../components/reading/ProseRenderer";
 import { guestAuthArgs, useGuestSession } from "../../../../hooks/useGuestSession";
 import { useReaderSettings } from "../../../../hooks/useReaderSettings";
+import { useRunHistory } from "../../../../hooks/useRunHistory";
 import {
-  getRemoteRunHistory,
-  hasRemoteGameApi,
   rewindRemoteSaveTurns,
-  type RemoteRunHistory,
   type RemoteRunHistoryTurn,
 } from "../../../../lib/gameApi";
 import { useAppTheme } from "../../../../theme";
-
-type FetchState =
-  | { status: "loading" }
-  | { status: "ready"; history: RemoteRunHistory }
-  | { status: "empty" }
-  | { status: "error"; message: string };
 
 /**
  * Reader-facing scene archive for an active save.
@@ -46,7 +38,6 @@ export default function HistoryRoute() {
   const { tokens } = useAppTheme();
   const { settings } = useReaderSettings();
   const saveId = typeof params.saveId === "string" ? params.saveId : "";
-  const [state, setState] = useState<FetchState>({ status: "loading" });
   const [rewind, setRewind] = useState<{
     busy: boolean;
     confirmingDrop: number | null;
@@ -55,44 +46,11 @@ export default function HistoryRoute() {
   }>({ busy: false, confirmingDrop: null, error: null, notice: null });
 
   const accountId = guest.session?.accountId;
-  const loadHistory = useCallback(async () => {
-    if (!saveId) {
-      setState({ status: "error", message: "Missing save id." });
-      return;
-    }
-    if (!accountId) return;
-    if (!hasRemoteGameApi()) {
-      setState({ status: "empty" });
-      return;
-    }
-    try {
-      const history = await getRemoteRunHistory({
-        accountId,
-        saveId,
-        ...guestAuthArgs(),
-      });
-      if (!history) {
-        setState({ status: "error", message: "Could not load this run’s history." });
-        return;
-      }
-      setState({ status: "ready", history });
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Unknown error loading history.";
-      setState({ status: "error", message });
-    }
-  }, [accountId, saveId]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      if (cancelled) return;
-      await loadHistory();
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [loadHistory]);
+  // Shared read-only load path — the same hook the /read/[saveId]/book
+  // read-as-books route uses, so the two never diverge (R2.9). `reload`
+  // re-runs the fetch after a rewind (the write path lives here, NOT in
+  // the hook, keeping the book route write-free).
+  const { state, reload: loadHistory } = useRunHistory(accountId, saveId);
 
   const runRewind = useCallback(
     async (dropTurns: number) => {
@@ -490,7 +448,7 @@ function NarratorPlayPill({ uri }: { uri: string }) {
         style={{ color: tokens.colors.background, fontWeight: "800" }}
         variant="bodySmall"
       >
-        {playing ? "▌▌ Narrating" : "▶ Narrate"}
+        {playing ? "Narrating" : "Narrate"}
       </Text>
     </Pressable>
   );

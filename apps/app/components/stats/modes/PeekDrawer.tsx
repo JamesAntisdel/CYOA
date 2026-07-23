@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Pressable, View } from "react-native";
 
 import { KeepsakeBadge } from "../../creator/KeepsakePicker";
-import { Button, Chip, Divider, Surface, Text } from "../../primitives";
+import { Button, Chip, Divider, Icon, Surface, Text } from "../../primitives";
 import { isKeepsakeItem } from "../../../lib/storyEngagementW3";
 import { useAppTheme } from "../../../theme";
 import { filterVisibleStats, type StatsHudCommonProps } from "../types";
@@ -84,8 +84,22 @@ export function PeekDrawerMode({
             <View style={{ flexDirection: "row", flexWrap: "wrap", gap: tokens.spacing.sm }}>
               {inventory.length > 0 ? (
                 inventory.map((item) => (
-                  <Chip key={item.id} variant={isKeepsakeItem(item) ? "accent" : "default"}>
-                    {`✦ ${item.label}`}
+                  <Chip
+                    key={item.id}
+                    icon={
+                      <Icon
+                        name="sack"
+                        size={12}
+                        color={
+                          isKeepsakeItem(item)
+                            ? tokens.colors.accent
+                            : tokens.colors.textMuted
+                        }
+                      />
+                    }
+                    variant={isKeepsakeItem(item) ? "accent" : "default"}
+                  >
+                    {item.label}
                     {isKeepsakeItem(item) ? <KeepsakeBadge /> : null}
                   </Chip>
                 ))

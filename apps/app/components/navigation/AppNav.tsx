@@ -4,7 +4,7 @@ import { Image, Modal, Pressable, ScrollView, View } from "react-native";
 
 import { useAuthSession } from "../../hooks/useAuthSession";
 import { brandAssets } from "../../lib/designAssets";
-import { useBreakpoint } from "../../lib/responsive";
+import { BREAKPOINTS, useBreakpoint } from "../../lib/responsive";
 import { useAppTheme } from "../../theme";
 import { Text } from "../primitives";
 
@@ -56,48 +56,83 @@ const TAB_MIN_WIDTH = 96;
 // height so the tab pills are reliably tappable on phones.
 const TAB_MIN_HEIGHT = 44;
 
-// The desktop tab row (brand wordmark + up to six fixed-cell pills) needs
-// roughly this much width to lay out without the last pill ("Login") being
-// clipped at the viewport edge. Below it we fall back to the hamburger drawer
-// instead of a horizontally-scrolled row whose overflow reads as "cut off"
-// rather than "swipe me". Above the shared phone breakpoint (520) but below
-// this, tablets get the drawer too — a clean menu beats a clipped one.
-// Only show the full desktop pill row when the viewport is genuinely wide
-// enough for brand + every tab + Login without clipping. Below this we use the
-// hamburger drawer. Set generously (a clean menu beats a clipped one), and a
-// falsy/zero width (unreliable through some webviews/tunnels) also falls back
-// to the drawer rather than rendering an overflowing row.
+// WORDMARK-visibility threshold ONLY (R7.3 / RC10). At or above this width the
+// brand wordmark ("The Unwritten") renders beside the candle glyph; below it
+// the glyph stands alone (as on phone) so the compact pill row has room. This
+// is NO LONGER the pill-row-vs-hamburger gate — that decision is measured from
+// the real tab count in `navRowNeededWidth` so 768–1023 gets the compact row,
+// not the phone hamburger, on desktop-class widths.
 const NAV_ROW_MIN_WIDTH = 1024;
+
+// Estimated pixel width of the "The Unwritten" wordmark at subtitle / weight
+// 800. Used only to keep the measured fit check honest once the wordmark is
+// shown (≥ NAV_ROW_MIN_WIDTH); at those widths there is ample room, so the
+// estimate need only be roughly right.
+const WORDMARK_WIDTH = 150;
+
+// Width of the candle brand glyph (see the <Image> below).
+const BRAND_GLYPH_WIDTH = 32;
 
 /**
  * Global top-nav shell.
  *
- * Two layouts:
+ * Three bands (R7.3 / RC10):
  *
- *   - **Phone (< 520 px)**: brand mark on the left, **hamburger** icon on
- *     the right. Tapping the hamburger opens a full-screen drawer with
- *     every tab as a row. This pattern keeps the top of the screen
- *     uncluttered for reading and gives the menu enough room for clear
- *     labels + 44 px touch targets, instead of forcing a horizontal swipe
- *     that hid Settings/Account behind a non-obvious gesture.
- *   - **Tablet / desktop (≥ 520 px)**: original fixed-cell tab row on the
- *     right. Each cell holds `TAB_MIN_WIDTH` so labels of different
- *     lengths don't shift the row between routes.
+ *   - **Below 768 px (phone + narrow tablet)**: brand glyph on the left,
+ *     **hamburger** icon on the right. Tapping it opens a full-screen drawer
+ *     with every tab as a row. This keeps the top uncluttered and gives the
+ *     menu room for clear labels + 44 px touch targets instead of a
+ *     horizontal swipe that hid Settings/Account behind a non-obvious gesture.
+ *   - **768–1023 px (compact band)**: the fixed-cell pill row, WORDMARK
+ *     HIDDEN (glyph only) so the pills fit without clipping — no phone
+ *     hamburger on these desktop-class widths.
+ *   - **≥ 1024 px (full desktop)**: the same pill row PLUS the "The
+ *     Unwritten" wordmark beside the glyph.
  *
- * In both modes only fill + text color changes between active and
- * inactive states — no reflow on selection.
+ * The pill-row-vs-hamburger choice is MEASURED from the live tab count
+ * (`navRowNeededWidth`), not a fixed constant, so a width that genuinely
+ * cannot fit the row still falls back to the drawer. Each cell holds
+ * `TAB_MIN_WIDTH` so labels of different lengths don't shift the row between
+ * routes, and only fill + text color changes between active and inactive
+ * states — no reflow on selection.
  */
 export function AppNav({ current }: AppNavProps) {
   const router = useRouter();
   const auth = useAuthSession();
   const { tokens } = useAppTheme();
   const { isPhone, width } = useBreakpoint();
-  // Use the hamburger drawer whenever the row can't fit, not only on phones —
-  // this is what stops the "Login" pill being clipped on mid-width viewports.
-  const useDrawer = isPhone || !width || width < NAV_ROW_MIN_WIDTH;
   const items: readonly { key: AppNavTab; label: string; href: string }[] = auth.session
     ? NAV_ITEMS
     : [...NAV_ITEMS, LOGIN_ITEM];
+
+  // The wordmark rides beside the glyph only from the desktop-class width
+  // (≥ NAV_ROW_MIN_WIDTH). Below that the glyph alone identifies the surface,
+  // exactly as on phone — this is the ONLY thing 1024 now gates (R7.3).
+  const wordmarkVisible = !!width && width >= NAV_ROW_MIN_WIDTH;
+
+  // Measure — don't assume (R7.3). Compute the width the compact pill row
+  // actually needs from the live tab count and the real token gaps, so adding
+  // or removing a tab (e.g. the logged-out "Login" pill) re-derives the
+  // threshold instead of drifting from a hard-coded constant. Each pill claims
+  // TAB_MIN_WIDTH; pills are separated by spacing.xs; the ScrollView adds a
+  // spacing.xs pad on each side; the brand block (glyph, plus wordmark only
+  // when visible) sits before the row separated by the container's spacing.md.
+  const brandWidth =
+    BRAND_GLYPH_WIDTH + (wordmarkVisible ? tokens.spacing.sm + WORDMARK_WIDTH : 0);
+  const navRowNeededWidth =
+    brandWidth +
+    tokens.spacing.md +
+    items.length * TAB_MIN_WIDTH +
+    (items.length - 1) * tokens.spacing.xs +
+    tokens.spacing.xs * 2;
+
+  // Compact pill row from the ≥768 desktop breakpoint (RC10) WHEN it measures
+  // as fitting; otherwise the hamburger drawer. A falsy/zero width (unreliable
+  // through some webviews/tunnels) and any width where the row can't fit both
+  // fall back to the drawer rather than rendering a clipped/scrolled row.
+  const showPillRow =
+    !isPhone && !!width && width >= BREAKPOINTS.tablet && width >= navRowNeededWidth;
+  const useDrawer = !showPillRow;
 
   const [drawerOpen, setDrawerOpen] = useState(false);
 
@@ -145,15 +180,16 @@ export function AppNav({ current }: AppNavProps) {
             style={{ height: 32, width: 32 }}
           />
           {/*
-            Wordmark hidden on phone to free up room for the hamburger
-            and avoid wrapping the brand row. The glyph alone identifies
-            the surface; tapping it still routes to /.
+            Wordmark hidden below NAV_ROW_MIN_WIDTH (phone AND the 768–1023
+            compact band) to free up room for the pill row / hamburger and
+            avoid wrapping the brand row. The glyph alone identifies the
+            surface; tapping it still routes to /.
           */}
-          {isPhone ? null : (
+          {wordmarkVisible ? (
             <Text style={{ fontWeight: "800" }} variant="subtitle">
               The Unwritten
             </Text>
-          )}
+          ) : null}
         </Pressable>
 
         {useDrawer ? (
@@ -204,11 +240,12 @@ export function AppNav({ current }: AppNavProps) {
           </Pressable>
         ) : (
           /*
-            Tablet/desktop tab row. The wrapper view uses `flex: 1` +
-            `minWidth: 0` so it can shrink below the natural row width on
-            narrow tablet viewports and expose horizontal overflow on the
-            inner ScrollView. Hamburger renders on phone, so this branch
-            is never the visible one under 520 px.
+            Compact/desktop pill row (shown from ≥768 when it measures as
+            fitting — see showPillRow). The wrapper view uses `flex: 1` +
+            `minWidth: 0` so it can shrink below the natural row width and
+            expose horizontal overflow on the inner ScrollView as a safety
+            net. The hamburger renders below 768 (and wherever the row can't
+            fit), so this branch is never the clipped one.
           */
           <View style={{ flex: 1, minWidth: 0 }}>
             <ScrollView

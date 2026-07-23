@@ -14,26 +14,38 @@ export type HudMode = "full" | "quiet" | "hidden";
  *   stills_only       Scene stills, no video.
  *   endpoint_cinematic Endpoint Omni cinematics (opening + ending).
  *   per_scene_legacy  The legacy per-turn Imagen→Veo chain.
+ *   illustrated_book  Pro image-first reading mode with a GUARANTEED still
+ *                     per scene (reading-modes R3, OQ7 = distinct strategy).
+ *                     The resolver owns the still-guarantee; on credit
+ *                     exhaustion the server emits an out-of-credits signal
+ *                     and MediaPlate degrades to a stylized placeholder (never
+ *                     a bare skeleton). Moves in LOCKSTEP with the server-side
+ *                     `CinematicMode` / `MediaStrategy` unions (RM6).
  */
 export type CinematicMode =
   | "off"
   | "stills_only"
   | "endpoint_cinematic"
-  | "per_scene_legacy";
+  | "per_scene_legacy"
+  | "illustrated_book";
 
 export const CINEMATIC_MODES: readonly CinematicMode[] = [
   "off",
   "stills_only",
   "endpoint_cinematic",
   "per_scene_legacy",
+  "illustrated_book",
 ] as const;
-export type ReaderLayoutMode = "book" | "focus";
 export type ReaderLayoutVariant =
   | "book"
   | "modernApp"
   | "graphicNovel"
   | "journal"
-  | "mobile";
+  | "mobile"
+  | "illustratedBook"
+  // open-book (OB1/R1.1): the desktop two-page spread. Auto-selected ≥1024
+  // (see ReaderScreen `resolveActiveLayout`); the layout body lands in Wave 2.
+  | "spread";
 
 export const READER_LAYOUT_VARIANTS: readonly ReaderLayoutVariant[] = [
   "book",
@@ -41,13 +53,14 @@ export const READER_LAYOUT_VARIANTS: readonly ReaderLayoutVariant[] = [
   "graphicNovel",
   "journal",
   "mobile",
+  "illustratedBook",
+  "spread",
 ] as const;
 
 export type ReaderSettings = {
   theme: ReaderThemePreference;
   fontScale: "compact" | "default" | "large";
   hudMode: HudMode;
-  layoutMode: ReaderLayoutMode;
   layout: ReaderLayoutVariant;
   muted: boolean;
   reduceMotion: boolean;
@@ -93,6 +106,27 @@ export type ReaderSettings = {
    * when false so the visual is identical to the pre-feature behavior.
    */
   dialogBlocksEnabled: boolean;
+  /**
+   * "Candlelight Focus" immersion (phase-2 quick-win). When true, the reader
+   * CHROME (top bar + story ribbon) fades to 0 after ~4s of no input while
+   * actively reading; any input restores it instantly. The prose and choices
+   * NEVER fade. Default TRUE: it is immersive and low-risk — any touch/scroll/
+   * key restores the chrome, and every safety context (open sheet, chapter/
+   * ending, candle gutter, soft-signup, streaming) keeps it lit. Reduced-motion
+   * snaps instead of animating. Persisted; tolerant parse defaults a missing
+   * field to enabled (only an explicit `=== false` turns it off).
+   */
+  focusMode: boolean;
+  /**
+   * "Experimental: Desk home" opt-in (the-desk R1.2). When true, the home
+   * route renders the diegetic writer's desk instead of the card stack (behind
+   * the R1 gate — combined with `EXPO_PUBLIC_DESK_HOME` via `resolveDeskEnabled`
+   * in components/home/deskGate.ts; the branch itself lands in Wave 2). Default
+   * FALSE — the desk is opt-in and the card home stays the default. Tolerant
+   * parse: a missing field (every legacy blob) reads as OFF; only an explicit
+   * `=== true` opts in.
+   */
+  deskHome: boolean;
 };
 
 export const NARRATOR_PLAYBACK_RATES: readonly number[] = [0.75, 1, 1.25, 1.5] as const;
@@ -104,7 +138,6 @@ const defaultSettings: ReaderSettings = {
   theme: "system",
   fontScale: "default",
   hudMode: "full",
-  layoutMode: "book",
   layout: "book",
   muted: false,
   reduceMotion: false,
@@ -114,6 +147,8 @@ const defaultSettings: ReaderSettings = {
   cinematicMode: "endpoint_cinematic",
   narratorPlaybackRate: 1,
   dialogBlocksEnabled: true,
+  focusMode: true,
+  deskHome: false,
 };
 
 export function useReaderSettings() {
@@ -173,7 +208,10 @@ function readSettings(): ReaderSettings {
       theme: isTheme(parsed.theme) ? parsed.theme : defaultSettings.theme,
       fontScale: parsed.fontScale === "compact" || parsed.fontScale === "large" ? parsed.fontScale : "default",
       hudMode: parsed.hudMode === "quiet" || parsed.hudMode === "hidden" ? parsed.hudMode : "full",
-      layoutMode: parsed.layoutMode === "focus" ? "focus" : "book",
+      // NOTE: `layoutMode` ("Chrome: Book/Focus") is RETIRED (reader-chrome-
+      // declutter P2/RC11 — it was consumed by nothing). Old persisted blobs
+      // may still carry the key; the tolerant field-by-field parse simply drops
+      // it (we never spread `parsed`), so legacy settings still load cleanly.
       layout: isLayoutVariant(parsed.layout) ? parsed.layout : defaultSettings.layout,
       muted: parsed.muted === true,
       reduceMotion: parsed.reduceMotion === true,
@@ -195,6 +233,12 @@ function readSettings(): ReaderSettings {
       // Dialog blocks default to on; only an explicit `=== false` flips
       // them off so a missing field reads as enabled.
       dialogBlocksEnabled: parsed.dialogBlocksEnabled !== false,
+      // Candlelight focus defaults to on; only an explicit `=== false` flips
+      // it off so a missing field (legacy blobs) reads as enabled.
+      focusMode: parsed.focusMode !== false,
+      // Desk home is opt-in and defaults OFF; only an explicit `=== true` opts
+      // in, so a missing field (every legacy blob) tolerantly reads as OFF.
+      deskHome: parsed.deskHome === true,
     };
   } catch {
     return defaultSettings;

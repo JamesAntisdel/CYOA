@@ -557,7 +557,7 @@ export default function CreatorRoute() {
 
           <SeedStoryFlow
             keepsakes={keepsakes}
-            onLaunchSeed={({ title, premise, tone, npcCast, mode, keepsakeId }) =>
+            onLaunchSeed={({ title, premise, tone, npcCast, mode, keepsakeId, readingMode }) =>
               // Reader-authored open seeds always launch from the open-canvas
               // starter shell. Pass title as both titleOverride (so the
               // library row shows the reader-authored title) and inside the
@@ -565,13 +565,24 @@ export default function CreatorRoute() {
               // `storyTitle` field). The optional cast is forwarded to the
               // backend as `seedNpcs` via useLibrary → gameApi. Wave 3 threads
               // the chosen mode (Story/Hardcore) + carried keepsakeId (BC3).
-              library.createSave(OPEN_STARTER_ID, mode, title, narrator.voiceId, {
-                premise,
+              // reading-modes cleanup: forward the chosen Branching/Novel
+              // readingMode as createSave's 6th `options` arg (matching
+              // home/library/discover), else the custom-seed Novel choice is a
+              // silent no-op; the server re-gates Novel on entitlement.
+              library.createSave(
+                OPEN_STARTER_ID,
+                mode,
                 title,
-                tone,
-                npcs: npcCast,
-                ...(keepsakeId ? { keepsakeId } : {}),
-              })
+                narrator.voiceId,
+                {
+                  premise,
+                  title,
+                  tone,
+                  npcs: npcCast,
+                  ...(keepsakeId ? { keepsakeId } : {}),
+                },
+                { readingMode },
+              )
             }
             onSeedLaunched={(save) => router.push(`/read/${save.saveId}`)}
           />

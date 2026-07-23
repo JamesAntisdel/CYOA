@@ -1,0 +1,22 @@
+{
+  "filePath": ".spec-workflow/specs/open-book/requirements.md",
+  "currentVersion": 2,
+  "snapshots": [
+    {
+      "version": 1,
+      "filename": "snapshot-001.json",
+      "timestamp": "2026-07-21T19:32:38.557Z",
+      "trigger": "initial",
+      "approvalId": "approval_1784662358528_8qneh4ix9",
+      "approvalTitle": "The Open Book — Requirements (desktop two-page spread; phase-2 flagship)"
+    },
+    {
+      "version": 2,
+      "filename": "snapshot-002.json",
+      "timestamp": "2026-07-21T19:33:00.067Z",
+      "trigger": "approved",
+      "approvalId": "approval_1784662358528_8qneh4ix9",
+      "approvalTitle": "The Open Book — Requirements (desktop two-page spread; phase-2 flagship)"
+    }
+  ]
+}

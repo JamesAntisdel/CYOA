@@ -57,6 +57,17 @@ import { resolveMediaStrategy } from "./mediaStrategy";
 const accountId = v.id("accounts");
 const saveId = v.id("saves");
 
+// Reading-modes R3.4/R3.5 + RM8 — mode-scoped still guarantee. When a Pro reader
+// in the Illustrated Book (`illustrated_book` strategy) mode exhausts image
+// credits, `queueSceneImage` does NOT delete the queued still (the silent drop
+// every OTHER reader gets). Instead it keeps this lightweight, UNMETERED
+// placeholder asset — tagged so `getSceneMedia` emits an `outOfCredits` signal
+// and `MediaPlate` renders the stylized out-of-credits plate rather than a
+// permanent bare skeleton. The turn never blocks and nothing is billed (the
+// spend charge already failed, so there is nothing to meter — the placeholder is
+// modeled like the NPC/anchor portraits `chargeMediaSpend` never bills).
+export const OUT_OF_CREDITS_PLACEHOLDER_TAG = "out_of_credits_placeholder";
+
 type AssetDoc = {
   _id: string;
   accountId: string;
@@ -277,6 +288,14 @@ export const queueSceneImage = internalMutationGeneric({
     // scene-render references. Optional so older/unwired callers behave
     // exactly as today (empty → no identity NPCs). SERVER wires it in game.ts.
     npcMentions: v.optional(v.array(v.string())),
+    // Reading-modes R3 (RM8) — explicit override for the MODE-SCOPED still
+    // guarantee. Optional and NOT required: the internal
+    // `resolveMediaStrategy(...) === "illustrated_book"` check is the source of
+    // truth, so the credit-exhaustion placeholder fires for Illustrated Book
+    // readers with ZERO game.ts threading. The integrator MAY still pass this
+    // flag (e.g. to force the guarantee without re-resolving), but absence keeps
+    // every non-Illustrated reader byte-identical to today.
+    guaranteedStill: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const account = await ctx.db.get(args.accountId);
@@ -379,6 +398,28 @@ export const queueSceneImage = internalMutationGeneric({
         idempotencyKey: `spend:${assetId}`,
       });
       if (!charge.charged) {
+        // MODE-SCOPED still guarantee (RM8, R3.4/R3.5). For the Illustrated Book
+        // (`illustrated_book` strategy) reading mode ONLY, keep a lightweight,
+        // UNMETERED placeholder asset and let `getSceneMedia` emit an
+        // `outOfCredits` signal so `MediaPlate` degrades to the stylized
+        // out-of-credits plate instead of a permanent bare skeleton — the whole
+        // promise of a "guaranteed still" mode. The mode is the resolved
+        // `illustrated_book` strategy (an explicit `guaranteedStill` arg may also
+        // force it, but the strategy resolution is the source of truth so no
+        // game.ts threading is required). Every OTHER reader keeps the
+        // BYTE-IDENTICAL delete-and-skeleton behavior below. Nothing is billed:
+        // the charge already failed, and this path never re-charges.
+        const guaranteedStill =
+          args.guaranteedStill === true ||
+          (await resolveMediaStrategy(ctx, args.accountId)) === "illustrated_book";
+        if (guaranteedStill) {
+          await ctx.db.patch(assetId, {
+            status: "failed" as const,
+            tags: [OUT_OF_CREDITS_PLACEHOLDER_TAG],
+            updatedAt: Date.now(),
+          });
+          return { queued: false, reason: charge.reason, placeholder: true } as const;
+        }
         await ctx.db.delete(assetId);
         return { queued: false, reason: charge.reason } as const;
       }
@@ -1434,9 +1475,20 @@ export const getSceneMedia = queryGeneric({
     // (the "text doesn't match narration" bug after a turn).
     const sceneDoc = await ctx.db.get(targetSceneId as any);
     const nodeId = (sceneDoc as { nodeId?: unknown } | null)?.nodeId;
+    // Reading-modes R3.4 (RM8) — mode-scoped out-of-credits signal. When the
+    // Illustrated Book still-guarantee fallback kept an UNMETERED placeholder
+    // asset (tagged `OUT_OF_CREDITS_PLACEHOLDER_TAG` by `queueSceneImage` after a
+    // failed spend charge), surface an `outOfCredits` flag so `MediaPlate` can
+    // render the stylized out-of-credits plate (NEVER a bare skeleton) in the
+    // image-first layout. Absent for every other reader — the delete-and-skeleton
+    // path leaves no placeholder — so old/other clients tolerate its absence.
+    const outOfCredits = docs.some(
+      (d) => d.kind === "image" && (d.tags ?? []).includes(OUT_OF_CREDITS_PLACEHOLDER_TAG),
+    );
     return {
       ...projection,
       ...(typeof nodeId === "string" ? { nodeId } : {}),
+      ...(outOfCredits ? { outOfCredits: true as const } : {}),
     };
   },
 });

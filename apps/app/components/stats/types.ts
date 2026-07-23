@@ -36,11 +36,16 @@ export type StatLabel = {
   glyph: string;
 };
 
-/** Stable label table — order matches the lo-fi canvas wireframe (♥ ◈ ✦). */
+/**
+ * Stable label table — order matches the lo-fi canvas wireframe. Vitality and
+ * Nerve keep their unflagged book-voice stat glyphs (♥ ◈); Insight retires the
+ * overloaded four-pointed star (also used as the AI-flag control glyph, RC5)
+ * for the open ✧ so the glyph sweep stays clean without losing a stat marker.
+ */
 export const STAT_LABELS: ReadonlyArray<StatLabel> = [
   { key: "vitality", label: "Vitality", glyph: "♥" },
   { key: "nerve", label: "Nerve", glyph: "◈" },
-  { key: "insight", label: "Insight", glyph: "✦" },
+  { key: "insight", label: "Insight", glyph: "✧" },
 ];
 
 /**

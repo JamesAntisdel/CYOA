@@ -45,7 +45,7 @@ export function AiSceneFlag({ saveId }: AiSceneFlagProps) {
           style={{ color: tokens.colors.textMuted, fontWeight: "800", letterSpacing: 0.5 }}
           variant="caption"
         >
-          ✦ AI-generated
+          AI-generated
         </Text>
       </View>
       <ReportButton

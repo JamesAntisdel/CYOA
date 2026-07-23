@@ -1,0 +1,432 @@
+<title>Two Ways to Read — mode cleanup</title>
+<style>
+  :root {
+    --vellum: #ece3d2;
+    --vellum-raised: #f4ecdc;
+    --ink: #2a2420;
+    --ink-soft: #5c5248;
+    --ink-faint: #8a7d6d;
+    --rule: #cbbfa8;
+    --rule-soft: #ddd2bb;
+    --candle: #b8791f;
+    --candle-soft: #d9a94f;
+    --fork: #6b7f6a;
+    --danger: #9a5a3a;
+    --card: #f6efe0;
+    --shadow: rgba(60, 48, 30, 0.16);
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+    --sans: "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --vellum: #1a1713;
+      --vellum-raised: #221d18;
+      --ink: #ece3d2;
+      --ink-soft: #b6aa96;
+      --ink-faint: #7e7263;
+      --rule: #3a3229;
+      --rule-soft: #2c261f;
+      --candle: #d9a94f;
+      --candle-soft: #b8791f;
+      --fork: #8ba189;
+      --danger: #c07a54;
+      --card: #221d18;
+      --shadow: rgba(0, 0, 0, 0.4);
+    }
+  }
+  :root[data-theme="light"] {
+    --vellum: #ece3d2; --vellum-raised: #f4ecdc; --ink: #2a2420; --ink-soft: #5c5248;
+    --ink-faint: #8a7d6d; --rule: #cbbfa8; --rule-soft: #ddd2bb; --candle: #b8791f;
+    --candle-soft: #d9a94f; --fork: #6b7f6a; --danger: #9a5a3a; --card: #f6efe0; --shadow: rgba(60,48,30,0.16);
+  }
+  :root[data-theme="dark"] {
+    --vellum: #1a1713; --vellum-raised: #221d18; --ink: #ece3d2; --ink-soft: #b6aa96;
+    --ink-faint: #7e7263; --rule: #3a3229; --rule-soft: #2c261f; --candle: #d9a94f;
+    --candle-soft: #b8791f; --fork: #8ba189; --danger: #c07a54; --card: #221d18; --shadow: rgba(0,0,0,0.4);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--vellum); color: var(--ink);
+    font-family: var(--sans); line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 48px 24px 96px; }
+
+  header.page { text-align: center; margin-bottom: 8px; }
+  .eyebrow {
+    font-size: 12px; letter-spacing: 0.22em; text-transform: uppercase;
+    color: var(--candle); font-weight: 700; margin-bottom: 12px;
+  }
+  h1 {
+    font-family: var(--serif); font-weight: 600; font-size: clamp(30px, 5vw, 46px);
+    margin: 0 0 10px; text-wrap: balance; letter-spacing: -0.01em;
+  }
+  .lede { max-width: 62ch; margin: 0 auto; color: var(--ink-soft); font-size: 17px; }
+
+  .rule-orn {
+    display: flex; align-items: center; gap: 14px; justify-content: center;
+    color: var(--rule); margin: 32px auto; max-width: 340px;
+  }
+  .rule-orn::before, .rule-orn::after { content: ""; height: 1px; background: var(--rule); flex: 1; }
+  .rule-orn span { color: var(--candle); font-size: 13px; letter-spacing: 0.3em; }
+
+  section.block { margin-top: 64px; }
+  .kicker {
+    display: flex; align-items: baseline; gap: 12px; margin-bottom: 6px;
+  }
+  .kicker .n {
+    font-family: var(--serif); font-size: 15px; color: var(--candle);
+    font-weight: 700; font-variant-numeric: tabular-nums;
+  }
+  .kicker h2 {
+    font-family: var(--serif); font-weight: 600; font-size: 25px; margin: 0;
+  }
+  .block > p.sub { color: var(--ink-soft); margin: 0 0 22px; max-width: 68ch; }
+
+  /* device frame */
+  .device {
+    background: var(--card); border: 1px solid var(--rule);
+    border-radius: 16px; box-shadow: 0 16px 40px -20px var(--shadow);
+    overflow: hidden; max-width: 420px;
+  }
+  .device.wide { max-width: 720px; }
+  .grid2 { display: grid; grid-template-columns: 1fr; gap: 28px; align-items: start; }
+  @media (min-width: 760px) { .grid2 { grid-template-columns: 1fr 1fr; } }
+  .caption {
+    font-size: 13.5px; color: var(--ink-soft); border-left: 2px solid var(--candle-soft);
+    padding-left: 14px; margin-top: 16px;
+  }
+  .caption b { color: var(--ink); font-weight: 700; }
+  .caption .old { color: var(--danger); font-weight: 600; }
+
+  /* reader chrome */
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 16px; border-bottom: 1px solid var(--rule-soft);
+  }
+  .topbar .left { display: flex; align-items: center; gap: 12px; }
+  .glyph-btn {
+    width: 30px; height: 30px; display: grid; place-items: center;
+    color: var(--ink-faint); font-size: 17px;
+  }
+  /* THE persistent mode chip */
+  .modechip {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 5px 11px 5px 9px; border-radius: 999px;
+    border: 1px solid var(--rule); background: var(--vellum-raised);
+    font-size: 12.5px; font-weight: 600; color: var(--ink-soft);
+    cursor: pointer;
+  }
+  .modechip .mark { color: var(--candle); font-size: 13px; line-height: 1; }
+  .modechip.branch .mark { color: var(--fork); }
+  .modechip .caret { color: var(--ink-faint); font-size: 10px; }
+
+  .reader-body { padding: 22px 20px 24px; }
+  .stamp {
+    font-size: 11px; letter-spacing: 0.2em; text-transform: uppercase;
+    color: var(--ink-faint); font-weight: 700; margin-bottom: 10px;
+  }
+  .scene-title { font-family: var(--serif); font-size: 22px; margin: 0 0 4px; }
+  .prose {
+    font-family: var(--serif); font-size: 16px; line-height: 1.72; color: var(--ink);
+    margin: 14px 0 0;
+  }
+  .prose::first-letter { }
+
+  /* THE enhanced decision-point frame (branching) */
+  .fork {
+    margin-top: 26px; border-top: 1px solid var(--rule);
+    padding-top: 18px;
+  }
+  .fork-head {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 4px;
+  }
+  .fork-diagram { color: var(--fork); font-size: 15px; letter-spacing: 1px; }
+  .fork-label {
+    font-family: var(--serif); font-style: italic; font-size: 15px; color: var(--fork);
+    font-weight: 600;
+  }
+  .fork-sub { font-size: 12.5px; color: var(--ink-faint); margin: 0 0 14px; }
+  .choice {
+    display: block; width: 100%; text-align: left; font-family: var(--serif);
+    font-size: 15.5px; color: var(--ink); background: var(--vellum-raised);
+    border: 1px solid var(--rule); border-radius: 10px; padding: 13px 15px;
+    margin-bottom: 10px; cursor: pointer;
+  }
+  .choice:hover { border-color: var(--fork); }
+  .choice .n { color: var(--fork); font-weight: 700; margin-right: 9px; }
+  .choice.locked {
+    border-style: dashed; color: var(--ink-faint); background: transparent;
+    display: flex; align-items: center; gap: 9px;
+  }
+  .choice.locked .key { color: var(--candle); }
+  .choice .odds {
+    display: inline-block; margin-top: 7px; font-family: var(--sans);
+    font-size: 11.5px; color: var(--ink-faint);
+  }
+  .freeform {
+    margin-top: 4px; border: 1px dashed var(--rule); border-radius: 10px;
+    padding: 11px 14px; font-size: 13px; color: var(--ink-faint); font-style: italic;
+  }
+
+  /* novel turn-page */
+  .turnpage {
+    margin-top: 24px; border: 2px solid var(--ink); border-radius: 6px;
+    padding: 20px; text-align: center; background: var(--vellum-raised);
+  }
+  .turnpage .t { font-family: var(--serif); font-size: 18px; }
+  .turnpage .s { font-size: 12px; color: var(--ink-faint); margin-top: 4px; }
+  .explainer {
+    margin-top: 16px; font-size: 13px; color: var(--ink-soft);
+    background: var(--vellum-raised); border-radius: 10px; padding: 12px 14px;
+    border: 1px solid var(--rule-soft);
+  }
+  .explainer b { color: var(--ink); }
+
+  /* unified mode chooser */
+  .chooser { padding: 22px 20px; }
+  .chooser h3 { font-family: var(--serif); font-size: 18px; margin: 0 0 4px; }
+  .chooser .q { font-size: 13px; color: var(--ink-soft); margin: 0 0 16px; }
+  .mode-opt {
+    display: grid; grid-template-columns: auto 1fr; gap: 12px; align-items: start;
+    border: 1px solid var(--rule); border-radius: 12px; padding: 14px;
+    margin-bottom: 12px; cursor: pointer; background: var(--vellum-raised);
+  }
+  .mode-opt.sel { border-color: var(--candle); box-shadow: inset 0 0 0 1px var(--candle); }
+  .mode-opt .mk {
+    width: 34px; height: 34px; border-radius: 8px; display: grid; place-items: center;
+    font-size: 17px; background: var(--vellum); border: 1px solid var(--rule);
+  }
+  .mode-opt.branch .mk { color: var(--fork); }
+  .mode-opt.novel .mk { color: var(--candle); }
+  .mode-opt .ttl { font-family: var(--serif); font-size: 16px; font-weight: 600; }
+  .mode-opt .dsc { font-size: 12.5px; color: var(--ink-soft); margin-top: 2px; }
+  .mode-opt .radio {
+    grid-row: 1 / span 2; align-self: center; width: 18px; height: 18px;
+    border-radius: 50%; border: 2px solid var(--rule);
+  }
+
+  /* settings separation */
+  .settings { padding: 20px; }
+  .set-group { margin-bottom: 22px; }
+  .set-group .gt {
+    font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--candle); font-weight: 700; margin-bottom: 4px;
+  }
+  .set-group .gd { font-size: 12px; color: var(--ink-faint); margin: 0 0 12px; }
+  .pills { display: flex; flex-wrap: wrap; gap: 8px; }
+  .pill {
+    font-size: 12.5px; padding: 6px 13px; border-radius: 999px;
+    border: 1px solid var(--rule); color: var(--ink-soft); background: var(--vellum-raised);
+  }
+  .pill.on { border-color: var(--candle); color: var(--ink); background: var(--card); font-weight: 600; }
+  .set-current {
+    display: flex; align-items: center; gap: 10px; padding: 12px 14px;
+    border: 1px solid var(--rule); border-radius: 10px; background: var(--vellum-raised);
+  }
+  .set-current .lab { font-family: var(--serif); font-weight: 600; }
+  .switch-link { margin-left: auto; font-size: 12.5px; color: var(--candle); font-weight: 600; cursor: pointer; }
+
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 18px; justify-content: center;
+    margin-top: 12px; font-size: 12.5px; color: var(--ink-soft);
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .legend .sw { width: 12px; height: 12px; border-radius: 3px; }
+
+  footer.page { margin-top: 80px; text-align: center; color: var(--ink-faint); font-size: 13px; }
+</style>
+
+<div class="wrap">
+  <header class="page">
+    <div class="eyebrow">Reading-modes cleanup &amp; enhancement</div>
+    <h1>Two Ways to Read</h1>
+    <p class="lede">One honest vocabulary for how a tale is read — <b>Branching</b> or <b>Novel</b> — made visible in the reader, legible at every fork, and chosen in one place instead of three.</p>
+    <div class="legend">
+      <span><span class="sw" style="background:var(--fork)"></span> Branching (you shape the story)</span>
+      <span><span class="sw" style="background:var(--candle)"></span> Novel (read straight through)</span>
+    </div>
+  </header>
+
+  <div class="rule-orn"><span>❧</span></div>
+
+  <!-- 1. Unified chooser -->
+  <section class="block">
+    <div class="kicker"><span class="n">01</span><h2>One chooser, one question</h2></div>
+    <p class="sub">Today the Branching/Novel switch is copy-pasted across home, library, and discover — and missing from custom-story creation entirely. Replace all of them with one shared chooser that states the difference plainly, up front, instead of hiding the explanation until you toggle.</p>
+    <div class="grid2">
+      <div class="device">
+        <div class="chooser">
+          <h3>How do you want to read this?</h3>
+          <p class="q">You can start the same tale either way.</p>
+          <div class="mode-opt branch sel">
+            <span class="radio" style="border-color:var(--candle);box-shadow:inset 0 0 0 4px var(--card),inset 0 0 0 6px var(--candle)"></span>
+            <div class="mk">⋔</div>
+            <div>
+              <div class="ttl">Branching</div>
+              <div class="dsc">You choose the path at every scene. Your decisions open — and close — where the story can go.</div>
+            </div>
+          </div>
+          <div class="mode-opt novel">
+            <span class="radio"></span>
+            <div class="mk">☰</div>
+            <div>
+              <div class="ttl">Novel</div>
+              <div class="dsc">One continuous story. No choices — just turn the page and read it through, like a book.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <p class="caption"><b>Cleanup.</b> Extract a single <b>ReadingModeChooser</b> used by home, library, discover <span class="old">and</span> the custom-story flow (which has no Novel option today). <b>Enhance.</b> Both options carry a permanent one-line description, and each gets a mark — <span style="color:var(--fork)">⋔</span> a forking path for Branching, <span style="color:var(--candle)">☰</span> stacked lines for Novel — reused everywhere the mode appears.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2. Branching reader -->
+  <section class="block">
+    <div class="kicker"><span class="n">02</span><h2>The fork you can’t miss</h2></div>
+    <p class="sub">Branching is the whole point of the app, yet a choice point is just bare buttons a screen reader calls “Available choices.” Frame it: a persistent mode chip up top, and a printed decision-point header so it’s unmistakable you’re deciding and the tale bends to your pick.</p>
+    <div class="grid2">
+      <div class="device">
+        <div class="topbar">
+          <div class="left">
+            <span class="glyph-btn">‹</span>
+            <span class="modechip branch">
+              <span class="mark">⋔</span> Branching <span class="caret">▾</span>
+            </span>
+          </div>
+          <span class="glyph-btn">☰</span>
+        </div>
+        <div class="reader-body">
+          <p class="scene-title">The Lantern Bridge</p>
+          <p class="prose">The rope bridge groans over the ravine. On the far side a lantern swings though there is no wind, and below, the river answers with a sound like a name half-spoken.</p>
+          <div class="fork">
+            <div class="fork-head">
+              <span class="fork-diagram">┳━┓</span>
+              <span class="fork-label">The path forks</span>
+            </div>
+            <p class="fork-sub">What you choose here changes what comes next.</p>
+            <button class="choice"><span class="n">1</span>Cross toward the swinging lantern.</button>
+            <button class="choice"><span class="n">2</span>Call down to the river, and listen.
+              <span class="odds">⚄ Nerve — risky</span>
+            </button>
+            <button class="choice locked"><span class="key">⚷</span> A door you can’t open yet — you’ll need the ferryman’s token.</button>
+            <div class="freeform">Or write your own move…</div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <p class="caption"><b>Enhance.</b> A <b>decision-point frame</b> wraps <span class="old">ChoiceList</span> / <span class="old">FootnoteChoices</span>: a hairline rule, a diverging-path motif, the italic label <i>“The path forks”</i>, and one quiet line — <i>what you choose here changes what comes next</i>. Numbered, tappable, elegant; locked doors and the write-your-own move stay exactly as they work now. <b>Cleanup.</b> The <b>mode chip</b> (top-left) is always present and tap-reveals a short “what Branching means.”</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. Novel reader -->
+  <section class="block">
+    <div class="kicker"><span class="n">03</span><h2>Novel, unmistakably by design</h2></div>
+    <p class="sub">In Novel mode the choices vanish and a single “Turn the page” remains — which can read like a broken branching screen. The same mode chip plus a one-time explainer makes it clear this is linear on purpose.</p>
+    <div class="grid2">
+      <div class="device">
+        <div class="topbar">
+          <div class="left">
+            <span class="glyph-btn">‹</span>
+            <span class="modechip">
+              <span class="mark">☰</span> Novel <span class="caret">▾</span>
+            </span>
+          </div>
+          <span class="glyph-btn">☰</span>
+        </div>
+        <div class="reader-body">
+          <p class="scene-title">The Lantern Bridge</p>
+          <p class="prose">The rope bridge groaned over the ravine. She crossed toward the swinging lantern because that was the kind of woman the road had made her — and on the far side, the light showed a face she knew.</p>
+          <div class="explainer">
+            <b>You’re reading in Novel.</b> One continuous story, no choices — just turn the page. You can start it as Branching instead from the tale’s menu.
+          </div>
+          <div class="turnpage">
+            <div class="t">Turn the page →</div>
+            <div class="s">Swipe or tap to read on</div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <p class="caption"><b>Cleanup.</b> The novel-only <span class="old">&lt;Stamp&gt;Novel&lt;/Stamp&gt;</span> becomes the same symmetric <b>mode chip</b> both modes share, so “which mode am I in?” always has an answer. <b>Enhance.</b> A first-scene <b>explainer</b> (dismissable, shown once per tale) names the mode and points to how to switch — so linear never reads as broken.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4. Settings separation -->
+  <section class="block">
+    <div class="kicker"><span class="n">04</span><h2>Mode ≠ skin ≠ voice</h2></div>
+    <p class="sub">The three axes finally sit apart, each under an honest heading. “How you read” is the mode (the thing that was invisible); “How it looks” is the cosmetic layout; “Illustrations &amp; narration” is media. No more “novel” meaning two things or “illustrated” secretly flipping media.</p>
+    <div class="grid2">
+      <div class="device">
+        <div class="settings">
+          <div class="set-group">
+            <div class="gt">How you read</div>
+            <p class="gd">The story itself — interactive, or straight through.</p>
+            <div class="set-current">
+              <span class="mark" style="color:var(--fork)">⋔</span>
+              <span class="lab">Branching</span>
+              <span class="switch-link">Read as a Novel →</span>
+            </div>
+          </div>
+          <div class="set-group">
+            <div class="gt">How it looks</div>
+            <p class="gd">A cosmetic skin — never changes the story.</p>
+            <div class="pills">
+              <span class="pill on">Book</span>
+              <span class="pill">Modern app</span>
+              <span class="pill">Graphic novel</span>
+              <span class="pill">Journal</span>
+              <span class="pill">Illustrated ✦</span>
+            </div>
+          </div>
+          <div class="set-group">
+            <div class="gt">Illustrations &amp; narration</div>
+            <p class="gd">Pictures, voice, and auto-read.</p>
+            <div class="pills">
+              <span class="pill on">Illustrations: on</span>
+              <span class="pill">Narration</span>
+              <span class="pill">Auto-read</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <p class="caption"><b>Cleanup.</b> “How you read” surfaces the <b>mode</b> in settings for the first time (it was create-only and unreachable). <b>Illustrated</b> stays a look, and its media coupling moves under “Illustrations &amp; narration” where it belongs. <b>Auto-read</b> joins the media group instead of floating in the Tome. The mode’s <span style="color:var(--candle)">Read as a Novel →</span> link is the switch — see 05.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5. The switch -->
+  <section class="block">
+    <div class="kicker"><span class="n">05</span><h2>Switching modes</h2></div>
+    <p class="sub">Mode is locked per-tale on the server for a good reason (a novel tale is never mid-read asked for choices). Two ways to let readers change their mind — the recommended one ships now with no risky server surgery.</p>
+    <div class="grid2">
+      <div class="device wide">
+        <div class="settings" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+          <div style="border:1px solid var(--candle);border-radius:12px;padding:16px;">
+            <div class="gt" style="color:var(--candle)">Recommended — Restart to switch</div>
+            <p class="gd" style="margin-bottom:10px">“Read as a Novel” restarts this tale in the other mode. Clean, safe, no server change beyond one parameter — the restart path already carries the mode.</p>
+            <div class="set-current" style="background:var(--card)">
+              <span class="mark" style="color:var(--candle)">☰</span>
+              <span class="lab" style="font-size:14px">Restart as a Novel</span>
+            </div>
+          </div>
+          <div style="border:1px dashed var(--rule);border-radius:12px;padding:16px;">
+            <div class="gt">Heavier — Live mid-read switch</div>
+            <p class="gd">Flip a tale’s mode in place; future turns adopt the new shape. More powerful, but reopens the Pro-gating and “prose prompt suddenly asked for choices” edge the current design deliberately closed.</p>
+          </div>
+        </div>
+      </div>
+      <div>
+        <p class="caption"><b>The one decision for you.</b> Everything in 01–04 is client-side and ships regardless. The only fork is <b>how switching works</b>: restart-to-switch (safe, now) vs a live in-place flip (a real server change). I recommend <b>restart-to-switch</b> for this pass and treating the live flip as a follow-up.</p>
+      </div>
+    </div>
+  </section>
+
+  <div class="rule-orn"><span>❧</span></div>
+  <footer class="page">Mock — reading-modes cleanup. Marks: ⋔ Branching · ☰ Novel. Glyphs shown are placeholders; the build uses the app’s icon font + typographic motifs (no control emoji).</footer>
+</div>

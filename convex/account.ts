@@ -6,10 +6,23 @@ import type { AgeBand, Entitlement } from "@cyoa/shared";
 import { AppError, forbidden } from "./lib/errors";
 import { assertAdmin, loadAndAuthorizeAccount } from "./lib/authz";
 import { accountFromDoc } from "./lib/docs";
+import { planAllowance } from "./billing/entitlements";
 
 export type AgeSelection = AgeBand | "under_13";
 
-export type CinematicMode = "off" | "stills_only" | "endpoint_cinematic" | "per_scene_legacy";
+// NOTE (RM6): this union is DEFINED TWICE and the two move in LOCKSTEP —
+// here (server, consumed by `resolveMediaPrefs` → `computeMediaStrategy`) and in
+// `apps/app/hooks/useReaderSettings.ts` (client, `CINEMATIC_MODES` +
+// `isCinematicMode`). Reading-modes R3 (OQ7 = DISTINCT STRATEGY) adds the
+// `illustrated_book` literal for the Illustrated Book mode; the client union +
+// the `saves.mediaPrefs.cinematicMode` schema union (integrator-owned) must
+// carry the same literal or `resolveMediaPrefs` silently drops the mode.
+export type CinematicMode =
+  | "off"
+  | "stills_only"
+  | "endpoint_cinematic"
+  | "per_scene_legacy"
+  | "illustrated_book";
 
 export type MediaPrefs = {
   imagesEnabled: boolean;
@@ -380,6 +393,39 @@ export const devGrantAdmin = mutationGeneric({
 
     await ctx.db.patch(target._id, buildAdminClaimUpdate(true));
     return { accountId: String(target._id), email, isAdmin: true };
+  },
+});
+
+/**
+ * Dev-only: set an account's entitlement tier (e.g. to "pro" to preview the Pro
+ * experience without a Stripe checkout). Same env gate as devGrantAdmin
+ * (CYOA_DEV_ALLOW_ADMIN_GRANT). Patches the account's existing entitlement row
+ * with the tier + its plan allowances; never a production path.
+ */
+export const devSetTier = mutationGeneric({
+  args: {
+    targetAccountId: v.id("accounts"),
+    tier: v.optional(v.union(v.literal("free"), v.literal("unlimited"), v.literal("pro"))),
+  },
+  handler: async (ctx, args) => {
+    if (!isAdminGrantEnvEnabled(process.env[CYOA_DEV_ALLOW_ADMIN_GRANT])) {
+      throw forbidden("admin_grant_not_allowed");
+    }
+    const tier = args.tier ?? "pro";
+    const now = Date.now();
+    const existing = await ctx.db
+      .query("entitlements")
+      .withIndex("by_accountId", (q: any) => q.eq("accountId", args.targetAccountId))
+      .first();
+    if (!existing) throw new AppError("admin_grant_target_not_found");
+    await ctx.db.patch(existing._id, {
+      tier,
+      status: "active" as const,
+      source: "manual" as const,
+      updatedAt: now,
+      ...planAllowance(tier),
+    });
+    return { accountId: String(args.targetAccountId), tier, entitlementId: String(existing._id) };
   },
 });
 

@@ -302,6 +302,77 @@ describe("projectLlmDrivenScene arc + spoiler discipline (W1-S4/BC10)", () => {
     });
     expect(projection.recentDiffs).toBeUndefined();
   });
+
+  // daily-killcam R3.3 — the projection widens with an optional `dailyId`. It is
+  // a reader-KNOWN fact (they tapped the Daily card), so BC10-clean, and it must
+  // add NOTHING ELSE to the wire shape.
+  it("adds dailyId ONLY on a Daily save and adds no other new keys (R3.3 / BC10 / BC9)", () => {
+    const legacyProjection = projectLlmDrivenScene({
+      save: saveWith(baseState()),
+      proposal: arcProposal,
+      prose: "x",
+      streamStatus: "complete",
+    });
+    // Non-daily save: the key is absent entirely (BC9 — byte-identical legacy).
+    expect("dailyId" in legacyProjection).toBe(false);
+
+    // Daily save: the projection forwards the reader-known id verbatim.
+    const dailySave = { ...saveWith(baseState()), dailyId: "daily_tales_42" };
+    const dailyProjection = projectLlmDrivenScene({
+      save: dailySave,
+      proposal: arcProposal,
+      prose: "x",
+      streamStatus: "complete",
+    });
+    expect(dailyProjection.dailyId).toBe("daily_tales_42");
+
+    // The ONLY new key on the daily projection is `dailyId` — nothing else
+    // crept into the wire shape with the widening.
+    const legacyKeys = new Set(Object.keys(legacyProjection));
+    const added = Object.keys(dailyProjection).filter((k) => !legacyKeys.has(k));
+    expect(added).toEqual(["dailyId"]);
+  });
+
+  // reading-modes R4 (novel mode) — the projection widens with an optional
+  // `readingMode: "novel"`. It is a reader-KNOWN fact (they chose novel at
+  // create), so BC10-clean, and it must add NOTHING ELSE to the wire shape.
+  it("adds readingMode ONLY on a novel save and adds no other new keys (R4.6 / BC10 / BC9)", () => {
+    const branchingProjection = projectLlmDrivenScene({
+      save: saveWith(baseState()),
+      proposal: arcProposal,
+      prose: "x",
+      streamStatus: "complete",
+    });
+    // Branching / legacy save: the key is absent entirely (BC9 — byte-identical).
+    expect("readingMode" in branchingProjection).toBe(false);
+
+    // An explicit "branching" save also omits the key — absence is the default
+    // and only a novel save carries it (the branch keys off === "novel").
+    const branchingExplicit = { ...saveWith(baseState()), readingMode: "branching" as const };
+    const branchingExplicitProjection = projectLlmDrivenScene({
+      save: branchingExplicit,
+      proposal: arcProposal,
+      prose: "x",
+      streamStatus: "complete",
+    });
+    expect("readingMode" in branchingExplicitProjection).toBe(false);
+
+    // Novel save: the projection forwards the reader-known mode verbatim.
+    const novelSave = { ...saveWith(baseState()), readingMode: "novel" as const };
+    const novelProjection = projectLlmDrivenScene({
+      save: novelSave,
+      proposal: arcProposal,
+      prose: "x",
+      streamStatus: "complete",
+    });
+    expect(novelProjection.readingMode).toBe("novel");
+
+    // The ONLY new key on the novel projection is `readingMode` — nothing else
+    // crept into the wire shape with the widening.
+    const branchingKeys = new Set(Object.keys(branchingProjection));
+    const added = Object.keys(novelProjection).filter((k) => !branchingKeys.has(k));
+    expect(added).toEqual(["readingMode"]);
+  });
 });
 
 // ===========================================================================

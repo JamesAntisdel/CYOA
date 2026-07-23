@@ -1,6 +1,6 @@
 import { View } from "react-native";
 
-import { Button, Chip, Surface, Text } from "../../primitives";
+import { Button, Chip, Icon, Surface, Text } from "../../primitives";
 import { useAppTheme } from "../../../theme";
 import { filterVisibleStats, type StatsHudCommonProps } from "../types";
 
@@ -9,7 +9,7 @@ import { filterVisibleStats, type StatsHudCommonProps } from "../types";
  *
  * Lifted from CYOA Wireframes (Stats_Persistent):
  *   "top strip, never hides. game-iest."
- *   Layout: [character name]  [♥ value]  [◈ value]  [✦ value]
+ *   Layout: [character name]  [♥ value]  [◈ value]  [✧ value]
  */
 export function PersistentMode({
   characterName = "Reader",
@@ -59,7 +59,12 @@ export function PersistentMode({
       >
         {inventory.length > 0 ? (
           inventory.map((item) => (
-            <Chip key={item.id}>{`✦ ${item.label}`}</Chip>
+            <Chip
+              key={item.id}
+              icon={<Icon name="sack" size={12} color={tokens.colors.textMuted} />}
+            >
+              {item.label}
+            </Chip>
           ))
         ) : (
           <Text muted variant="caption">

@@ -143,9 +143,6 @@ export function NarratorControl({
               paddingVertical: tokens.spacing.xs,
             })}
           >
-            <Text style={{ fontFamily: tokens.typography.families.mono }} variant="bodySmall">
-              {paused ? "▶" : "⏸"}
-            </Text>
             <Text muted variant="bodySmall">
               {paused ? "Resume" : "Pause"}
             </Text>

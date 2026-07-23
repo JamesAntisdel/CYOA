@@ -171,6 +171,17 @@ export type SceneGenerationRequest = {
   fireworksModelTier?: "cheap" | "mid" | "premium";
   retryCount: number;
   mode?: SceneGenerationMode;
+  /**
+   * Reading-modes R4 (novel mode). The save-level reading CONTRACT threaded onto
+   * the scene request, exactly like `mode`. Absent ⇒ `"branching"` (every
+   * legacy/branching save — deploy-skew safe both ways). When `"novel"` the
+   * prompt-builder emits a prose+terminal-only linear shape (no branching
+   * choices) and the parse gates select the additive `llmNovelSceneOutputSchema`
+   * (which accepts 0/1 choices) instead of the branching `min(2)` schema. Only
+   * set by the integrator's `getAuthorizedSceneStreamRequest` on llm-driven novel
+   * saves (R4.7); authored/scripted/branching requests never carry it.
+   */
+  readingMode?: "branching" | "novel";
   playerState?: PlayerStateSnapshot;
   /**
    * Compact sheets for the NPCs in scope this turn (Requirement 31.3). Capped
@@ -239,6 +250,7 @@ export const sceneGenerationRequestSchema = z.object({
   fireworksModelTier: z.enum(["cheap", "mid", "premium"]).optional(),
   retryCount: z.number().int().min(0),
   mode: z.enum(["authored", "llm-driven"]).optional(),
+  readingMode: z.enum(["branching", "novel"]).optional(),
   playerState: z
     .object({
       vitality: z.number(),

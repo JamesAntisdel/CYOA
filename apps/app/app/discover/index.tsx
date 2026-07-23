@@ -25,6 +25,9 @@ import {
 } from "../../lib/seedShelfApi";
 import { useAppTheme } from "../../theme";
 import { Button, Chip, Stamp, Surface, Text } from "../../components/primitives";
+import { ReadingModeChooser } from "../../components/reading/ReadingModeChooser";
+import type { ReadingMode } from "../../lib/readingMode";
+import { isIllustratedBookUnlocked } from "../../lib/readerSettingsGroups";
 
 /**
  * Discover route (creator-arc; core-read-loop Req 22.3/22.6, steering product
@@ -59,6 +62,20 @@ export default function DiscoverRoute() {
   const [shelfNonce, setShelfNonce] = useState(0);
   const [busySeedId, setBusySeedId] = useState<string | null>(null);
   const templates = useMemo(() => listCreatorTemplates(), []);
+  // Reading-modes cleanup — the reader picks how the community seed they begin
+  // next reads (Branching vs Novel) through the shared ReadingModeChooser,
+  // matching the cover screen. Replaces the old inline segmented toggle +
+  // reveal-on-change caption (the chooser owns the always-visible blurb now).
+  // Chosen at create (posture A); the server re-gates Novel on entitlement
+  // (dev-force-unlocked locally). Default: branching. `novelMode` stays the
+  // local state so the launchSeed createSave threading is untouched.
+  const [novelMode, setNovelMode] = useState(false);
+  const readingMode: ReadingMode = novelMode ? "novel" : "branching";
+  const chooseReadingMode = (mode: ReadingMode) => setNovelMode(mode === "novel");
+  // Reading-modes cleanup — Novel is a Pro mode. Same pro-media gate the rest
+  // of the app uses (dev-force flag OR active pro/unlimited) so a non-Pro
+  // reader who taps Novel routes to the paywall instead of a silent downgrade.
+  const novelUnlocked = isIllustratedBookUnlocked(profile);
 
   useEffect(() => {
     let cancelled = false;
@@ -107,7 +124,14 @@ export default function DiscoverRoute() {
     }
     setBusySeedId(seed.seedId);
     try {
-      const save = await library.createSave(seed.storyId, "story", seed.title);
+      const save = await library.createSave(
+        seed.storyId,
+        "story",
+        seed.title,
+        undefined,
+        undefined,
+        { readingMode: novelMode ? "novel" : "branching" },
+      );
       router.push(`/read/${save.saveId}`);
     } catch (error) {
       push({
@@ -186,6 +210,15 @@ export default function DiscoverRoute() {
               Seeds other creators have shelved for anyone to play. Begin one as a fresh
               run, or remix it into a draft of your own.
             </Text>
+            {/* Reading-modes cleanup — the shared two-option chooser with its
+                always-visible blurbs replaces the compact segmented toggle +
+                reveal-on-change caption. Applies to the seed you begin next. */}
+            <ReadingModeChooser
+              isPro={novelUnlocked}
+              onChange={chooseReadingMode}
+              onNovelLocked={() => router.push("/paywall?reason=pro_media")}
+              value={readingMode}
+            />
           </View>
 
           {seeds === undefined ? (

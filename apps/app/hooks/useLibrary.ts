@@ -107,6 +107,14 @@ export function useLibrary(session: GuestSession | null) {
          * reader straight back onto their own corpse.
          */
         forceNew?: boolean;
+        /**
+         * Reading-modes R4 — start this save in Novel mode (linear "turn the
+         * page" reading). The server re-gates it through `resolveReadingMode`
+         * (posture A: Pro-only, dev-force-unlocked in dev), so passing "novel"
+         * on a non-entitled account simply persists branching. Absent ⇒
+         * branching, byte-identical to today.
+         */
+        readingMode?: "branching" | "novel";
       },
     ) => {
       if (!session) {
@@ -180,6 +188,9 @@ export function useLibrary(session: GuestSession | null) {
             // stays happy and the server can use field-presence as a signal.
             ...(seed?.keepsakeId ? { keepsakeId: seed.keepsakeId } : {}),
             ...(seed?.dailyId ? { dailyId: seed.dailyId } : {}),
+            // Reading-modes R4 — Novel mode is chosen at create (posture A).
+            // Forwarded only when set; the server re-gates on entitlement.
+            ...(options?.readingMode ? { readingMode: options.readingMode } : {}),
           })
         : null;
       if (remote) {

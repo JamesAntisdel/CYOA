@@ -12,16 +12,16 @@ type BackToSceneButtonProps = {
    */
   fallbackHref: string;
   /**
-   * Override the default "← Back to current scene" label when the
+   * Override the default "Back to current scene" label when the
    * surface isn't save-scoped (e.g. /paywall back to /account
-   * should read "← Back to account"). Default keeps the
+   * should read "Back to account"). Default keeps the
    * save-scoped wording the user already knows.
    */
   label?: string;
   /**
    * Accessibility label spoken by screen readers. Defaults to the
-   * visible label minus the leading arrow glyph so the assistive
-   * text matches the visible text exactly.
+   * visible label so the assistive text matches the visible text
+   * exactly.
    */
   accessibilityLabel?: string;
 };
@@ -38,7 +38,7 @@ type BackToSceneButtonProps = {
  */
 export function BackToSceneButton({
   fallbackHref,
-  label = "← Back to current scene",
+  label = "Back to current scene",
   accessibilityLabel = "Back to current scene",
 }: BackToSceneButtonProps) {
   const router = useRouter();

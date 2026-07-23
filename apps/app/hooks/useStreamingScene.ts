@@ -57,6 +57,16 @@ export type StreamingScene = {
     imageUri?: string;
     /** Ready video URI — drives the cinematic slot below the prose. */
     videoUri?: string;
+    /**
+     * Illustrated-Book credit-exhaustion signal. The server
+     * (`queueSceneImage` mode-scoped fallback) sets this ONLY for the
+     * `illustrated_book` strategy so the plate degrades to a stylized
+     * PLACEHOLDER instead of a bare skeleton (reading-modes R3.4/R3.6). Every
+     * other reader keeps the byte-identical delete-and-skeleton path and never
+     * carries this field. `MediaPlate` reads it directly off the projection —
+     * no defensive cast needed now that it is declared end-to-end.
+     */
+    outOfCredits?: boolean;
   };
 };
 

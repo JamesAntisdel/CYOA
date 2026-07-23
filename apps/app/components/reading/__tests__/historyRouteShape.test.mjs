@@ -32,14 +32,17 @@ const routePath = resolve(
 const routeSource = readFileSync(routePath, "utf8");
 
 // Drift guards.
-test("history route calls getRemoteRunHistory on mount", () => {
-  // The call can sit either inline in the mount effect (early routes) OR
-  // inside a `loadHistory` callback that the effect kicks off (post-rewind
-  // refactor). Either way the route must call the helper.
+test("history route loads run history via the shared useRunHistory hook", () => {
+  // The call can sit either inline in the mount effect (early routes), OR
+  // inside a `loadHistory` callback that the effect kicks off (rewind
+  // refactor), OR — post reading-modes R2.9 refactor — through the shared
+  // `useRunHistory` hook the /read/[saveId]/book route also consumes so the
+  // two read-back surfaces never diverge. Any of the three satisfies the
+  // guard that the route still loads run history.
   assert.match(
     routeSource,
-    /await getRemoteRunHistory\(\{|void getRemoteRunHistory\(\{/,
-    "history route must call getRemoteRunHistory",
+    /await getRemoteRunHistory\(\{|void getRemoteRunHistory\(\{|useRunHistory\(/,
+    "history route must load run history (inline call or via useRunHistory)",
   );
 });
 
