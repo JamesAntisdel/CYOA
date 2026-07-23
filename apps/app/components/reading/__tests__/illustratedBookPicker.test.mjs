@@ -117,32 +117,35 @@ for (const [name, src] of [
 
 // ── Both surfaces RENDER from the shared list, filtered by surface tag ──────
 
-test("settings maps over readerSettingsGroups filtered to the 'settings' surface", () => {
+test("settings builds its sections from the shared module for the 'settings' surface", () => {
+  // B3: the surface now renders the shared list grouped under the three honest
+  // sections via `readerSettingsSections`, passing its own surface tag.
   assert.match(
     settingsSrc,
-    /readerSettingsGroups\(\{\s*illustratedUnlocked: illustratedBookUnlocked\s*\}\)/,
-    "settings must build its groups from the shared module",
+    /readerSettingsSections\(\{[\s\S]*illustratedUnlocked: illustratedBookUnlocked[\s\S]*\}\)/,
+    "settings must build its sections from the shared module",
   );
   assert.match(
     settingsSrc,
-    /\.includes\("settings"\)/,
-    "settings must filter the shared list by its surface tag",
+    /surface: "settings"/,
+    "settings must request its own surface tag",
   );
   // Canonical drift-fixed labels no longer live inline in the surface.
   assert.doesNotMatch(settingsSrc, /label="Typography"/, "settings must not hardcode the drifted 'Typography' label");
   assert.doesNotMatch(settingsSrc, /label="Chrome"/, "settings must not hardcode the dead Chrome group");
 });
 
-test("drawer maps over readerSettingsGroups filtered to the 'drawer' surface", () => {
+test("drawer builds its sections from the shared module for the 'drawer' surface", () => {
+  // B3: the mid-tale subset now renders under the honest sections too.
   assert.match(
     drawerSrc,
-    /readerSettingsGroups\(\{\s*illustratedUnlocked: illustratedBookUnlocked\s*\}\)/,
-    "drawer must build its groups from the shared module",
+    /readerSettingsSections\(\{[\s\S]*illustratedUnlocked: illustratedBookUnlocked[\s\S]*\}\)/,
+    "drawer must build its sections from the shared module",
   );
   assert.match(
     drawerSrc,
-    /\.includes\("drawer"\)/,
-    "drawer must filter the shared list by its surface tag (the mid-tale subset)",
+    /surface: "drawer"/,
+    "drawer must request its own surface tag (the mid-tale subset)",
   );
   // The drifted "Comic" label is gone (canonical "Graphic novel" comes from the
   // shared module now).

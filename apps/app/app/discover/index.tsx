@@ -1,6 +1,6 @@
 import { useRouter } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
-import { Pressable, ScrollView, View } from "react-native";
+import { ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { DiscoverList } from "../../components/discovery/DiscoverList";
@@ -25,6 +25,8 @@ import {
 } from "../../lib/seedShelfApi";
 import { useAppTheme } from "../../theme";
 import { Button, Chip, Stamp, Surface, Text } from "../../components/primitives";
+import { ReadingModeChooser } from "../../components/reading/ReadingModeChooser";
+import type { ReadingMode } from "../../lib/readingMode";
 
 /**
  * Discover route (creator-arc; core-read-loop Req 22.3/22.6, steering product
@@ -59,17 +61,16 @@ export default function DiscoverRoute() {
   const [shelfNonce, setShelfNonce] = useState(0);
   const [busySeedId, setBusySeedId] = useState<string | null>(null);
   const templates = useMemo(() => listCreatorTemplates(), []);
-  // Reading-modes R4 — let the reader begin a community seed in Novel mode
-  // (linear "turn the page" reading), matching the cover screen
-  // (app/index.tsx chooseReadingMode). Chosen at create (posture A); the server
-  // re-gates on entitlement (dev-force-unlocked locally). Default: branching.
-  // The explanatory caption only appears once the reader CHANGES the selection.
+  // Reading-modes cleanup — the reader picks how the community seed they begin
+  // next reads (Branching vs Novel) through the shared ReadingModeChooser,
+  // matching the cover screen. Replaces the old inline segmented toggle +
+  // reveal-on-change caption (the chooser owns the always-visible blurb now).
+  // Chosen at create (posture A); the server re-gates Novel on entitlement
+  // (dev-force-unlocked locally). Default: branching. `novelMode` stays the
+  // local state so the launchSeed createSave threading is untouched.
   const [novelMode, setNovelMode] = useState(false);
-  const [modeCaptionVisible, setModeCaptionVisible] = useState(false);
-  const chooseReadingMode = (novel: boolean) => {
-    setNovelMode(novel);
-    setModeCaptionVisible(true);
-  };
+  const readingMode: ReadingMode = novelMode ? "novel" : "branching";
+  const chooseReadingMode = (mode: ReadingMode) => setNovelMode(mode === "novel");
 
   useEffect(() => {
     let cancelled = false;
@@ -204,47 +205,10 @@ export default function DiscoverRoute() {
               Seeds other creators have shelved for anyone to play. Begin one as a fresh
               run, or remix it into a draft of your own.
             </Text>
-            {/* Reading-mode toggle as a compact segmented control (matches the
-                cover screen). Selected segment = filled (accent) Chip styling;
-                no check-mark glyph (RC5). Applies to the seed you begin next. */}
-            <View
-              accessibilityRole="radiogroup"
-              accessibilityLabel="Reading mode"
-              style={{
-                alignSelf: "flex-start",
-                borderColor: tokens.colors.border,
-                borderRadius: tokens.radii.pill,
-                borderWidth: tokens.borderWidths.hairline,
-                flexDirection: "row",
-                overflow: "hidden",
-              }}
-            >
-              <Pressable
-                accessibilityRole="radio"
-                accessibilityLabel="Branching reading mode: you choose the path"
-                accessibilityState={{ selected: !novelMode }}
-                onPress={() => chooseReadingMode(false)}
-                style={{ alignItems: "center", justifyContent: "center", minHeight: 44 }}
-              >
-                <Chip variant={novelMode ? "muted" : "accent"}>Branching</Chip>
-              </Pressable>
-              <Pressable
-                accessibilityRole="radio"
-                accessibilityLabel="Novel reading mode: one linear story, just turn the page"
-                accessibilityState={{ selected: novelMode }}
-                onPress={() => chooseReadingMode(true)}
-                style={{ alignItems: "center", justifyContent: "center", minHeight: 44 }}
-              >
-                <Chip variant={novelMode ? "accent" : "muted"}>Novel</Chip>
-              </Pressable>
-            </View>
-            {modeCaptionVisible ? (
-              <Text muted variant="caption">
-                {novelMode
-                  ? "Novel: one continuous story — no choices, just turn the page. Applies to the seed you begin next."
-                  : "Branching: you pick the path at every scene. Tap Novel for a linear read instead."}
-              </Text>
-            ) : null}
+            {/* Reading-modes cleanup — the shared two-option chooser with its
+                always-visible blurbs replaces the compact segmented toggle +
+                reveal-on-change caption. Applies to the seed you begin next. */}
+            <ReadingModeChooser onChange={chooseReadingMode} value={readingMode} />
           </View>
 
           {seeds === undefined ? (

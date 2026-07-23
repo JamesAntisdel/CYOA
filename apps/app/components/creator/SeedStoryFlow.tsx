@@ -5,7 +5,9 @@ import { TextInput, View } from "react-native";
 
 import type { LibrarySave } from "../../hooks/useLibrary";
 import type { RemoteKeepsake } from "../../lib/gameApi";
+import type { ReadingMode } from "../../lib/readingMode";
 import { canStartMode, type SaveMode } from "../../lib/storyEngagementW3";
+import { ReadingModeChooser } from "../reading/ReadingModeChooser";
 import { Button, Chip, Divider, Note, Stamp, Surface, Text } from "../primitives";
 import { useAppTheme } from "../../theme";
 import { HardcoreSelect } from "./HardcoreSelect";
@@ -129,6 +131,13 @@ export type SeedStoryFlowProps = {
     mode: SaveMode;
     /** Story-engagement Wave 3 (R12.2): the single keepsake to carry, if any. */
     keepsakeId?: string;
+    /**
+     * Reading-modes cleanup — how this seeded tale reads (Branching vs Novel),
+     * chosen at create time via the shared ReadingModeChooser. Always defined
+     * ("branching" by default). The host forwards it to `createSave`'s
+     * `options.readingMode`; the server re-gates Novel on entitlement.
+     */
+    readingMode: ReadingMode;
   }) => LibrarySave | null | Promise<LibrarySave | null>;
   /** Called after a successful local validation + save creation. */
   onSeedLaunched: (save: LibrarySave, draft: SeedDraftMetadata) => void;
@@ -151,6 +160,10 @@ export function SeedStoryFlow({
   const [tone, setTone] = useState<SeedTone | null>(null);
   const [npcCast, setNpcCast] = useState<SeedNpcDraft[]>([]);
   const [mode, setMode] = useState<SaveMode>("story");
+  // Reading-modes cleanup — custom seeds gained a Branching/Novel choice too
+  // (it was missing on this surface). Chosen at create; threaded into the
+  // launch createSave via onLaunchSeed. Default: branching.
+  const [readingMode, setReadingMode] = useState<ReadingMode>("branching");
   const [consented, setConsented] = useState(false);
   const [keepsakeId, setKeepsakeId] = useState<string | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
@@ -222,6 +235,7 @@ export function SeedStoryFlow({
         premise: trimmedPremise,
         tone,
         npcCast,
+        readingMode,
         mode,
         ...(keepsakeId ? { keepsakeId } : {}),
       });
@@ -264,7 +278,7 @@ export function SeedStoryFlow({
     };
     persistSeedDraft(save.saveId, draft);
     onSeedLaunched(save, draft);
-  }, [consented, keepsakeId, mode, npcCast, onLaunchSeed, onSeedLaunched, premise, title, tone]);
+  }, [consented, keepsakeId, mode, npcCast, onLaunchSeed, onSeedLaunched, premise, readingMode, title, tone]);
 
   return (
     <View style={{ gap: tokens.spacing.lg }}>
@@ -320,6 +334,17 @@ export function SeedStoryFlow({
           <Divider />
 
           <NpcCastEditor onChange={setNpcCast} value={npcCast} />
+
+          <Divider />
+
+          {/* Reading-modes cleanup — the Branching/Novel choice was missing on
+              custom-story creation; the shared chooser adds it here so seeded
+              tales can launch as a linear Novel too. Threaded into the launch
+              createSave via onLaunchSeed. */}
+          <View style={{ gap: tokens.spacing.sm }}>
+            <Text variant="subtitle">How this reads</Text>
+            <ReadingModeChooser onChange={setReadingMode} value={readingMode} />
+          </View>
 
           <Divider />
 

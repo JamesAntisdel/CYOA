@@ -11,6 +11,10 @@ import { useReaderSettings, type ReaderLayoutVariant } from "../../hooks/useRead
 import { useCandlelightFocus } from "../../hooks/useCandlelightFocus";
 import { guestAuthArgs, useGuestSession } from "../../hooks/useGuestSession";
 import { hasRemoteGameApi, restartRemoteRun } from "../../lib/gameApi";
+// Reading-modes cleanup (B2) — imported on its own line so the existing
+// beginAgain drift-guard keeps pinning the restartRun import byte-for-byte.
+import { setReadingMode } from "../../lib/gameApi";
+import type { ReadingMode } from "../../lib/readingMode";
 import {
   listRemoteSaveCinematics,
   pickChapterCinematic,
@@ -28,6 +32,7 @@ import { useAppTheme } from "../../theme";
 import { ChapterEnd } from "./ChapterEnd";
 import { CandleGutterInterstitial } from "./CandleGutter";
 import { SoftSignupRibbon } from "./SoftSignupRibbon";
+import { ModeChip } from "./chrome/ModeChip";
 import { PAGE_COLUMN_MAX, ReaderTopBar } from "./chrome/ReaderTopBar";
 import { StoryRibbon } from "./chrome/StoryRibbon";
 import { TomeSheet } from "./chrome/TomeSheet";
@@ -524,6 +529,63 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
         ? NovelLayout
         : (READER_LAYOUTS[activeLayout] ?? READER_LAYOUTS.book);
 
+  // Reading-modes cleanup (B2) — content Axis 1 as a persistent, switchable
+  // indicator. The reader's CURRENT mode is a reader-known fact off the same
+  // projection the dispatch above reads: `readingMode === "novel"` ⇒ Novel,
+  // absent/"branching" ⇒ Branching. The ModeChip below shows it always; the
+  // switch calls the server `readingModeFunctions:setReadingMode` seam.
+  const currentReadingMode: ReadingMode =
+    projection.readingMode === "novel" ? "novel" : "branching";
+  const [readingModeSwitchPending, setReadingModeSwitchPending] = useState(false);
+  // The mode a just-succeeded switch moved TO. The switch applies from the NEXT
+  // page (the current scene keeps its shape — we never force-flip the live
+  // layout), so we surface it as a quiet confirmation and clear it the moment
+  // the reader advances a scene (below).
+  const [readingModeConfirmed, setReadingModeConfirmed] = useState<ReadingMode | null>(null);
+  useEffect(() => {
+    // Retire the "takes effect next page" note once the reader turns the page
+    // (a new scene id) — by then the server-patched mode is live.
+    setReadingModeConfirmed(null);
+  }, [projection.scene.id]);
+  const handleSwitchReadingMode = useCallback(
+    (mode: ReadingMode) => {
+      if (readingModeSwitchPending || mode === currentReadingMode) return;
+      setReadingModeSwitchPending(true);
+      void (async () => {
+        try {
+          const result = await setReadingMode({
+            saveId,
+            mode,
+            ...(remoteAuth ? { auth: remoteAuth } : {}),
+          });
+          if (result?.ok) {
+            // Applies from the next page — surface the quiet confirmation and
+            // leave the current scene untouched.
+            setReadingModeConfirmed(result.mode);
+          } else if (result && result.reason === "needs_pro") {
+            // Pro-gated, exactly like the other reader Pro actions (the
+            // illustrated-book skin routes here too).
+            router.push("/paywall?reason=pro_media");
+          }
+          // not_found / unauthorized / null (no remote backend) → quiet no-op.
+        } finally {
+          setReadingModeSwitchPending(false);
+        }
+      })();
+    },
+    // `remoteAuth` is a fresh object each render; the accountId/hash it carries
+    // are the stable identity, so gate the callback on those, not the wrapper.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      currentReadingMode,
+      readingModeSwitchPending,
+      remoteAuth?.accountId,
+      remoteAuth?.guestTokenHash,
+      router,
+      saveId,
+    ],
+  );
+
   // Panel-2 Wave 2 — daily turn budget → in-reader candle surfaces. The turn
   // number rides on the scene projection; a new scene means the reader spent a
   // turn, so `useDailyTurnState` refetches. `nowTs` ticks only while the candle
@@ -747,6 +809,20 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
                 }
               : {})}
             {...(autoOn ? { auto: { on: true as const, onPause: toggleAuto } } : {})}
+          />
+
+          {/* Reading-modes cleanup (B2) — the persistent content-mode chip.
+              Always present (both modes), sits under the top bar. Tapping it
+              opens the mode blurb + a live switch; the switch applies from the
+              NEXT page so the current scene keeps its shape. Rendered here (not
+              inside ReaderTopBar) so it shows at every layout incl. spread,
+              where the StoryRibbon below is suppressed. */}
+          <ModeChip
+            mode={currentReadingMode}
+            onSwitch={handleSwitchReadingMode}
+            switchPending={readingModeSwitchPending}
+            confirmedMode={readingModeConfirmed}
+            reducedMotion={reduceMotion || settings.reduceMotion}
           />
 
           {/* R3 — the StoryRibbon replaces the four stacked strips
@@ -978,7 +1054,16 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
 
       {/* The in-reader settings drawer, opened from the Tome's "Reading
           settings" row (state lifted here from the removed ReaderSaveActions). */}
-      <ReaderSettingsDrawer onClose={() => setDrawerOpen(false)} visible={drawerOpen} />
+      {/* B2 passes the reading-mode switch through; B3 renders it inside the
+          drawer as a "How this story reads" group (ReadingModeChooser). The
+          drawer and the top-bar ModeChip drive the SAME handler/state. */}
+      <ReaderSettingsDrawer
+        onClose={() => setDrawerOpen(false)}
+        visible={drawerOpen}
+        currentReadingMode={currentReadingMode}
+        onSwitchReadingMode={handleSwitchReadingMode}
+        switchPending={readingModeSwitchPending}
+      />
 
       {/* The per-scene report picker, driven from the Tome's "Flag this scene"
           row — the same moderation ReportButton action, trigger hidden (U3:

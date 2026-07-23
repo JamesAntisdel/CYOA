@@ -10,13 +10,15 @@ import {
   type ReaderSettings,
 } from "../../hooks/useReaderSettings";
 import {
-  readerSettingsGroups,
+  readerSettingsSections,
   isIllustratedBookUnlocked,
   selectIllustratedBook,
   ILLUSTRATED_BOOK_LABEL,
   ILLUSTRATED_BOOK_LAYOUT,
   type SettingsOption,
 } from "../../lib/readerSettingsGroups";
+import type { ReadingMode } from "../../lib/readingMode";
+import { ReadingModeChooser } from "./ReadingModeChooser";
 import { useBreakpoint } from "../../lib/responsive";
 import { markLayoutAsExplicitlyChosen } from "./ReaderScreen";
 import { useAppTheme } from "../../theme";
@@ -54,6 +56,14 @@ import { useAppTheme } from "../../theme";
 export type ReaderSettingsDrawerProps = {
   visible: boolean;
   onClose: () => void;
+  // Reading-modes cleanup (B3): the CURRENT content axis for the open save +
+  // a live switch. Optional so a caller with no save in scope (or that hasn't
+  // resolved the save's mode yet) simply omits the "How you read" section.
+  // B2 wires these from the reader screen; the switch round-trips through the
+  // server mutation and stays disabled while `switchPending`.
+  currentReadingMode?: ReadingMode;
+  onSwitchReadingMode?: (mode: ReadingMode) => void;
+  switchPending?: boolean;
 };
 
 // Surface-local help text (presentation, not definition — kept out of the
@@ -65,7 +75,13 @@ const DRAWER_HELP: Record<string, string> = {
   focusMode: "Dims the chrome while you read; any input restores it.",
 };
 
-export function ReaderSettingsDrawer({ visible, onClose }: ReaderSettingsDrawerProps) {
+export function ReaderSettingsDrawer({
+  visible,
+  onClose,
+  currentReadingMode,
+  onSwitchReadingMode,
+  switchPending = false,
+}: ReaderSettingsDrawerProps) {
   const { tokens } = useAppTheme();
   const { isPhone } = useBreakpoint();
   const { resetSettings, settings, updateSettings } = useReaderSettings();
@@ -78,14 +94,22 @@ export function ReaderSettingsDrawer({ visible, onClose }: ReaderSettingsDrawerP
   // shared with /settings (R4.1).
   const illustratedBookUnlocked = isIllustratedBookUnlocked(account.profile);
 
-  // The mid-tale subset (R4.4): the shared groups tagged for the drawer.
-  const drawerGroups = useMemo(
+  // The mid-tale subset (R4.4), now filed under the three honest sections (B3):
+  // "How you read" (the reading MODE — rendered as a live switch below, no
+  // backing group), "How it looks", "Illustrations & narration".
+  const drawerSections = useMemo(
     () =>
-      readerSettingsGroups({ illustratedUnlocked: illustratedBookUnlocked }).filter((g) =>
-        g.surfaces.includes("drawer"),
-      ),
+      readerSettingsSections({
+        illustratedUnlocked: illustratedBookUnlocked,
+        surface: "drawer",
+      }),
     [illustratedBookUnlocked],
   );
+
+  // The reading-mode switch only appears when the caller passed BOTH the
+  // current mode and a handler (i.e. a save is in scope). exactOptional
+  // propertyTypes: guard on the values, never render an inert control.
+  const canSwitchMode = currentReadingMode != null && onSwitchReadingMode != null;
 
   // Best-effort server sync for the three media gates. Mirrors the same
   // pattern /settings uses — localStorage is the authoritative client
@@ -237,32 +261,80 @@ export function ReaderSettingsDrawer({ visible, onClose }: ReaderSettingsDrawerP
               padding: tokens.spacing.lg,
             }}
           >
-            {drawerGroups.map((group) => {
-              // The Reading-layout group appends the coupled Illustrated Book
-              // pill using the shared constants (design §1 — offered as a layout
-              // skin on the drawer, and as the cinematicMode strategy on
-              // /settings). `locked` drives the paywall route (RC5 — no glyph).
-              const options: SettingsOption<unknown>[] =
-                group.key === "layout"
-                  ? [
-                      ...group.options,
-                      {
-                        label: ILLUSTRATED_BOOK_LABEL,
-                        value: ILLUSTRATED_BOOK_LAYOUT,
-                        locked: !illustratedBookUnlocked,
-                      },
-                    ]
-                  : group.options;
-              const help = DRAWER_HELP[group.key];
+            {drawerSections.map((view) => {
+              const { section } = view;
+
+              // "How you read" (Axis 1): the per-save reading MODE. No backing
+              // group — render the live two-option switch. Skip the whole
+              // section (header included) when no save is in scope so the reader
+              // never sees an inert control.
+              if (section.key === "read") {
+                if (!canSwitchMode) return null;
+                return (
+                  <View key={section.key} style={{ gap: tokens.spacing.sm }}>
+                    <SectionHeader label={section.label} blurb={section.blurb} />
+                    {/*
+                     * Disable the switch while a change is in flight by making
+                     * the whole radiogroup non-interactive + dimmed — the
+                     * pinned ReadingModeChooser contract has no `disabled`
+                     * prop, so we gate at the wrapper (reduced-motion-safe: no
+                     * animation, just opacity + pointerEvents).
+                     */}
+                    <View
+                      pointerEvents={switchPending ? "none" : "auto"}
+                      style={{ opacity: switchPending ? 0.5 : 1 }}
+                    >
+                      <ReadingModeChooser
+                        value={currentReadingMode as ReadingMode}
+                        onChange={(mode) => onSwitchReadingMode?.(mode)}
+                      />
+                    </View>
+                    {switchPending ? (
+                      <Text muted variant="caption">
+                        Switching…
+                      </Text>
+                    ) : null}
+                  </View>
+                );
+              }
+
+              // "How it looks" / "Illustrations & narration": the pill groups,
+              // under an honest section heading.
               return (
-                <PillGroup
-                  key={group.key}
-                  label={group.label}
-                  {...(help ? { helpText: help } : {})}
-                  options={options}
-                  selected={(settings as Record<string, unknown>)[group.key]}
-                  onSelect={(value) => handleSelect(group.key, value)}
-                />
+                <View key={section.key} style={{ gap: tokens.spacing.md }}>
+                  <SectionHeader label={section.label} blurb={section.blurb} />
+                  {view.groups.map((group) => {
+                    // The Reading-layout group appends the coupled Illustrated
+                    // Book pill using the shared constants (design §1 — offered
+                    // as a layout skin on the drawer, and as the cinematicMode
+                    // strategy on /settings). `locked` drives the paywall route
+                    // (RC5 — no glyph). Illustrated Book is a LOOK here; its
+                    // media coupling is spelled out under Illustrations &
+                    // narration.
+                    const options: SettingsOption<unknown>[] =
+                      group.key === "layout"
+                        ? [
+                            ...group.options,
+                            {
+                              label: ILLUSTRATED_BOOK_LABEL,
+                              value: ILLUSTRATED_BOOK_LAYOUT,
+                              locked: !illustratedBookUnlocked,
+                            },
+                          ]
+                        : group.options;
+                    const help = DRAWER_HELP[group.key];
+                    return (
+                      <PillGroup
+                        key={group.key}
+                        label={group.label}
+                        {...(help ? { helpText: help } : {})}
+                        options={options}
+                        selected={(settings as Record<string, unknown>)[group.key]}
+                        onSelect={(value) => handleSelect(group.key, value)}
+                      />
+                    );
+                  })}
+                </View>
               );
             })}
 
@@ -297,6 +369,25 @@ export function ReaderSettingsDrawer({ visible, onClose }: ReaderSettingsDrawerP
         </Pressable>
       </Pressable>
     </Modal>
+  );
+}
+
+/**
+ * Section heading (B3). One honest name per axis + a one-line blurb so a reader
+ * can tell the content mode from the cosmetic skin from the media. Rendered
+ * above each section's controls on the drawer; mirrors the /settings surface.
+ */
+function SectionHeader({ label, blurb }: { label: string; blurb: string }) {
+  const { tokens } = useAppTheme();
+  return (
+    <View style={{ gap: tokens.spacing.xs }}>
+      <Text style={{ fontWeight: "800" }} variant="subtitle">
+        {label}
+      </Text>
+      <Text muted variant="caption">
+        {blurb}
+      </Text>
+    </View>
   );
 }
 

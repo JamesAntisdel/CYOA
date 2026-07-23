@@ -18,13 +18,15 @@ import {
   type ReaderSettings,
 } from "../../hooks/useReaderSettings";
 import {
-  readerSettingsGroups,
+  readerSettingsSections,
   isIllustratedBookUnlocked,
   selectIllustratedBook,
   ILLUSTRATED_BOOK_STRATEGY,
   ILLUSTRATED_BOOK_LAYOUT,
   type SettingsOption,
+  type SettingsSectionView,
 } from "../../lib/readerSettingsGroups";
+import { ModeMark, READING_MODE_META, type ReadingMode } from "../../lib/readingMode";
 import { useBreakpoint } from "../../lib/responsive";
 import { useAppTheme } from "../../theme";
 
@@ -74,13 +76,16 @@ export default function SettingsRoute() {
   // gate, shared with the reader drawer (R4.1).
   const illustratedBookUnlocked = isIllustratedBookUnlocked(account.profile);
 
-  // The full reader-settings inventory (R4.4): every group tagged for
-  // /settings, rendered top-to-bottom in the shared canonical order.
-  const settingsGroups = useMemo(
+  // The full reader-settings inventory (R4.4), filed under the three honest
+  // sections (B3): "How you read" (the per-save reading MODE — informational
+  // here since /settings has no live save in scope), "How it looks", and
+  // "Illustrations & narration". Rendered top-to-bottom in canonical order.
+  const settingsSections = useMemo(
     () =>
-      readerSettingsGroups({ illustratedUnlocked: illustratedBookUnlocked }).filter((g) =>
-        g.surfaces.includes("settings"),
-      ),
+      readerSettingsSections({
+        illustratedUnlocked: illustratedBookUnlocked,
+        surface: "settings",
+      }),
     [illustratedBookUnlocked],
   );
 
@@ -185,20 +190,16 @@ export default function SettingsRoute() {
             padded
             style={isPhone ? { flexBasis: "100%", minWidth: "100%", width: "100%" } : { flex: 1, minWidth: 320 }}
           >
-            <View style={{ gap: tokens.spacing.lg }}>
-              {settingsGroups.map((group) => {
-                const help = SETTINGS_HELP[group.key];
-                return (
-                  <SettingGroup
-                    key={group.key}
-                    label={group.label}
-                    {...(help ? { helpText: help } : {})}
-                    options={group.options}
-                    selected={(settings as Record<string, unknown>)[group.key]}
-                    onSelect={(value) => handleSelect(group.key, value)}
-                  />
-                );
-              })}
+            <View style={{ gap: tokens.spacing.xl }}>
+              {settingsSections.map((view) => (
+                <SettingsSectionBlock
+                  key={view.section.key}
+                  view={view}
+                  settings={settings}
+                  onSelect={handleSelect}
+                  onOpenLibrary={() => router.push("/library")}
+                />
+              ))}
 
               <Divider />
 
@@ -340,6 +341,100 @@ async function syncMediaPrefs(
     // device where the network worked will reconcile through the
     // useAccountProfile hydrate path.
   }
+}
+
+// One honest section (B3): a heading + one-line blurb, then either the
+// informational reading-MODE block (Axis 1 — per-save, so read-only on
+// /settings where no save is in scope) or the section's `SettingGroup` list.
+const MODES: readonly ReadingMode[] = ["branching", "novel"];
+
+function SettingsSectionBlock({
+  view,
+  settings,
+  onSelect,
+  onOpenLibrary,
+}: {
+  view: SettingsSectionView;
+  settings: ReaderSettings;
+  onSelect: (key: string, value: unknown) => void;
+  onOpenLibrary: () => void;
+}) {
+  const { tokens } = useAppTheme();
+  const { section } = view;
+
+  return (
+    <View style={{ gap: tokens.spacing.md }}>
+      <View style={{ gap: tokens.spacing.xs }}>
+        <Text style={{ fontWeight: "800" }} variant="subtitle">
+          {section.label}
+        </Text>
+        <Text muted variant="bodySmall">
+          {section.blurb}
+        </Text>
+      </View>
+
+      {section.key === "read" ? (
+        // Axis 1 is stored per-save. /settings has no live save in scope, so
+        // this section is READ-ONLY here: it explains the two modes and points
+        // the reader to a story, where the switch is live (drawer). No inert
+        // radio that looks tappable (RC5 — describe, don't fake a control).
+        <View style={{ gap: tokens.spacing.sm }}>
+          {MODES.map((mode) => {
+            const meta = READING_MODE_META[mode];
+            return (
+              <View
+                key={mode}
+                style={{
+                  alignItems: "flex-start",
+                  borderColor: tokens.colors.borderMuted,
+                  borderRadius: tokens.radii.md,
+                  borderWidth: tokens.borderWidths.hairline,
+                  flexDirection: "row",
+                  gap: tokens.spacing.md,
+                  padding: tokens.spacing.md,
+                }}
+              >
+                <View style={{ paddingTop: tokens.spacing.xs }}>
+                  <ModeMark mode={mode} size={22} />
+                </View>
+                <View style={{ flex: 1, gap: tokens.spacing.xs }}>
+                  <Text
+                    style={{ fontFamily: tokens.typography.families.serif }}
+                    variant="subtitle"
+                  >
+                    {meta.label}
+                  </Text>
+                  <Text muted variant="bodySmall">
+                    {meta.blurb}
+                  </Text>
+                </View>
+              </View>
+            );
+          })}
+          <Text muted variant="caption">
+            You choose this per story — open a story to switch between Branching and Novel.
+          </Text>
+          <Button onPress={onOpenLibrary} variant="default">
+            Go to your library
+          </Button>
+        </View>
+      ) : (
+        view.groups.map((group) => {
+          const help = SETTINGS_HELP[group.key];
+          return (
+            <SettingGroup
+              key={group.key}
+              label={group.label}
+              {...(help ? { helpText: help } : {})}
+              options={group.options}
+              selected={(settings as Record<string, unknown>)[group.key]}
+              onSelect={(value) => onSelect(group.key, value)}
+            />
+          );
+        })
+      )}
+    </View>
+  );
 }
 
 function SettingGroup({

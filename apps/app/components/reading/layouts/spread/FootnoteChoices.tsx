@@ -5,6 +5,7 @@ import { Icon, Text } from "../../../primitives";
 import { useAppTheme } from "../../../../theme";
 import type { ChoiceProjection } from "../../../../hooks/useTurn";
 import { CheckChip } from "../../../choices/CheckChip";
+import { DecisionPointHeader, isDecisionPoint } from "../../../choices/DecisionPoint";
 import { FreeformChoice } from "../../../choices/FreeformChoice";
 import { LockedChoiceCopy } from "../../../choices/LockedChoiceCopy";
 import { canTurnPage, pageTurnLabel, resolvePageTurnChoice } from "../pageTurn";
@@ -112,6 +113,10 @@ export function FootnoteChoices({
       accessibilityLabel="Available choices"
       style={{ gap: tokens.spacing.sm, marginTop: "auto" }}
     >
+      {/* A real fork gets the printed "The path forks" header above the rule
+          (A3) — tasteful in the footnote idiom. Suppressed when the projection
+          is not a branching fork (0-choice terminal payloads). */}
+      {isDecisionPoint(choices) ? <DecisionPointHeader /> : null}
       {/* The footnote rule — the printed line dividing prose from the notes. */}
       <View
         style={{

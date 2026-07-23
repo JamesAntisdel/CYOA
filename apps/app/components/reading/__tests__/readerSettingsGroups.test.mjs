@@ -34,6 +34,9 @@ const { outputText } = ts.transpileModule(source, {
 const mod = await import("data:text/javascript," + encodeURIComponent(outputText));
 const {
   readerSettingsGroups,
+  readerSettingsSections,
+  SETTINGS_SECTIONS,
+  SETTINGS_SECTION_ORDER,
   isIllustratedBookUnlocked,
   selectIllustratedBook,
   ILLUSTRATED_BOOK_SETTINGS,
@@ -192,6 +195,100 @@ test("NO group is keyed chrome or layoutMode (P2/RC11)", () => {
       .find((o) => o.label === "Focus" && o.value === "focus");
     assert.equal(focusOption, undefined, "no Focus (layoutMode) option survives");
   }
+});
+
+// ── Honest three-axis sections (reading-modes cleanup B3) ───────────────────
+
+test("every group is filed under a look/media section (never read)", () => {
+  for (const unlocked of [false, true]) {
+    const groups = readerSettingsGroups({ illustratedUnlocked: unlocked });
+    for (const g of groups) {
+      assert.ok(
+        g.section === "look" || g.section === "media",
+        `${g.key} section must be look or media, got ${g.section}`,
+      );
+      // "read" is a per-save axis with no backing ReaderSettings group.
+      assert.notEqual(g.section, "read", `${g.key} must not claim the read section`);
+    }
+  }
+});
+
+test("section metadata: honest labels + non-empty blurbs, read leads", () => {
+  assert.deepEqual(SETTINGS_SECTION_ORDER, ["read", "look", "media"]);
+  assert.equal(SETTINGS_SECTIONS.read.label, "How you read");
+  assert.equal(SETTINGS_SECTIONS.look.label, "How it looks");
+  assert.equal(SETTINGS_SECTIONS.media.label, "Illustrations & narration");
+  for (const key of SETTINGS_SECTION_ORDER) {
+    assert.equal(SETTINGS_SECTIONS[key].key, key);
+    assert.ok(SETTINGS_SECTIONS[key].blurb.length > 0, `${key} has a blurb`);
+  }
+});
+
+test("the three axes are not conflated: layout is a LOOK, media strategy is MEDIA", () => {
+  const groups = readerSettingsGroups({ illustratedUnlocked: true });
+  const sectionByKey = Object.fromEntries(groups.map((g) => [g.key, g.section]));
+  // Illustrated Book appears as a layout skin (look) AND a cinematic strategy
+  // (media) — the layout group is the LOOK, the cinematicMode group the MEDIA.
+  assert.equal(sectionByKey.layout, "look");
+  assert.equal(sectionByKey.cinematicMode, "media");
+  // Cosmetic skins land under look; generated media under media.
+  assert.equal(sectionByKey.theme, "look");
+  assert.equal(sectionByKey.fontScale, "look");
+  assert.equal(sectionByKey.reduceMotion, "look");
+  assert.equal(sectionByKey.imagesEnabled, "media");
+  assert.equal(sectionByKey.audioEnabled, "media");
+  assert.equal(sectionByKey.videoEnabled, "media");
+  assert.equal(sectionByKey.narratorPlaybackRate, "media");
+});
+
+test("readerSettingsSections: always returns the 3 sections in order, read first + empty", () => {
+  for (const surface of ["settings", "drawer"]) {
+    const sections = readerSettingsSections({ illustratedUnlocked: true, surface });
+    assert.deepEqual(
+      sections.map((s) => s.section.key),
+      ["read", "look", "media"],
+      `${surface} sections are read → look → media`,
+    );
+    // The read axis is per-save — no backing group on either surface.
+    const read = sections.find((s) => s.section.key === "read");
+    assert.deepEqual(read.groups, [], "read section carries no groups");
+    // Every other section has at least one group on each surface.
+    for (const s of sections) {
+      if (s.section.key === "read") continue;
+      assert.ok(s.groups.length > 0, `${surface}/${s.section.key} has groups`);
+    }
+  }
+});
+
+test("readerSettingsSections partitions the surface's groups exactly (no loss/dup)", () => {
+  for (const surface of ["settings", "drawer"]) {
+    const flat = readerSettingsGroups({ illustratedUnlocked: true }).filter((g) =>
+      g.surfaces.includes(surface),
+    );
+    const sections = readerSettingsSections({ illustratedUnlocked: true, surface });
+    const fromSections = sections.flatMap((s) => s.groups.map((g) => g.key));
+    // Same set, same count — every surface group lands in exactly one section.
+    assert.equal(fromSections.length, flat.length, `${surface}: no group dropped/duplicated`);
+    assert.deepEqual(
+      [...fromSections].sort(),
+      flat.map((g) => g.key).sort(),
+      `${surface}: section groups == surface groups`,
+    );
+    // Canonical order preserved within each backed section.
+    for (const s of sections) {
+      const expected = flat.filter((g) => g.section === s.section.key).map((g) => g.key);
+      assert.deepEqual(s.groups.map((g) => g.key), expected, `${surface}/${s.section.key} order`);
+    }
+  }
+});
+
+test("the drawer's 'look' section still carries the reading-layout group (Illustrated is a look)", () => {
+  const sections = readerSettingsSections({ illustratedUnlocked: false, surface: "drawer" });
+  const look = sections.find((s) => s.section.key === "look");
+  assert.ok(
+    look.groups.some((g) => g.key === "layout"),
+    "layout skin lives under How it looks on the drawer",
+  );
 });
 
 // ── Illustrated Book gate matrix (R3.7) ─────────────────────────────────────

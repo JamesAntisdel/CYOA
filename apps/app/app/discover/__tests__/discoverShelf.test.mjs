@@ -63,30 +63,24 @@ test("public seeds launch as fresh runs via the existing createSave path", () =>
   );
 });
 
-test("the reading-mode segmented control renders and threads into launch createSave", () => {
-  // Novel-entry: the compact Branching | Novel segmented control (RC5 — filled
-  // Chip for the selected segment, no check-mark glyph) reaches the discover
-  // create flow, matching the cover screen.
+test("the shared ReadingModeChooser renders and threads into launch createSave", () => {
+  // Reading-modes-cleanup (B1): the retired inline segmented toggle is replaced
+  // by the SHARED <ReadingModeChooser> (Wave 1), which owns the two option rows
+  // and their always-visible blurbs, matching the cover screen.
   assert.match(
     discoverSrc,
-    /accessibilityLabel="Reading mode"/,
-    "a Reading mode radiogroup must render on the discover surface",
-  );
-  assert.match(
-    discoverSrc,
-    /<Chip variant=\{novelMode \? "accent" : "muted"\}>Novel<\/Chip>/,
-    "the Novel segment must be a filled Chip when selected (no check glyph)",
+    /import \{ ReadingModeChooser \} from "\.\.\/\.\.\/components\/reading\/ReadingModeChooser"/,
+    "the discover route imports the shared chooser",
   );
   assert.match(
     discoverSrc,
-    /<Chip variant=\{novelMode \? "muted" : "accent"\}>Branching<\/Chip>/,
-    "the Branching segment must be a filled Chip when selected (no check glyph)",
+    /<ReadingModeChooser onChange=\{chooseReadingMode\} value=\{readingMode\} \/>/,
+    "the chooser renders with value + onChange bound to the discover state",
   );
-  assert.doesNotMatch(
-    discoverSrc,
-    /Branching<\/Chip>[\s\S]*?✓|✓[\s\S]*?Branching/,
-    "no check-mark glyph on the segmented control (RC5)",
-  );
+  // The retired inline toggle is gone.
+  assert.doesNotMatch(discoverSrc, /accessibilityLabel="Reading mode"/, "no inline radiogroup remains");
+  assert.doesNotMatch(discoverSrc, /<Chip variant=\{novelMode/, "the Chip-based segments are gone");
+  assert.doesNotMatch(discoverSrc, /✓/, "no check-mark glyph on the discover surface (RC5)");
   // The chosen mode must reach createSave.
   assert.match(
     discoverSrc,
@@ -95,8 +89,8 @@ test("the reading-mode segmented control renders and threads into launch createS
   );
   assert.match(
     discoverSrc,
-    /const chooseReadingMode = \(novel: boolean\) =>/,
-    "a single chooseReadingMode entry point drives selection + caption reveal",
+    /const chooseReadingMode = \(mode: ReadingMode\) => setNovelMode\(mode === "novel"\)/,
+    "chooseReadingMode bridges the chooser onChange back to the boolean",
   );
 });
 

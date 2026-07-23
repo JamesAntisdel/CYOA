@@ -8,7 +8,9 @@ import { DailyCard } from "../components/daily";
 import { DeskHome } from "../components/home/DeskHome";
 import { resolveDeskEnabled } from "../components/home/deskGate";
 import { AppNav } from "../components/navigation";
-import { Button, Chip, Text } from "../components/primitives";
+import { Button, Text } from "../components/primitives";
+import { ReadingModeChooser } from "../components/reading/ReadingModeChooser";
+import type { ReadingMode } from "../lib/readingMode";
 import { useAccountProfile } from "../hooks/useAccountProfile";
 import { useReaderSettings } from "../hooks/useReaderSettings";
 import {
@@ -58,19 +60,17 @@ export default function IndexRoute() {
   const narrator = useNarratorVoice(null);
   const tutorialStory = getTutorialStory(library.starterStories);
 
-  // Reading-modes R4 — let the reader start a starter tale in Novel mode
-  // (linear "turn the page" reading). Chosen at create (posture A); the server
-  // re-gates on entitlement (dev-force-unlocked locally). Default: branching.
+  // Reading-modes cleanup — the reader picks how the next starter tale reads
+  // (Branching vs Novel) through the shared ReadingModeChooser, which replaces
+  // the old inline segmented toggle + reveal-on-change caption (the chooser
+  // owns the always-visible blurb now). Chosen at create (posture A); the
+  // server re-gates Novel on entitlement (dev-force-unlocked locally). Default:
+  // branching. `novelMode` stays the local state so the createSave threading
+  // below is untouched; `chooseReadingMode` bridges the chooser's ReadingMode
+  // onChange back to that boolean.
   const [novelMode, setNovelMode] = useState(false);
-  // R6.1 — the explanatory caption under the starter header appears only once
-  // the reader CHANGES the reading-mode selection (it starts hidden so the
-  // cover leads with one clean row). `chooseReadingMode` is the single entry
-  // point for both segments so the reveal can't drift from the state update.
-  const [modeCaptionVisible, setModeCaptionVisible] = useState(false);
-  const chooseReadingMode = (novel: boolean) => {
-    setNovelMode(novel);
-    setModeCaptionVisible(true);
-  };
+  const readingMode: ReadingMode = novelMode ? "novel" : "branching";
+  const chooseReadingMode = (mode: ReadingMode) => setNovelMode(mode === "novel");
 
   const handleAgeSubmit = (selection: AgeSelection) => {
     void guest.createGuestSession(selection);
@@ -393,8 +393,8 @@ export default function IndexRoute() {
           style={{
             alignItems: "center",
             flexDirection: "row",
-            // Wrap so the segmented control drops to the next line rather than
-            // clipping "See all" on a narrow phone header.
+            // Wrap so "See all" drops to the next line rather than clipping on a
+            // narrow phone header.
             flexWrap: "wrap",
             gap: tokens.spacing.sm,
             justifyContent: "space-between",
@@ -403,64 +403,16 @@ export default function IndexRoute() {
           <Text style={{ fontWeight: "800" }} variant="subtitle">
             Starter adventures
           </Text>
-          {/* R6.1 — reading-mode toggle as a compact segmented control, right-
-              aligned opposite "See all". Selected segment = filled (accent)
-              Chip styling; no check-mark glyph (R5.3). */}
-          <View style={{ alignItems: "center", flexDirection: "row", gap: tokens.spacing.sm }}>
-            <View
-              accessibilityRole="radiogroup"
-              accessibilityLabel="Reading mode"
-              style={{
-                borderColor: tokens.colors.border,
-                borderRadius: tokens.radii.pill,
-                borderWidth: tokens.borderWidths.hairline,
-                flexDirection: "row",
-                overflow: "hidden",
-              }}
-            >
-              <Pressable
-                accessibilityRole="radio"
-                accessibilityLabel="Branching reading mode: you choose the path"
-                accessibilityState={{ selected: !novelMode }}
-                onPress={() => chooseReadingMode(false)}
-                style={{
-                  alignItems: "center",
-                  justifyContent: "center",
-                  minHeight: 44,
-                }}
-              >
-                <Chip variant={novelMode ? "muted" : "accent"}>Branching</Chip>
-              </Pressable>
-              <Pressable
-                accessibilityRole="radio"
-                accessibilityLabel="Novel reading mode: one linear story, just turn the page"
-                accessibilityState={{ selected: novelMode }}
-                onPress={() => chooseReadingMode(true)}
-                style={{
-                  alignItems: "center",
-                  justifyContent: "center",
-                  minHeight: 44,
-                }}
-              >
-                <Chip variant={novelMode ? "accent" : "muted"}>Novel</Chip>
-              </Pressable>
-            </View>
-            <Pressable accessibilityRole="button" onPress={() => router.push("/library")}>
-              <Text tone="accent" style={{ fontWeight: "800" }} variant="bodySmall">
-                See all
-              </Text>
-            </Pressable>
-          </View>
+          <Pressable accessibilityRole="button" onPress={() => router.push("/library")}>
+            <Text tone="accent" style={{ fontWeight: "800" }} variant="bodySmall">
+              See all
+            </Text>
+          </Pressable>
         </View>
-        {/* R6.1 — the explanatory caption shows only after the reader changes
-            the selection (starts hidden). */}
-        {modeCaptionVisible ? (
-          <Text muted variant="caption">
-            {novelMode
-              ? "Novel: one continuous story — no choices, just turn the page. Applies to the tale you start next."
-              : "Branching: you pick the path at every scene. Tap Novel for a linear read instead."}
-          </Text>
-        ) : null}
+        {/* Reading-modes cleanup — the shared two-option chooser with its
+            always-visible blurbs replaces the compact segmented toggle +
+            reveal-on-change caption. Applies to the tale you start next. */}
+        <ReadingModeChooser onChange={chooseReadingMode} value={readingMode} />
         <View style={{ gap: tokens.spacing.sm }}>
           {library.starterStories.slice(0, 3).map((story: StorySummary) => (
             <Pressable

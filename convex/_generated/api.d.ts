@@ -96,6 +96,7 @@ import type * as moderation from "../moderation.js";
 import type * as operatorDashboardFunctions from "../operatorDashboardFunctions.js";
 import type * as pushNotifications from "../pushNotifications.js";
 import type * as ratelimit from "../ratelimit.js";
+import type * as readingModeFunctions from "../readingModeFunctions.js";
 import type * as safety from "../safety.js";
 import type * as saves from "../saves.js";
 import type * as seasons from "../seasons.js";
@@ -200,6 +201,7 @@ declare const fullApi: ApiFromModules<{
   operatorDashboardFunctions: typeof operatorDashboardFunctions;
   pushNotifications: typeof pushNotifications;
   ratelimit: typeof ratelimit;
+  readingModeFunctions: typeof readingModeFunctions;
   safety: typeof safety;
   saves: typeof saves;
   seasons: typeof seasons;

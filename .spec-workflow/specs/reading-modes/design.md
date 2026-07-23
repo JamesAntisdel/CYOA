@@ -333,10 +333,22 @@ layout (R3.2): IllustratedBook.tsx [NEW] cloned from GraphicNovelLayout (grep
 
 ### R4 — Novel mode (the one contract-moving mode, RM1–RM4)
 
+**POSTURE CHANGE (R4.9): posture A → posture B.** The reading mode is no longer
+locked at create — the reading-modes-cleanup adds a live switch,
+`readingModeFunctions:setReadingMode`, that patches `save.readingMode` mid-run
+and **applies from the next turn onward**. This is safe because each scene is
+stamped its mode at GENERATION from the live save field (game.ts ≈ :1936), so
+the current scene keeps its prior stamp and only the next generation reads the
+new value. `createSave` still resolves the initial mode via `resolveReadingMode`;
+the switch re-gates `novel` per switch through that SAME seam (Pro-only), while
+switching to `branching` is always allowed (a lapsed Pro is never stranded on a
+prose-only prompt).
+
 ```
 createSave (game.ts ≈ :216, RESERVED integrator site):
   └─ persist readingMode = resolveReadingMode({ desired, isPro })  (RM5, R4.9
-       posture A: gate here, keep for the save's lifetime)
+       posture B: gate the INITIAL mode here; mid-run flips go through
+       setReadingMode, which re-gates novel per switch and applies next turn)
 
 turn request (getAuthorizedSceneStreamRequest ≈ :1742, RESERVED, llm-driven
   branch only, R4.7):
@@ -494,7 +506,7 @@ both hold, no schema/prompt/media work is spent toward it.
 | layout↔strategy desync (image-first skin, no still) | coupling in both pickers prevents it (RM7, R3.8) |
 | novel payload with 0/1 choices at a parse site | `sceneSchemaFor` selects `llmNovelSceneOutputSchema` at all five sites — validates (RM3, R4.3) |
 | novel: `turn-page` id missing from prior proposal | stamp into proposal.choices (not only choiceViews) OR route the `freeform:true` branch — avoids `llm_choice_not_found` (R4.4) |
-| novel prompt asked for choices after a lapse (posture B risk) | posture A default locks `readingMode` at `createSave` — no mid-read contract flip (R4.9) |
+| novel prompt asked for choices after a lapse (posture B) | switch to `novel` is re-gated per switch via `setReadingMode`; a lapsed Pro can only step DOWN to `branching`, and the flip applies from the NEXT turn (current scene keeps its stamp) — no mid-read contract flip on the live scene (R4.9) |
 | legacy save (no `readingMode`) | resolves to `"branching"` → byte-identical branching path, min(2) gate intact (RM4, R5.3) |
 | authored/scripted or co-op-follower turn | novel branch lives inside the `storyMode === "llm-driven"` guard — never taken (R4.7) |
 | someone edits `responseSchema.ts` for novel | wrong file — not wired to scenes; a Non-Goal, caught in review (RM2) |

@@ -412,6 +412,37 @@ export async function restartRemoteRun(input: {
 }
 
 /**
+ * Result of switching a save's content Axis 1 (reading-modes cleanup). Mirrors
+ * the `readingModeFunctions:setReadingMode` mutation union exactly: switching to
+ * `"novel"` is Pro-gated (`needs_pro`), switching to `"branching"` is always
+ * allowed. `null` is the transport/no-backend sentinel every gameApi binding
+ * returns — it is NOT one of the server's `reason` codes.
+ */
+export type SetReadingModeResult =
+  | { ok: true; mode: "branching" | "novel" }
+  | { ok: false; reason: "needs_pro" | "not_found" | "unauthorized" };
+
+/**
+ * Switch an existing save between Branching and Novel via
+ * `readingModeFunctions:setReadingMode`. Auth is threaded as the mutation's
+ * nested `auth: { accountId, guestTokenHash? }` (the server re-gates novel
+ * through `resolveReadingMode`). The reader drawer calls this on a mode change;
+ * the create flow sets the mode at `createSave` time instead and never needs it.
+ */
+export async function setReadingMode(input: {
+  saveId: string;
+  mode: "branching" | "novel";
+  auth?: { accountId: string; guestTokenHash?: string };
+}): Promise<SetReadingModeResult | null> {
+  if (!convexClient) return null;
+  return callConvexHttp<any>(
+    "mutation",
+    "readingModeFunctions:setReadingMode",
+    input as unknown as Record<string, unknown>,
+  ) as any;
+}
+
+/**
  * One doors-journal row (DOORS-JOURNAL — the reader-facing half of the
  * story-bible fetch-quest loop). The server projects ONLY doors the reader has
  * already seen rendered locked on screen (BC10): `label` is the lock as the

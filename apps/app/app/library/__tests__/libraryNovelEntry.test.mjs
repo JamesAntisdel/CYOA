@@ -1,11 +1,11 @@
-// Drift-guards for the library route's reading-mode (Novel-entry) control.
-//
-// Source-level greps, same pattern as app/discover/__tests__ — mounting the
-// RN + Convex tree is out of scope for `node --test`. Here we pin the client
-// wiring: the compact Branching | Novel segmented control (RC5 — filled Chip
-// for the selected segment, NO check-mark glyph) renders on the library create
-// surface, and the chosen mode threads into useLibrary.createSave. The
-// entitlement re-gate is covered server-side (posture A).
+// Drift-guards for the library route's reading-mode (Novel-entry) control after
+// the reading-modes-cleanup (B1). The old inline segmented Branching | Novel
+// toggle is retired in favor of the SHARED <ReadingModeChooser> (Wave 1), which
+// owns the two option rows and their always-visible blurbs. Source-level greps,
+// same pattern as app/discover/__tests__ — mounting the RN + Convex tree is out
+// of scope for `node --test`. Here we pin the client wiring: the shared chooser
+// renders on the library create surface and the chosen mode threads into
+// useLibrary.createSave. The entitlement re-gate is covered server-side.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -16,63 +16,43 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const librarySrc = readFileSync(resolve(here, "../index.tsx"), "utf8");
 
-test("the reading-mode segmented control renders on the library create surface", () => {
+test("the shared ReadingModeChooser renders on the library create surface", () => {
   assert.match(
     librarySrc,
-    /accessibilityRole="radiogroup"/,
-    "the control must be a radiogroup",
+    /import \{ ReadingModeChooser \} from "\.\.\/\.\.\/components\/reading\/ReadingModeChooser"/,
+    "the library imports the shared chooser",
   );
   assert.match(
     librarySrc,
-    /accessibilityLabel="Reading mode"/,
-    "a Reading mode radiogroup must render on the library shelf",
+    /<ReadingModeChooser onChange=\{chooseReadingMode\} value=\{readingMode\} \/>/,
+    "the chooser renders with value + onChange bound to the library state",
   );
-  assert.match(
-    librarySrc,
-    /<Chip variant=\{novelMode \? "accent" : "muted"\}>Novel<\/Chip>/,
-    "the Novel segment must be a filled Chip when selected",
-  );
-  assert.match(
-    librarySrc,
-    /<Chip variant=\{novelMode \? "muted" : "accent"\}>Branching<\/Chip>/,
-    "the Branching segment must be a filled Chip when selected",
-  );
+  // The retired inline toggle is gone.
+  assert.doesNotMatch(librarySrc, /accessibilityRole="radiogroup"/, "no inline radiogroup remains");
+  assert.doesNotMatch(librarySrc, /<Chip variant=\{novelMode/, "the Chip-based segments are gone");
 });
 
-test("the segments are 44px touch targets and carry accessibilityState.selected", () => {
-  assert.match(librarySrc, /minHeight: 44/, "each segment Pressable must be a 44px touch target");
+test("the chooser bridges back to the existing novelMode state", () => {
   assert.match(
     librarySrc,
-    /accessibilityState=\{\{ selected: !novelMode \}\}/,
-    "the Branching segment must announce its selected state",
+    /const \[novelMode, setNovelMode\] = useState\(false\)/,
+    "novelMode stays the local state",
   );
   assert.match(
     librarySrc,
-    /accessibilityState=\{\{ selected: novelMode \}\}/,
-    "the Novel segment must announce its selected state",
+    /const readingMode: ReadingMode = novelMode \? "novel" : "branching"/,
+    "readingMode is derived for the chooser value",
   );
+  assert.match(
+    librarySrc,
+    /const chooseReadingMode = \(mode: ReadingMode\) => setNovelMode\(mode === "novel"\)/,
+    "chooseReadingMode bridges the chooser onChange back to the boolean",
+  );
+  assert.doesNotMatch(librarySrc, /modeCaptionVisible/, "the caption-visibility flag is gone");
 });
 
-test("no check-mark glyph on the control (RC5 glyph discipline)", () => {
+test("no check-mark glyph on the library surface (RC5 glyph discipline)", () => {
   assert.doesNotMatch(librarySrc, /✓/, "no check-mark glyph anywhere on the library surface");
-});
-
-test("the caption reveals only after the reader changes the selection", () => {
-  assert.match(
-    librarySrc,
-    /const \[modeCaptionVisible, setModeCaptionVisible\] = useState\(false\)/,
-    "the caption starts hidden",
-  );
-  assert.match(
-    librarySrc,
-    /const chooseReadingMode = \(novel: boolean\) =>/,
-    "a single chooseReadingMode entry point drives selection + caption reveal",
-  );
-  assert.match(
-    librarySrc,
-    /modeCaptionVisible \? \(/,
-    "the caption renders only when modeCaptionVisible is true",
-  );
 });
 
 test("the selected reading mode threads into library.createSave", () => {

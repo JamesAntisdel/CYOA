@@ -5,6 +5,7 @@ import { Choice, Icon, Text } from "../primitives";
 import { useAppTheme } from "../../theme";
 import type { ChoiceProjection } from "../../hooks/useTurn";
 import { CheckChip } from "./CheckChip";
+import { DecisionPoint, isDecisionPoint } from "./DecisionPoint";
 import { FreeformChoice } from "./FreeformChoice";
 import { LOCK_COACH_COPY, hasSeenLockCoach, markLockCoachSeen } from "./lockCoach";
 import { LockedChoiceCopy } from "./LockedChoiceCopy";
@@ -55,7 +56,12 @@ export function ChoiceList({
     setCoachVisible(true);
   }, [firstLockedId, coachVisible]);
 
-  return (
+  // A real fork gets the printed DecisionPoint frame (A3). Novel mode's sole
+  // synthetic `turn-page` choice is a page-turn, not a fork, so it is NEVER
+  // framed — `isDecisionPoint` reuses the PAGE_TURN_CHOICE_ID contract.
+  const framed = isDecisionPoint(choices);
+
+  const list = (
     <View accessibilityLabel="Available choices" style={{ gap: tokens.spacing.sm }}>
       {choices.map((choice) => {
         // Locked choices (R4.3) are NOT submittable. Rather than a dead
@@ -107,6 +113,8 @@ export function ChoiceList({
       ) : null}
     </View>
   );
+
+  return framed ? <DecisionPoint>{list}</DecisionPoint> : list;
 }
 
 const SHAKE_OFFSET = 6;

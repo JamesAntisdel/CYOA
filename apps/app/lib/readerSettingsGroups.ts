@@ -27,6 +27,56 @@
 
 export type SettingsSurface = "settings" | "drawer";
 
+// ── Honest three-axis sections (reading-modes cleanup B3) ────────────────────
+//
+// The reader-settings drawer + /settings used to be ONE flat wall of pill
+// groups where three unrelated axes all read as "mode". We now file every
+// group under exactly one of three honestly-named sections so a reader can tell
+// the content axis (how the STORY reads) from the cosmetic skin (how it LOOKS)
+// from the generated media:
+//
+//   read  — "How you read": the reading MODE (Axis 1, server-persisted per
+//           save: Branching vs Novel). This section is NOT backed by a
+//           `ReaderSettings` group — the mode lives on the save, so each
+//           surface renders its own block into it (the drawer a live switch,
+//           /settings a read-only note since no save is in scope there).
+//   look  — "How it looks": cosmetic skins (theme, text size, reading layout
+//           incl. Illustrated Book, HUD, dialog blocks, reduce motion, focus).
+//   media — "Illustrations & narration": generated pictures, narrator voice,
+//           ambient sound, cinematics (incl. the Illustrated-Book media
+//           strategy on /settings — its coupling belongs with the media axis).
+export type SettingsSectionKey = "read" | "look" | "media";
+
+export type SettingsSection = {
+  key: SettingsSectionKey;
+  label: string;
+  blurb: string;
+};
+
+// Canonical section copy + order. The "read" section leads (the content axis
+// is the most consequential choice), then the cosmetic skin, then media.
+export const SETTINGS_SECTION_ORDER: SettingsSectionKey[] = ["read", "look", "media"];
+
+export const SETTINGS_SECTIONS: Record<SettingsSectionKey, SettingsSection> = {
+  read: {
+    key: "read",
+    label: "How you read",
+    blurb:
+      "The kind of story this is — branching choices or one continuous novel. Set per story.",
+  },
+  look: {
+    key: "look",
+    label: "How it looks",
+    blurb:
+      "Cosmetic only — theme, text size, and the reading layout. Illustrated Book is a look.",
+  },
+  media: {
+    key: "media",
+    label: "Illustrations & narration",
+    blurb: "Generated pictures, narrator voice, ambient sound, and cinematics.",
+  },
+};
+
 export type SettingsOption<T> = {
   label: string;
   value: T;
@@ -46,6 +96,11 @@ export type SettingsGroupDef<T> = {
   label: string; // CANONICAL label (R4.2) — exactly one per group.
   options: SettingsOption<T>[];
   surfaces: SettingsSurface[]; // where this group renders.
+  // Which honest section (Axis) this group files under (B3). Every group has
+  // exactly one. There is no group in the "read" section — the reading MODE is
+  // per-save, not a `ReaderSettings` field — so `section` here is only ever
+  // "look" or "media"; each surface renders the "read" block itself.
+  section: Exclude<SettingsSectionKey, "read">;
 };
 
 // ── Illustrated Book: the ONE Pro-gate + coupling (moved from both surfaces) ─
@@ -134,6 +189,7 @@ export function readerSettingsGroups(input: {
     {
       key: "theme",
       label: "Theme",
+      section: "look",
       surfaces: BOTH,
       options: [
         { label: "System", value: "system" },
@@ -145,6 +201,7 @@ export function readerSettingsGroups(input: {
     {
       key: "fontScale",
       label: "Text size",
+      section: "look",
       surfaces: BOTH,
       options: [
         { label: "Compact", value: "compact" },
@@ -155,6 +212,7 @@ export function readerSettingsGroups(input: {
     {
       key: "layout",
       label: "Reading layout",
+      section: "look",
       surfaces: BOTH,
       options: [
         { label: "Book", value: "book" },
@@ -167,6 +225,7 @@ export function readerSettingsGroups(input: {
     {
       key: "imagesEnabled",
       label: "Illustrations",
+      section: "media",
       surfaces: BOTH,
       options: [
         { label: "On", value: true },
@@ -176,6 +235,7 @@ export function readerSettingsGroups(input: {
     {
       key: "audioEnabled",
       label: "Narration & ambient",
+      section: "media",
       surfaces: BOTH,
       options: [
         { label: "On", value: true },
@@ -185,6 +245,7 @@ export function readerSettingsGroups(input: {
     {
       key: "narratorPlaybackRate",
       label: "Narrator speed",
+      section: "media",
       surfaces: BOTH,
       options: [
         { label: "0.75x", value: 0.75 },
@@ -196,6 +257,7 @@ export function readerSettingsGroups(input: {
     {
       key: "videoEnabled",
       label: "Scene cinematics",
+      section: "media",
       surfaces: BOTH,
       options: [
         { label: "On", value: true },
@@ -205,6 +267,7 @@ export function readerSettingsGroups(input: {
     {
       key: "reduceMotion",
       label: "Reduce motion",
+      section: "look",
       surfaces: BOTH,
       options: [
         { label: "Motion on", value: false },
@@ -220,6 +283,7 @@ export function readerSettingsGroups(input: {
       // (`updateSettings({ [key]: value })`) handles it with no coupling.
       key: "focusMode",
       label: "Candlelight focus",
+      section: "look",
       surfaces: BOTH,
       options: [
         { label: "On", value: true },
@@ -231,6 +295,7 @@ export function readerSettingsGroups(input: {
     {
       key: "hudMode",
       label: "Reader HUD",
+      section: "look",
       surfaces: SETTINGS_ONLY,
       options: [
         { label: "Full", value: "full" },
@@ -244,6 +309,7 @@ export function readerSettingsGroups(input: {
       // is the global mute gate.
       key: "muted",
       label: "Audio",
+      section: "media",
       surfaces: SETTINGS_ONLY,
       options: [
         { label: "Sound on", value: false },
@@ -253,6 +319,7 @@ export function readerSettingsGroups(input: {
     {
       key: "cinematicMode",
       label: "Cinematic mode",
+      section: "media",
       surfaces: SETTINGS_ONLY,
       options: [
         { label: "Off", value: "off" },
@@ -267,6 +334,7 @@ export function readerSettingsGroups(input: {
     {
       key: "dialogBlocksEnabled",
       label: "Dialog blocks",
+      section: "look",
       surfaces: SETTINGS_ONLY,
       options: [
         { label: "On", value: true },
@@ -283,6 +351,7 @@ export function readerSettingsGroups(input: {
       // marker (RC5: text only, no glyph).
       key: "deskHome",
       label: "Experimental: Desk home",
+      section: "look",
       surfaces: SETTINGS_ONLY,
       options: [
         { label: "On", value: true },
@@ -292,4 +361,32 @@ export function readerSettingsGroups(input: {
   ];
 
   return groups;
+}
+
+// ── Section view (B3) ────────────────────────────────────────────────────────
+
+export type SettingsSectionView = {
+  section: SettingsSection;
+  groups: SettingsGroupDef<unknown>[];
+};
+
+// Group the surface's settings groups under their honest sections, in canonical
+// section order (read → look → media). The "read" section is ALWAYS returned
+// (with an empty `groups` array) so each surface can render its own reading-mode
+// block there — the drawer a live switch, /settings a read-only note. The two
+// backed sections carry their groups in the same top-to-bottom canonical order
+// as `readerSettingsGroups`, filtered to the requested surface.
+export function readerSettingsSections(input: {
+  illustratedUnlocked: boolean;
+  surface: SettingsSurface;
+}): SettingsSectionView[] {
+  const groups = readerSettingsGroups({
+    illustratedUnlocked: input.illustratedUnlocked,
+  }).filter((g) => g.surfaces.includes(input.surface));
+
+  return SETTINGS_SECTION_ORDER.map((key) => ({
+    section: SETTINGS_SECTIONS[key],
+    // "read" has no backing group (per-save mode); look/media collect theirs.
+    groups: key === "read" ? [] : groups.filter((g) => g.section === key),
+  }));
 }

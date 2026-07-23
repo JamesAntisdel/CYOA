@@ -120,3 +120,13 @@ test("branching / legacy saves still dispatch through READER_LAYOUTS (choice row
   // normal skin (and therefore the normal ChoiceList row), unchanged (R5.3).
   assert.match(readerScreen, /READER_LAYOUTS\[activeLayout\]\s*\?\?\s*READER_LAYOUTS\.book/);
 });
+
+// --- B2: the novel-only Stamp yields to the single shared ModeChip -----------
+
+test("Novel no longer stamps its own 'Novel' badge (one indicator for both modes)", () => {
+  // Reading-modes cleanup B2: the persistent ModeChip in the reader chrome is
+  // now the SINGLE mode indicator, so the novel-only <Stamp>Novel</Stamp> and
+  // its import are gone — a Branching save reads its mode from the same chip.
+  assert.doesNotMatch(novel, /<Stamp>Novel<\/Stamp>/, "the novel-only stamp must be removed");
+  assert.doesNotMatch(novel, /\bStamp\b\s*,?\s*Surface/, "the Stamp primitive import must be dropped");
+});

@@ -1,4 +1,4 @@
-import { useMemo, useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Animated, Easing, PanResponder, Pressable, View } from "react-native";
 
 import { EndingPanel } from "../../death/EndingPanel";
@@ -6,7 +6,7 @@ import { CinematicMoment } from "../../media/CinematicMoment";
 import { SceneCinematic } from "../../media/SceneCinematic";
 import { SceneMedia } from "../../media/SceneMedia";
 import { IlluminateButton } from "../IlluminateButton";
-import { Divider, Stamp, Surface, Text } from "../../primitives";
+import { Divider, Surface, Text } from "../../primitives";
 import { StatsHud } from "../../stats/StatsHud";
 import { useAppTheme } from "../../../theme";
 import { ConsequenceReel } from "../ConsequenceReel";
@@ -86,13 +86,31 @@ export function NovelLayout({
   // the projection so the id round-trips to `submitChoice` unchanged (R4.6).
   const pageTurnChoice = resolvePageTurnChoice<ChoiceProjection>(projection.choices);
 
+  // First-scene explainer (B2). The novel-only mode badge is gone — the
+  // persistent ModeChip in the reader chrome is now the SINGLE mode indicator
+  // for BOTH modes. On the opening page we still greet a Novel reader with one
+  // dismissable line: this read is linear by design + where to switch.
+  const isFirstScene = (projection.turnNumber ?? 0) <= 0;
+  const [explainerDismissed, setExplainerDismissed] = useState(() =>
+    hasDismissedNovelExplainer(),
+  );
+  const showExplainer =
+    isFirstScene && !explainerDismissed && !isFallback && !projection.ending;
+  const dismissExplainer = () => {
+    markNovelExplainerDismissed();
+    setExplainerDismissed(true);
+  };
+
   return (
     <View style={{ gap: tokens.spacing.lg, maxWidth: 760, width: "100%" }}>
       <View style={{ gap: tokens.spacing.xs }}>
-        <Stamp>Novel</Stamp>
         <Text variant="title">{projection.storyTitle}</Text>
         <Text muted>{projection.scene.title}</Text>
       </View>
+
+      {showExplainer ? (
+        <NovelExplainer onDismiss={dismissExplainer} />
+      ) : null}
 
       {isFallback ? (
         <FallbackTurnPanel
@@ -303,4 +321,70 @@ function PageTurnAffordance({
       </Pressable>
     </Animated.View>
   );
+}
+
+/**
+ * First-scene explainer (B2). One quiet line orienting a Novel reader: this
+ * tale is linear by design, and the mode chip in the reader chrome is where to
+ * switch back to Branching. Dismissable; the dismissal persists so it greets
+ * the reader once, not every session.
+ */
+function NovelExplainer({ onDismiss }: { onDismiss: () => void }) {
+  const { tokens } = useAppTheme();
+  return (
+    <Surface
+      padded
+      style={{
+        alignItems: "center",
+        flexDirection: "row",
+        gap: tokens.spacing.md,
+      }}
+    >
+      <Text muted style={{ flex: 1 }} variant="bodySmall">
+        This tale reads like a novel — one continuous story, no choices. Change
+        it anytime from the reading-mode chip above.
+      </Text>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Dismiss"
+        onPress={onDismiss}
+        style={({ pressed }) => ({
+          alignItems: "center",
+          justifyContent: "center",
+          minHeight: 44,
+          minWidth: 44,
+          opacity: pressed ? 0.6 : 1,
+        })}
+      >
+        <Text style={{ fontWeight: "800" }} tone="accent" variant="bodySmall">
+          Got it
+        </Text>
+      </Pressable>
+    </Surface>
+  );
+}
+
+const NOVEL_EXPLAINER_KEY = "cyoa.novelExplainerDismissed.v1";
+
+function novelExplainerStorage(): Storage | null {
+  if (typeof globalThis === "undefined") return null;
+  return (globalThis as { localStorage?: Storage }).localStorage ?? null;
+}
+
+/** True once the reader has dismissed the first-scene Novel explainer. */
+function hasDismissedNovelExplainer(): boolean {
+  try {
+    return novelExplainerStorage()?.getItem(NOVEL_EXPLAINER_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+/** Persist the dismissal so the explainer greets the reader only once. */
+function markNovelExplainerDismissed(): void {
+  try {
+    novelExplainerStorage()?.setItem(NOVEL_EXPLAINER_KEY, "1");
+  } catch {
+    /* ignore — a private-mode reader just sees it again next session */
+  }
 }
