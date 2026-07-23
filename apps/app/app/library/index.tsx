@@ -9,6 +9,8 @@ import { AppNav } from "../../components/navigation";
 import { Text } from "../../components/primitives";
 import { ReadingModeChooser } from "../../components/reading/ReadingModeChooser";
 import type { ReadingMode } from "../../lib/readingMode";
+import { isIllustratedBookUnlocked } from "../../lib/readerSettingsGroups";
+import { useAccountProfile } from "../../hooks/useAccountProfile";
 import { hasRemoteGameApi, listRemotePublishedCreatorSeeds, type RemoteCreatorSeedItem } from "../../lib/gameApi";
 import { getStoryCoverSource } from "../../lib/designAssets";
 import { useBreakpoint } from "../../lib/responsive";
@@ -35,6 +37,11 @@ export default function LibraryRoute() {
   const guest = useGuestSession();
   const library = useLibrary(guest.session);
   const { tokens } = useAppTheme();
+  // Reading-modes cleanup — Novel is a Pro mode. Same pro-media gate the rest
+  // of the app uses (dev-force flag OR active pro/unlimited) so a non-Pro
+  // reader who taps Novel routes to the paywall instead of a silent downgrade.
+  const { profile } = useAccountProfile();
+  const novelUnlocked = isIllustratedBookUnlocked(profile);
   // Responsive: every story card on the shelf collapses cover+body to a
   // single stacked column on phones (<520px). Without this the title+meta
   // pane has ~211px to work with at 375 viewport — well below the
@@ -299,7 +306,12 @@ export default function LibraryRoute() {
         {/* Reading-modes cleanup — the shared two-option chooser with its
             always-visible blurbs replaces the compact segmented toggle +
             reveal-on-change caption. Applies to the tale you start next. */}
-        <ReadingModeChooser onChange={chooseReadingMode} value={readingMode} />
+        <ReadingModeChooser
+          isPro={novelUnlocked}
+          onChange={chooseReadingMode}
+          onNovelLocked={() => router.push("/paywall?reason=pro_media")}
+          value={readingMode}
+        />
         <View style={{ gap: tokens.spacing.sm }}>
           {library.starterStories.map((story: StorySummary) => (
             <Pressable

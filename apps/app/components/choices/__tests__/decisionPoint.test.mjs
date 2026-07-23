@@ -43,6 +43,36 @@ test("DecisionPoint renders the italic 'The path forks' label + the stakes subli
   );
 });
 
+test("the header trait sits on the Text, not the wrapper View (iOS VoiceOver rotor)", () => {
+  const src = read("components/choices/DecisionPoint.tsx");
+  // On iOS a plain <View> is only an a11y element when accessible === true, so
+  // the header role must live on the default-accessible <Text>, mirroring
+  // ReaderTopBar. Pin the header role directly onto the Text open tag, and
+  // ensure the redundant wrapper accessibilityLabel is gone.
+  const headerStart = src.indexOf("export function DecisionPointHeader");
+  assert.ok(headerStart > -1, "DecisionPointHeader must exist");
+  const headerBody = src.slice(headerStart);
+  const textIdx = headerBody.indexOf("<Text");
+  const textTagEnd = headerBody.indexOf(">", textIdx);
+  const textOpenTag = headerBody.slice(textIdx, textTagEnd);
+  assert.match(
+    textOpenTag,
+    /accessibilityRole="header"/,
+    "the header role must sit on the inner <Text>, not the wrapper View",
+  );
+  // The wrapper View must NOT carry a header role or a redundant label — those
+  // are the dropped-trait bug this guards against.
+  const wrapperTag = headerBody.slice(headerBody.indexOf("<View"), textIdx);
+  assert.ok(
+    !/accessibilityRole="header"/.test(wrapperTag),
+    "the wrapper View must not carry the header role (dropped on iOS)",
+  );
+  assert.ok(
+    !/accessibilityLabel/.test(wrapperTag),
+    "the wrapper View must not carry a redundant accessibilityLabel",
+  );
+});
+
 test("DecisionPoint draws the fork motif from Views — no control emoji (RC5)", () => {
   const src = read("components/choices/DecisionPoint.tsx");
   assert.ok(

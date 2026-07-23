@@ -17,7 +17,7 @@ import {
   ILLUSTRATED_BOOK_LAYOUT,
   type SettingsOption,
 } from "../../lib/readerSettingsGroups";
-import type { ReadingMode } from "../../lib/readingMode";
+import { ModeMark, READING_MODE_META, type ReadingMode } from "../../lib/readingMode";
 import { ReadingModeChooser } from "./ReadingModeChooser";
 import { useBreakpoint } from "../../lib/responsive";
 import { markLayoutAsExplicitlyChosen } from "./ReaderScreen";
@@ -64,6 +64,14 @@ export type ReaderSettingsDrawerProps = {
   currentReadingMode?: ReadingMode;
   onSwitchReadingMode?: (mode: ReadingMode) => void;
   switchPending?: boolean;
+  // SWITCH-UX #4 — the mode a just-succeeded switch moved TO (readingModeConfirmed
+  // in the reader). The chooser binds to this over the current-scene stamp so a
+  // landed switch stays selected (the scene keeps its shape till the next page)
+  // instead of snapping back and looking rejected.
+  confirmedMode?: ReadingMode | null;
+  // SWITCH-UX #5 — false for local/demo saves with no remote saves row, where a
+  // switch no-ops. Then the section shows the mode as a LABEL only, no chooser.
+  switchable?: boolean;
 };
 
 // Surface-local help text (presentation, not definition — kept out of the
@@ -81,6 +89,8 @@ export function ReaderSettingsDrawer({
   currentReadingMode,
   onSwitchReadingMode,
   switchPending = false,
+  confirmedMode = null,
+  switchable = true,
 }: ReaderSettingsDrawerProps) {
   const { tokens } = useAppTheme();
   const { isPhone } = useBreakpoint();
@@ -270,6 +280,37 @@ export function ReaderSettingsDrawer({
               // never sees an inert control.
               if (section.key === "read") {
                 if (!canSwitchMode) return null;
+                const current = currentReadingMode as ReadingMode;
+                // SWITCH-UX #4 — bind the chooser to the CONFIRMED target (the
+                // landed-but-not-yet-live switch) over the current-scene stamp,
+                // so a successful switch stays selected instead of snapping back.
+                const selectedMode = confirmedMode ?? current;
+                const pendingNextPage =
+                  confirmedMode != null && confirmedMode !== current;
+                // SWITCH-UX #5 — no remote saves row: the switch would no-op, so
+                // show the mode as a LABEL-only indicator, never a dead chooser.
+                if (!switchable) {
+                  return (
+                    <View key={section.key} style={{ gap: tokens.spacing.sm }}>
+                      <SectionHeader label={section.label} blurb={section.blurb} />
+                      <View
+                        style={{
+                          alignItems: "center",
+                          flexDirection: "row",
+                          gap: tokens.spacing.sm,
+                        }}
+                      >
+                        <ModeMark mode={current} size={20} />
+                        <Text style={{ fontWeight: "800" }} variant="bodySmall">
+                          {READING_MODE_META[current].label}
+                        </Text>
+                      </View>
+                      <Text muted variant="caption">
+                        Mode switching isn&apos;t available for this tale.
+                      </Text>
+                    </View>
+                  );
+                }
                 return (
                   <View key={section.key} style={{ gap: tokens.spacing.sm }}>
                     <SectionHeader label={section.label} blurb={section.blurb} />
@@ -285,13 +326,19 @@ export function ReaderSettingsDrawer({
                       style={{ opacity: switchPending ? 0.5 : 1 }}
                     >
                       <ReadingModeChooser
-                        value={currentReadingMode as ReadingMode}
+                        value={selectedMode}
                         onChange={(mode) => onSwitchReadingMode?.(mode)}
                       />
                     </View>
                     {switchPending ? (
                       <Text muted variant="caption">
                         Switching…
+                      </Text>
+                    ) : pendingNextPage ? (
+                      // SWITCH-UX #4 — quiet confirmation mirroring the ModeChip:
+                      // the switch landed; it applies from the next page.
+                      <Text tone="accent" variant="caption">
+                        {`${READING_MODE_META[selectedMode].label} takes effect on the next page.`}
                       </Text>
                     ) : null}
                   </View>

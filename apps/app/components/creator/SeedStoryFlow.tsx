@@ -1,11 +1,14 @@
 import { useCallback, useMemo, useState } from "react";
+import { useRouter } from "expo-router";
 
 import { getLocalStorage as getStorage } from "../../lib/storage";
 import { TextInput, View } from "react-native";
 
+import { useAccountProfile } from "../../hooks/useAccountProfile";
 import type { LibrarySave } from "../../hooks/useLibrary";
 import type { RemoteKeepsake } from "../../lib/gameApi";
 import type { ReadingMode } from "../../lib/readingMode";
+import { isIllustratedBookUnlocked } from "../../lib/readerSettingsGroups";
 import { canStartMode, type SaveMode } from "../../lib/storyEngagementW3";
 import { ReadingModeChooser } from "../reading/ReadingModeChooser";
 import { Button, Chip, Divider, Note, Stamp, Surface, Text } from "../primitives";
@@ -155,6 +158,12 @@ export function SeedStoryFlow({
   keepsakes,
 }: SeedStoryFlowProps) {
   const { tokens } = useAppTheme();
+  const router = useRouter();
+  // Reading-modes cleanup — Novel is a Pro mode. Same pro-media gate the rest
+  // of the app uses (dev-force flag OR active pro/unlimited) so a non-Pro
+  // reader who taps Novel routes to the paywall instead of a silent downgrade.
+  const { profile } = useAccountProfile();
+  const novelUnlocked = isIllustratedBookUnlocked(profile);
   const [title, setTitle] = useState("");
   const [premise, setPremise] = useState("");
   const [tone, setTone] = useState<SeedTone | null>(null);
@@ -343,7 +352,12 @@ export function SeedStoryFlow({
               createSave via onLaunchSeed. */}
           <View style={{ gap: tokens.spacing.sm }}>
             <Text variant="subtitle">How this reads</Text>
-            <ReadingModeChooser onChange={setReadingMode} value={readingMode} />
+            <ReadingModeChooser
+              isPro={novelUnlocked}
+              onChange={setReadingMode}
+              onNovelLocked={() => router.push("/paywall?reason=pro_media")}
+              value={readingMode}
+            />
           </View>
 
           <Divider />

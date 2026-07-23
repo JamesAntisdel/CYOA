@@ -11,6 +11,7 @@ import { AppNav } from "../components/navigation";
 import { Button, Text } from "../components/primitives";
 import { ReadingModeChooser } from "../components/reading/ReadingModeChooser";
 import type { ReadingMode } from "../lib/readingMode";
+import { isIllustratedBookUnlocked } from "../lib/readerSettingsGroups";
 import { useAccountProfile } from "../hooks/useAccountProfile";
 import { useReaderSettings } from "../hooks/useReaderSettings";
 import {
@@ -47,7 +48,12 @@ export default function IndexRoute() {
   // progress we lead with their story (continue + daily + rank) and demote the
   // acquisition hero below the fold; first-visit readers keep the original
   // Chapter-Zero-hero-first layout untouched.
-  const { librarianRank } = useAccountProfile();
+  const { librarianRank, profile } = useAccountProfile();
+  // Reading-modes cleanup — Novel is a Pro mode. Mirror the SAME gate the rest
+  // of the app uses for pro-media (dev-force flag OR active pro/unlimited) so a
+  // non-Pro reader who taps Novel is routed to the paywall instead of being
+  // silently downgraded to Branching server-side.
+  const novelUnlocked = isIllustratedBookUnlocked(profile);
   const { settings } = useReaderSettings();
   const { reduceMotion, tokens } = useAppTheme();
   // Responsive breakpoints: phone (<520) stacks every multi-column row.
@@ -412,7 +418,12 @@ export default function IndexRoute() {
         {/* Reading-modes cleanup — the shared two-option chooser with its
             always-visible blurbs replaces the compact segmented toggle +
             reveal-on-change caption. Applies to the tale you start next. */}
-        <ReadingModeChooser onChange={chooseReadingMode} value={readingMode} />
+        <ReadingModeChooser
+          isPro={novelUnlocked}
+          onChange={chooseReadingMode}
+          onNovelLocked={() => router.push("/paywall?reason=pro_media")}
+          value={readingMode}
+        />
         <View style={{ gap: tokens.spacing.sm }}>
           {library.starterStories.slice(0, 3).map((story: StorySummary) => (
             <Pressable

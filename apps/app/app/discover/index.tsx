@@ -27,6 +27,7 @@ import { useAppTheme } from "../../theme";
 import { Button, Chip, Stamp, Surface, Text } from "../../components/primitives";
 import { ReadingModeChooser } from "../../components/reading/ReadingModeChooser";
 import type { ReadingMode } from "../../lib/readingMode";
+import { isIllustratedBookUnlocked } from "../../lib/readerSettingsGroups";
 
 /**
  * Discover route (creator-arc; core-read-loop Req 22.3/22.6, steering product
@@ -71,6 +72,10 @@ export default function DiscoverRoute() {
   const [novelMode, setNovelMode] = useState(false);
   const readingMode: ReadingMode = novelMode ? "novel" : "branching";
   const chooseReadingMode = (mode: ReadingMode) => setNovelMode(mode === "novel");
+  // Reading-modes cleanup — Novel is a Pro mode. Same pro-media gate the rest
+  // of the app uses (dev-force flag OR active pro/unlimited) so a non-Pro
+  // reader who taps Novel routes to the paywall instead of a silent downgrade.
+  const novelUnlocked = isIllustratedBookUnlocked(profile);
 
   useEffect(() => {
     let cancelled = false;
@@ -208,7 +213,12 @@ export default function DiscoverRoute() {
             {/* Reading-modes cleanup — the shared two-option chooser with its
                 always-visible blurbs replaces the compact segmented toggle +
                 reveal-on-change caption. Applies to the seed you begin next. */}
-            <ReadingModeChooser onChange={chooseReadingMode} value={readingMode} />
+            <ReadingModeChooser
+              isPro={novelUnlocked}
+              onChange={chooseReadingMode}
+              onNovelLocked={() => router.push("/paywall?reason=pro_media")}
+              value={readingMode}
+            />
           </View>
 
           {seeds === undefined ? (

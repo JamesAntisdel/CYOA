@@ -74,8 +74,21 @@ test("the shared ReadingModeChooser renders and threads into launch createSave",
   );
   assert.match(
     discoverSrc,
-    /<ReadingModeChooser onChange=\{chooseReadingMode\} value=\{readingMode\} \/>/,
+    /<ReadingModeChooser[\s\S]*?onChange=\{chooseReadingMode\}[\s\S]*?value=\{readingMode\}[\s\S]*?\/>/,
     "the chooser renders with value + onChange bound to the discover state",
+  );
+  // Novel is a Pro mode — the chooser is gated + wired to the paywall (finding
+  // #3: no more silent downgrade at create).
+  assert.match(
+    discoverSrc,
+    /const novelUnlocked = isIllustratedBookUnlocked\(profile\)/,
+    "discover resolves Novel entitlement through the shared pro-media gate",
+  );
+  assert.match(discoverSrc, /isPro=\{novelUnlocked\}/, "the chooser receives the resolved entitlement");
+  assert.match(
+    discoverSrc,
+    /onNovelLocked=\{\(\) => router\.push\("\/paywall\?reason=pro_media"\)\}/,
+    "a locked Novel tap routes to the pro_media paywall",
   );
   // The retired inline toggle is gone.
   assert.doesNotMatch(discoverSrc, /accessibilityLabel="Reading mode"/, "no inline radiogroup remains");

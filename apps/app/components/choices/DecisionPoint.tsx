@@ -108,8 +108,6 @@ export function DecisionPointHeader() {
   const { tokens } = useAppTheme();
   return (
     <View
-      accessibilityLabel={DECISION_POINT_LABEL}
-      accessibilityRole="header"
       style={{
         alignItems: "center",
         flexDirection: "row",
@@ -117,7 +115,14 @@ export function DecisionPointHeader() {
       }}
     >
       <ForkMark color={tokens.colors.textMuted} />
+      {/*
+       * The header trait lives on the (default-accessible) Text, not the row
+       * View — a plain View is only an a11y element on iOS when accessible is
+       * explicitly true, so a role on the wrapper is silently dropped and
+       * VoiceOver's heading rotor skips the fork. Mirrors ReaderTopBar's title.
+       */}
       <Text
+        accessibilityRole="header"
         style={{
           color: tokens.colors.text,
           fontFamily: tokens.typography.families.serif,

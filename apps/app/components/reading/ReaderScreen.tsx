@@ -15,6 +15,7 @@ import { hasRemoteGameApi, restartRemoteRun } from "../../lib/gameApi";
 // beginAgain drift-guard keeps pinning the restartRun import byte-for-byte.
 import { setReadingMode } from "../../lib/gameApi";
 import type { ReadingMode } from "../../lib/readingMode";
+import { routeReadingModeResult } from "../../lib/readingModeRouting";
 import {
   listRemoteSaveCinematics,
   pickChapterCinematic,
@@ -536,7 +537,20 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
   // switch calls the server `readingModeFunctions:setReadingMode` seam.
   const currentReadingMode: ReadingMode =
     projection.readingMode === "novel" ? "novel" : "branching";
+  // SWITCH-UX #5 — a switch only round-trips for a REAL remote saves row. Local
+  // /demo saves (training-room-demo/creator_seed_*/safe-ending/pro-media) have
+  // no saves row, so `setReadingMode` returns null and the tap is a silent
+  // no-op. `supportsFreeform` from useTurn is exactly that gate — a guest
+  // session + a wired convex client + NOT a local demo save — so we reuse it
+  // rather than re-deriving `isLocalDemoSave` (which useTurn keeps private).
+  // When false the ModeChip/drawer show the mode as a LABEL only, no dead
+  // switch button.
+  const readingModeSwitchable = supportsFreeform;
   const [readingModeSwitchPending, setReadingModeSwitchPending] = useState(false);
+  // SWITCH-UX #2 — the ModeChip's sheet visibility is lifted here so a
+  // Pro-gated switch can CLOSE the sheet before routing to the paywall (on
+  // native the paywall otherwise renders UNDER the still-open sheet).
+  const [modeChipOpen, setModeChipOpen] = useState(false);
   // The mode a just-succeeded switch moved TO. The switch applies from the NEXT
   // page (the current scene keeps its shape — we never force-flip the live
   // layout), so we surface it as a quiet confirmation and clear it the moment
@@ -549,7 +563,13 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
   }, [projection.scene.id]);
   const handleSwitchReadingMode = useCallback(
     (mode: ReadingMode) => {
-      if (readingModeSwitchPending || mode === currentReadingMode) return;
+      // SWITCH-UX #4 — guard against the EFFECTIVE selected mode (the pending
+      // confirmed target when there is one, else the current scene's mode), NOT
+      // just `currentReadingMode`. Otherwise a reverting tap back to the current
+      // scene's mode after a forward switch would be silently swallowed as a
+      // "no-op" while a switch to novel is still confirmed-pending.
+      const effectiveMode = readingModeConfirmed ?? currentReadingMode;
+      if (readingModeSwitchPending || mode === effectiveMode) return;
       setReadingModeSwitchPending(true);
       void (async () => {
         try {
@@ -558,16 +578,23 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
             mode,
             ...(remoteAuth ? { auth: remoteAuth } : {}),
           });
-          if (result?.ok) {
+          // SWITCH-UX #7 — the result→action decision is a pure helper so every
+          // arm is unit-tested; the component keeps only the thin dispatch.
+          const action = routeReadingModeResult(result);
+          if (action.kind === "confirm") {
             // Applies from the next page — surface the quiet confirmation and
             // leave the current scene untouched.
-            setReadingModeConfirmed(result.mode);
-          } else if (result && result.reason === "needs_pro") {
-            // Pro-gated, exactly like the other reader Pro actions (the
-            // illustrated-book skin routes here too).
+            setReadingModeConfirmed(action.mode);
+          } else if (action.kind === "paywall") {
+            // SWITCH-UX #2 — CLOSE any open sheet BEFORE navigating so the
+            // Pro-gated paywall (Novel) isn't rendered UNDER the mode sheet /
+            // settings drawer on native. Mirrors the illustrated-book gate.
+            setModeChipOpen(false);
+            setDrawerOpen(false);
             router.push("/paywall?reason=pro_media");
           }
-          // not_found / unauthorized / null (no remote backend) → quiet no-op.
+          // action.kind === "noop" → not_found / unauthorized / null (no remote
+          // backend / local demo save) → quiet no-op.
         } finally {
           setReadingModeSwitchPending(false);
         }
@@ -575,9 +602,11 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
     },
     // `remoteAuth` is a fresh object each render; the accountId/hash it carries
     // are the stable identity, so gate the callback on those, not the wrapper.
+    // (setModeChipOpen/setDrawerOpen are stable setState identities.)
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       currentReadingMode,
+      readingModeConfirmed,
       readingModeSwitchPending,
       remoteAuth?.accountId,
       remoteAuth?.guestTokenHash,
@@ -822,6 +851,9 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
             onSwitch={handleSwitchReadingMode}
             switchPending={readingModeSwitchPending}
             confirmedMode={readingModeConfirmed}
+            switchable={readingModeSwitchable}
+            open={modeChipOpen}
+            onOpenChange={setModeChipOpen}
             reducedMotion={reduceMotion || settings.reduceMotion}
           />
 
@@ -1063,6 +1095,8 @@ export function ReaderScreen({ saveId }: ReaderScreenProps) {
         currentReadingMode={currentReadingMode}
         onSwitchReadingMode={handleSwitchReadingMode}
         switchPending={readingModeSwitchPending}
+        confirmedMode={readingModeConfirmed}
+        switchable={readingModeSwitchable}
       />
 
       {/* The per-scene report picker, driven from the Tome's "Flag this scene"

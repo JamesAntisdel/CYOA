@@ -21,6 +21,7 @@ function read(rel) {
 
 const chip = read("components/reading/chrome/ModeChip.tsx");
 const readerScreen = read("components/reading/ReaderScreen.tsx");
+const drawer = read("components/reading/ReaderSettingsDrawer.tsx");
 const novel = read("components/reading/layouts/Novel.tsx");
 const gameApi = read("lib/gameApi.ts");
 
@@ -95,9 +96,79 @@ test("ReaderScreen switches through the gameApi setReadingMode seam", () => {
   assert.match(readerScreen, /\.\.\.\(remoteAuth \? \{ auth: remoteAuth \} : \{\}\)/);
 });
 
-test("ReaderScreen routes needs_pro to the Pro paywall like other reader gates", () => {
-  assert.match(readerScreen, /reason === "needs_pro"/);
+test("ReaderScreen dispatches the switch result through the pure router helper (SWITCH-UX #7)", () => {
+  // The needs_pro→paywall / ok→confirm / else→noop decision now lives in the
+  // unit-tested lib/readingModeRouting.ts; the component keeps only the wiring.
+  assert.match(
+    readerScreen,
+    /import\s*\{[^}]*routeReadingModeResult[^}]*\}\s*from\s*"\.\.\/\.\.\/lib\/readingModeRouting"/s,
+  );
+  assert.match(readerScreen, /routeReadingModeResult\(result\)/);
+  assert.match(readerScreen, /action\.kind === "confirm"/);
+  assert.match(readerScreen, /action\.kind === "paywall"/);
   assert.match(readerScreen, /router\.push\("\/paywall\?reason=pro_media"\)/);
+});
+
+// --- SWITCH-UX #2 — close the open sheet(s) BEFORE the paywall push ----------
+
+test("ReaderScreen closes the mode sheet + drawer before routing to the paywall (SWITCH-UX #2)", () => {
+  // The chip's sheet is a lifted/controlled state so the parent can close it;
+  // both it and the drawer must close in the same commit that navigates, or the
+  // paywall renders UNDER the still-open Modal on native.
+  assert.match(readerScreen, /open=\{modeChipOpen\}/, "ModeChip open is controlled by the parent");
+  assert.match(readerScreen, /onOpenChange=\{setModeChipOpen\}/);
+  // In the paywall branch, both setters fire before router.push.
+  assert.match(
+    readerScreen,
+    /action\.kind === "paywall"[\s\S]*?setModeChipOpen\(false\)[\s\S]*?setDrawerOpen\(false\)[\s\S]*?router\.push\("\/paywall/,
+    "both sheets close before the paywall push",
+  );
+});
+
+test("ModeChip supports controlled open state so the parent can close it (SWITCH-UX #2)", () => {
+  assert.match(chip, /open\?:\s*boolean/);
+  assert.match(chip, /onOpenChange\?:\s*\(open:\s*boolean\)\s*=>\s*void/);
+  // Falls back to internal state when uncontrolled.
+  assert.match(chip, /controlledOpen \?\? openInternal/);
+});
+
+// --- SWITCH-UX #4 — confirmed-mode desync on the drawer ----------------------
+
+test("Drawer binds the chooser to the CONFIRMED mode, not the current-scene stamp (SWITCH-UX #4)", () => {
+  assert.match(drawer, /confirmedMode\?:\s*ReadingMode\s*\|\s*null/, "drawer takes confirmedMode");
+  assert.match(drawer, /confirmedMode \?\? current/, "chooser selection prefers the confirmed target");
+  assert.match(drawer, /value=\{selectedMode\}/, "the chooser binds the confirmed-aware selection");
+  // Quiet 'next page' note when the confirmed target differs from the scene mode.
+  assert.match(drawer, /takes effect on the next page/);
+  assert.match(drawer, /pendingNextPage/);
+});
+
+test("ReaderScreen threads confirmedMode into the drawer + guards the revert on the effective mode (SWITCH-UX #4)", () => {
+  assert.match(readerScreen, /confirmedMode=\{readingModeConfirmed\}/);
+  // The no-op guard compares against the EFFECTIVE (pending-aware) mode so a
+  // revert tap after a forward switch isn't silently swallowed.
+  assert.match(readerScreen, /readingModeConfirmed \?\? currentReadingMode/);
+  assert.match(readerScreen, /mode === effectiveMode/);
+});
+
+// --- SWITCH-UX #5 — no dead switch on local/demo saves -----------------------
+
+test("ReaderScreen derives a `switchable` flag and passes it to the chip + drawer (SWITCH-UX #5)", () => {
+  assert.match(readerScreen, /readingModeSwitchable = supportsFreeform/);
+  assert.match(readerScreen, /switchable=\{readingModeSwitchable\}/);
+});
+
+test("ModeChip shows the mode as a LABEL-only indicator when not switchable (SWITCH-UX #5)", () => {
+  assert.match(chip, /switchable\?:\s*boolean/);
+  assert.match(chip, /Mode switching isn&apos;t available for this tale/);
+  // The affordance caret is dropped when the save can't switch (label, not toggle).
+  assert.match(chip, /switchable \? \(\s*<Text aria-hidden/);
+});
+
+test("Drawer shows a LABEL-only indicator (no chooser) when not switchable (SWITCH-UX #5)", () => {
+  assert.match(drawer, /switchable\?:\s*boolean/);
+  assert.match(drawer, /if \(!switchable\)/);
+  assert.match(drawer, /Mode switching isn&apos;t available for this tale/);
 });
 
 test("ReaderScreen passes the switch props to the settings drawer (B3 renders)", () => {
